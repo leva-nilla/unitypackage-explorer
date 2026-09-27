@@ -94,7 +94,7 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
         var parsed = UnityPrefabParser.Parse(text);
         Bitmap? image = null;
         string? texturePath = null;
-        var textureWarning = (string?)null;
+        var textureWarnings = new List<string>();
         try
         {
             var catalog = UnityAssetCatalog.OpenProjectPrefab(path);
@@ -115,13 +115,16 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
                 rootTransformIds[sourceGuid] = rootTransformId;
                 return rootTransformId;
             });
-            (image, texturePath) = ReadReferencedTexture(catalog, parsed, contextEntry);
+            var texturePreview = ReadReferencedTexture(catalog, parsed, contextEntry);
+            image = texturePreview.Image;
+            texturePath = texturePreview.Path;
+            textureWarnings.AddRange(texturePreview.Warnings);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
-            textureWarning = "参照テクスチャを検索できませんでした。";
+            textureWarnings.Add($"参照テクスチャを検索できませんでした: {exception.Message}");
         }
-        return ReadPrefab(Path.GetFileName(path), parsed, image, texturePath, textureWarning);
+        return ReadPrefab(Path.GetFileName(path), parsed, image, texturePath, textureWarnings);
     }
 
     internal static PreviewContent ReadPrefab(string title, string text)
@@ -130,33 +133,77 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
         return ReadPrefab(title, parsed, null, null);
     }
 
-    private static PreviewContent ReadPrefab(string title, PrefabParseResult parsed, Bitmap? image, string? texturePath, string? textureWarning = null)
+    private static PreviewContent ReadPrefab(string title, PrefabParseResult parsed, Bitmap? image, string? texturePath, IReadOnlyList<string>? textureWarnings = null)
     {
         var names = Flatten(parsed.Roots).Take(14).Select((x, index) => $"{new string(' ', Math.Min(index, 5) * 2)}{x}").ToArray();
-        var lines = (texturePath is null ? names : new[] { $"参照テクスチャ: {texturePath}" }.Concat(names))
+        var lines = (texturePath is null ? Enumerable.Empty<string>() : new[] { $"参照テクスチャ: {texturePath}" })
             .Concat(parsed.Warnings.Take(3).Select(x => $"注意: {x}"))
-            .Concat(textureWarning is null ? [] : [$"注意: {textureWarning}"]).ToArray();
+            .Concat((textureWarnings ?? []).Take(3).Select(x => $"注意: {x}"))
+            .Concat(names).ToArray();
         return Create(Path.GetFileName(title), $"Prefab hierarchy: {Flatten(parsed.Roots).Count()} objects", lines, image);
     }
 
-    private static (Bitmap? Image, string? Path) ReadReferencedTexture(UnityAssetCatalog catalog, PrefabParseResult parsed, UnityPackageEntry? contextEntry)
+    private static (Bitmap? Image, string? Path, IReadOnlyList<string> Warnings) ReadReferencedTexture(UnityAssetCatalog catalog, PrefabParseResult parsed, UnityPackageEntry? contextEntry)
     {
-        foreach (var material in EnumerateNodes(parsed.Roots).SelectMany(x => x.Materials))
+        var warnings = new List<string>();
+        Bitmap? image = null;
+        string? imagePath = null;
+        foreach (var material in EnumerateNodes(parsed.Roots).SelectMany(x => x.Materials).Take(24))
         {
-            if (material.Guid is null) continue;
-            foreach (var textureGuid in catalog.ReadMaterialTextureGuids(material.Guid, referenceEntry: contextEntry))
+            if (material.Guid is null)
+            {
+                if (material.FileId != 0) warnings.Add($"Material fileID {material.FileId} has no GUID and cannot be resolved.");
+                continue;
+            }
+            var materialEntry = catalog.FindByGuid(material.Guid, referenceEntry: contextEntry);
+            if (materialEntry is null)
+            {
+                warnings.Add($"Material GUID {material.Guid} was not found.");
+                continue;
+            }
+            if (catalog.ReadAsset(materialEntry) is null)
+            {
+                warnings.Add($"Material data is missing: {materialEntry.PathName}");
+                continue;
+            }
+            foreach (var unsupportedGuid in catalog.ReadUnsupportedMaterialTextureGuids(material.Guid, referenceEntry: contextEntry).Take(8))
+            {
+                var unsupportedPath = catalog.ResolvePath(unsupportedGuid, referenceEntry: contextEntry);
+                warnings.Add(unsupportedPath is null
+                    ? $"Texture GUID {unsupportedGuid} referenced by material '{materialEntry.PathName}' was not found."
+                    : $"Texture {unsupportedPath} uses a material slot this preview cannot render.");
+            }
+            foreach (var textureGuid in catalog.ReadMaterialTextureGuids(material.Guid, referenceEntry: contextEntry).Take(8))
             {
                 var textureEntry = catalog.FindByGuid(textureGuid, referenceEntry: contextEntry);
-                if (textureEntry is null || textureEntry.Kind != "Image") continue;
+                if (textureEntry is null)
+                {
+                    warnings.Add($"Texture GUID {textureGuid} referenced by material '{materialEntry.PathName}' was not found.");
+                    continue;
+                }
+                if (textureEntry.Kind != "Image")
+                {
+                    warnings.Add($"Texture format is not supported: {textureEntry.PathName}");
+                    continue;
+                }
                 try
                 {
                     var bytes = catalog.ReadAsset(textureEntry, maximumBytes: MaximumPreviewImageBytes);
-                    if (bytes is not null) return (DecodeImage(bytes), textureEntry.PathName);
+                    if (bytes is null)
+                    {
+                        warnings.Add($"Texture data is missing: {textureEntry.PathName}");
+                        continue;
+                    }
+                    if (image is null)
+                    {
+                        image = DecodeImage(bytes);
+                        imagePath = textureEntry.PathName;
+                    }
                 }
-                catch (Exception) { }
+                catch (Exception exception) { warnings.Add($"Texture could not be previewed: {textureEntry.PathName} ({exception.Message})"); }
             }
         }
-        return (null, null);
+        return (image, imagePath, warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
     }
 
     private static IEnumerable<PrefabNode> EnumerateNodes(IEnumerable<PrefabNode> nodes)

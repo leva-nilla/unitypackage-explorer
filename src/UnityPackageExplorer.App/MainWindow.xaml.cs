@@ -247,13 +247,17 @@ public partial class MainWindow : Window
         });
         PrefabTree.ItemsSource = result.Roots.Select(x => new PrefabNodeView(x)).ToArray();
         var warnings = new List<string>(result.Warnings);
-        var placements = new List<(PrefabNode Node, string Guid, Matrix4x4 Transform)>();
-        foreach (var root in result.Roots) CollectPlacements(root, Matrix4x4.Identity, placements);
+        var modelsToLoad = UnityPrefabParser.GetModelPlacements(result.Roots);
+        ViewerEmpty.Text = modelsToLoad.Count == 0 ? "FBX 参照がありません。Prefab の階層を表示しています" : "FBX モデルを読み込み中…";
 
         var models = new List<HelixToolkitScene>();
-        foreach (var (node, guid, transform) in placements)
+        for (var index = 0; index < modelsToLoad.Count; index++)
         {
             if (!_previewRequests.IsCurrent(requestId)) return;
+            var placement = modelsToLoad[index];
+            var node = placement.Node;
+            var guid = placement.Guid;
+            SetStatus($"{entry?.PathName ?? Path.GetFileName(externalPath)} の FBX を読み込み中… ({index + 1}/{modelsToLoad.Count})");
             var packageMemberPath = entry?.PackageMemberPath;
             var modelPath = _catalog.ResolvePath(guid, packageMemberPath, entry);
             if (modelPath is null)
@@ -269,7 +273,7 @@ public partial class MainWindow : Window
             try
             {
                 var modelEntry = _catalog.FindByGuid(guid, packageMemberPath, entry);
-                var loaded = await LoadPackageModelAsyncCore(guid, transform, node.Materials, packageMemberPath, entry, modelEntry);
+                var loaded = await LoadPackageModelAsyncCore(guid, placement.Transform, placement.Materials, packageMemberPath, entry, modelEntry);
                 if (!_previewRequests.IsCurrent(requestId)) return;
                 models.Add(loaded.Scene);
                 SceneModels.AddNode(loaded.Scene.Root);
@@ -282,14 +286,15 @@ public partial class MainWindow : Window
         var details = new StringBuilder()
             .AppendLine(externalPath ?? entry?.PathName ?? "Prefab")
             .AppendLine($"Prefab 階層: {CountNodes(result.Roots):N0} 個")
-            .AppendLine($"FBX 表示: {models.Count:N0} 個");
+            .AppendLine($"FBX 参照: {CountModelReferences(result.Roots):N0} 個")
+            .AppendLine($"FBX モデル表示: {models.Count:N0} 個");
         if (warnings.Count > 0) details.AppendLine().AppendLine("確認できない内容").AppendLine(string.Join(Environment.NewLine, warnings.Distinct()));
         if (models.Count > 0)
         {
             ViewerEmpty.Visibility = Visibility.Collapsed;
             Viewport.ZoomExtents();
         }
-        else ViewerEmpty.Text = "FBX 参照がありません。Prefab の階層を表示しています";
+        else ViewerEmpty.Text = "表示できる FBX がありません。Prefab の階層と確認できない内容を表示しています";
         DetailsText.Text = details.ToString();
         SetStatus(models.Count > 0 ? "参照 FBX と確認できたテクスチャを表示しています。シェーダーは使いません。" : "Prefab の構造を読み込みました。");
     }
@@ -458,18 +463,10 @@ public partial class MainWindow : Window
             foreach (var nested in EnumerateSceneNodes(child)) yield return nested;
     }
 
-    private void CollectPlacements(PrefabNode node, Matrix4x4 parent, List<(PrefabNode, string, Matrix4x4)> output)
-    {
-        var local = Matrix4x4.CreateScale(node.Scale.X, node.Scale.Y, node.Scale.Z)
-            * Matrix4x4.CreateFromQuaternion(new Quaternion(node.Rotation.X, node.Rotation.Y, node.Rotation.Z, node.Rotation.W))
-            * Matrix4x4.CreateTranslation(node.Position.X, node.Position.Y, node.Position.Z);
-        var world = local * parent;
-        var guid = node.Mesh?.Guid ?? node.SourcePrefab?.Guid;
-        if (!string.IsNullOrWhiteSpace(guid)) output.Add((node, guid, world));
-        foreach (var child in node.Children) CollectPlacements(child, world, output);
-    }
-
     private static int CountNodes(IEnumerable<PrefabNode> nodes) => nodes.Sum(x => 1 + CountNodes(x.Children));
+
+    private static int CountModelReferences(IEnumerable<PrefabNode> nodes) => nodes.Sum(x =>
+        (string.IsNullOrWhiteSpace(x.Mesh?.Guid ?? x.SourcePrefab?.Guid) ? 0 : 1) + CountModelReferences(x.Children));
 
     private void ShowImage(byte[] bytes, string pathName)
     {

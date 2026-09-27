@@ -26,6 +26,7 @@ public sealed class UnityZipReaderTests
                 using (var secondPackageOutput = archive.CreateEntry("Packages/Alt.unitypackage").Open()) secondPackage.CopyTo(secondPackageOutput);
                 using (var looseOutput = archive.CreateEntry("Extras/Readme.txt").Open())
                     looseOutput.Write(Encoding.UTF8.GetBytes("loose bytes"));
+                archive.CreateEntry("Extras/Empty.txt");
                 using (var metaOutput = archive.CreateEntry("Extras/Readme.txt.meta").Open())
                     metaOutput.Write(Encoding.UTF8.GetBytes($"fileFormatVersion: 2\nguid: {looseGuid}\n"));
             }
@@ -35,7 +36,8 @@ public sealed class UnityZipReaderTests
             var packageEntries = catalog.Entries.Where(x => x.Extension == ".prefab").ToArray();
             var packageEntry = Assert.Single(packageEntries, x => x.PackageMemberPath == "Packages/Avatar.unitypackage");
             var secondPackageEntry = Assert.Single(packageEntries, x => x.PackageMemberPath == "Packages/Alt.unitypackage");
-            var looseEntry = Assert.Single(catalog.Entries, x => x.Extension == ".txt");
+            var looseEntry = Assert.Single(catalog.Entries, x => x.PathName == "Extras/Readme.txt");
+            var emptyEntry = Assert.Single(catalog.Entries, x => x.PathName == "Extras/Empty.txt");
 
             Assert.Contains(members, x => x.FullName == "Packages/Avatar.unitypackage");
             Assert.Equal("prefab bytes", Encoding.UTF8.GetString(catalog.ReadAsset(packageEntry)!));
@@ -44,6 +46,7 @@ public sealed class UnityZipReaderTests
             Assert.Equal("loose bytes", Encoding.UTF8.GetString(catalog.ReadAssetByGuid(looseGuid)!));
             Assert.Equal("Assets/Avatar/Avatar.prefab", catalog.ResolvePath(packageGuid, "Packages/Avatar.unitypackage"));
             Assert.Equal("Extras/Readme.txt", looseEntry.PathName);
+            Assert.Empty(catalog.ReadAsset(emptyEntry)!);
             Assert.DoesNotContain(Directory.EnumerateDirectories(root), x => Path.GetFileName(x) == "Packages");
             Assert.Single(Directory.EnumerateFiles(root));
         }

@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace UnityPackageExplorer.Core;
 
 public sealed record UnityPackageEntry(
@@ -44,6 +46,12 @@ public sealed class PrefabNode
     public UnityAssetReference? SourcePrefab { get; set; }
     public List<PrefabNode> Children { get; } = [];
 }
+
+public sealed record PrefabModelPlacement(
+    string Guid,
+    Matrix4x4 Transform,
+    PrefabNode Node,
+    IReadOnlyList<UnityAssetReference> Materials);
 
 public readonly record struct Vector3Value(float X, float Y, float Z)
 {

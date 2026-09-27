@@ -98,8 +98,7 @@ public sealed class UnityAssetCatalog
         }
 
         var memberNames = members.Select(x => x.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var member in members.Where(x => x.Length > 0
-            && !x.FullName.EndsWith("/", StringComparison.Ordinal)
+        foreach (var member in members.Where(x => !x.FullName.EndsWith("/", StringComparison.Ordinal)
             && !x.FullName.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)
             && !x.FullName.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase)))
         {

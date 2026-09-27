@@ -1,3 +1,4 @@
+using System.Numerics;
 using UnityPackageExplorer.Core;
 
 namespace UnityPackageExplorer.Tests;
@@ -168,6 +169,61 @@ public sealed class UnityPrefabParserTests
         var node = Assert.Single(UnityPrefabParser.Parse(yaml, _ => 400000).Roots);
 
         Assert.Equal(Vector3Value.Zero, node.Position);
+    }
+
+    [Fact]
+    public void AppliesTransformOverridesToStrippedPrefabInstanceObjects()
+    {
+        const string yaml = """
+            --- !u!1001 &500
+            PrefabInstance:
+              m_Modification:
+                m_TransformParent: {fileID: 0}
+                m_Modifications:
+                - target: {fileID: 400000, guid: abcdefabcdefabcdefabcdefabcdefab, type: 3}
+                  propertyPath: m_LocalPosition.x
+                  value: 2.5
+                  objectReference: {fileID: 0}
+              m_SourcePrefab: {fileID: 100100000, guid: abcdefabcdefabcdefabcdefabcdefab, type: 3}
+            --- !u!1 &100
+            GameObject:
+              m_Component:
+              - component: {fileID: 101}
+              m_Name: InstanceRoot
+              m_PrefabInstance: {fileID: 500}
+            --- !u!4 &101
+            Transform:
+              m_GameObject: {fileID: 100}
+              m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+              m_LocalPosition: {x: 0, y: 0, z: 0}
+              m_LocalScale: {x: 1, y: 1, z: 1}
+              m_Father: {fileID: 0}
+            """;
+
+        var node = Assert.Single(UnityPrefabParser.Parse(yaml, _ => 400000).Roots);
+
+        Assert.Equal("InstanceRoot", node.Name);
+        Assert.Equal(new Vector3Value(2.5f, 0, 0), node.Position);
+    }
+
+    [Fact]
+    public void GroupsRepeatedModelAssetsAtTheSameTransformAndCombinesTheirMaterials()
+    {
+        const string modelGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        var first = new PrefabNode { FileId = 1, Name = "Foot", Mesh = new UnityAssetReference(101, modelGuid) };
+        var second = new PrefabNode { FileId = 2, Name = "Jacket", Mesh = new UnityAssetReference(102, modelGuid) };
+        var translated = new PrefabNode { FileId = 3, Name = "Translated", Mesh = new UnityAssetReference(103, modelGuid), Position = new Vector3Value(2, 0, 0) };
+        var anotherModel = new PrefabNode { FileId = 4, Name = "Another", Mesh = new UnityAssetReference(104, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") };
+        first.Materials.Add(new UnityAssetReference(201, "cccccccccccccccccccccccccccccccc"));
+        second.Materials.Add(new UnityAssetReference(202, "dddddddddddddddddddddddddddddddd"));
+        var placements = UnityPrefabParser.GetModelPlacements([first, second, translated, anotherModel]);
+
+        Assert.Equal(3, placements.Count);
+        var repeated = Assert.Single(placements, x => x.Node.Name == "Foot");
+        Assert.Equal(2, repeated.Materials.Count);
+        Assert.Equal(Matrix4x4.Identity, repeated.Transform);
+        Assert.Contains(placements, x => x.Node.Name == "Translated" && x.Transform != Matrix4x4.Identity);
+        Assert.Contains(placements, x => x.Node.Name == "Another");
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 using System.Text.RegularExpressions;
 
 namespace UnityPackageExplorer.Core;
@@ -49,10 +50,7 @@ public static partial class UnityPrefabParser
                         var modifications = ReadPrefabTransformOverrides(document.Body);
                         var rootTransformFileId = source.Guid is null ? null : rootTransformLookup?.Invoke(source.Guid);
                         var transformOverrides = SelectRootTransformOverrides(modifications, source.Guid, rootTransformFileId, warnings);
-                        prefabInstances[document.FileId] = new PrefabInstanceData(document.FileId, source, parent,
-                            ReadOverrideVector(transformOverrides, "m_LocalPosition", Vector3Value.Zero),
-                            ReadOverrideQuaternion(transformOverrides),
-                            ReadOverrideVector(transformOverrides, "m_LocalScale", Vector3Value.One));
+                        prefabInstances[document.FileId] = new PrefabInstanceData(document.FileId, source, parent, transformOverrides);
                     }
                     break;
                 default:
@@ -105,23 +103,35 @@ public static partial class UnityPrefabParser
             }
 
             if (gameObject.PrefabInstanceId != 0 && prefabInstances.TryGetValue(gameObject.PrefabInstanceId, out var instance))
+            {
                 node.SourcePrefab = instance.SourcePrefab;
+                if (transform is not null && transform.FatherFileId == instance.ParentTransformFileId)
+                {
+                    node.Position = ReadOverrideVector(instance.TransformOverrides, "m_LocalPosition", node.Position);
+                    node.Rotation = ReadOverrideQuaternion(instance.TransformOverrides, node.Rotation);
+                    node.Scale = ReadOverrideVector(instance.TransformOverrides, "m_LocalScale", node.Scale);
+                }
+            }
             nodes[node.FileId] = node;
         }
 
         // A prefab instance may be represented only by a stripped Transform/GameObject pair.
         foreach (var instance in prefabInstances.Values)
         {
-            if (objects.Values.Any(x => x.PrefabInstanceId == instance.FileId)) continue;
+            var hasRootObject = objects.Values.Any(x =>
+                x.PrefabInstanceId == instance.FileId
+                && transformByGameObject.TryGetValue(x.FileId, out var transform)
+                && transform.FatherFileId == instance.ParentTransformFileId);
+            if (hasRootObject) continue;
             var parentId = instance.ParentTransformFileId != 0 && transformIdToGameObject.TryGetValue(instance.ParentTransformFileId, out var parent) ? parent : 0;
             nodes[instance.FileId] = new PrefabNode
             {
                 FileId = instance.FileId,
                 Name = $"Prefab ({instance.SourcePrefab.Guid ?? instance.SourcePrefab.FileId.ToString(CultureInfo.InvariantCulture)})",
                 ParentFileId = parentId,
-                Position = instance.Position,
-                Rotation = instance.Rotation,
-                Scale = instance.Scale,
+                Position = ReadOverrideVector(instance.TransformOverrides, "m_LocalPosition", Vector3Value.Zero),
+                Rotation = ReadOverrideQuaternion(instance.TransformOverrides, QuaternionValue.Identity),
+                Scale = ReadOverrideVector(instance.TransformOverrides, "m_LocalScale", Vector3Value.One),
                 SourcePrefab = instance.SourcePrefab
             };
         }
@@ -165,6 +175,37 @@ public static partial class UnityPrefabParser
         1001 => "PrefabInstance",
         _ => $"Unity component {classId}"
     };
+
+    public static IReadOnlyList<PrefabModelPlacement> GetModelPlacements(IEnumerable<PrefabNode> roots)
+    {
+        ArgumentNullException.ThrowIfNull(roots);
+        var references = new List<(PrefabNode Node, string Guid, Matrix4x4 Transform)>();
+        foreach (var root in roots) CollectModelPlacements(root, Matrix4x4.Identity, references);
+
+        return references
+            .GroupBy(x => (Guid: x.Guid.ToLowerInvariant(), x.Transform))
+            .Select(group =>
+            {
+                var first = group.First();
+                var materials = group.SelectMany(x => x.Node.Materials).DistinctBy(x => (x.FileId, x.Guid)).ToArray();
+                return new PrefabModelPlacement(first.Guid, first.Transform, first.Node, materials);
+            })
+            .ToArray();
+    }
+
+    private static void CollectModelPlacements(
+        PrefabNode node,
+        Matrix4x4 parent,
+        ICollection<(PrefabNode Node, string Guid, Matrix4x4 Transform)> placements)
+    {
+        var local = Matrix4x4.CreateScale(node.Scale.X, node.Scale.Y, node.Scale.Z)
+            * Matrix4x4.CreateFromQuaternion(new Quaternion(node.Rotation.X, node.Rotation.Y, node.Rotation.Z, node.Rotation.W))
+            * Matrix4x4.CreateTranslation(node.Position.X, node.Position.Y, node.Position.Z);
+        var world = local * parent;
+        var guid = node.Mesh?.Guid ?? node.SourcePrefab?.Guid;
+        if (!string.IsNullOrWhiteSpace(guid)) placements.Add((node, guid, world));
+        foreach (var child in node.Children) CollectModelPlacements(child, world, placements);
+    }
 
     public static long? FindRootTransformFileId(string yaml)
     {
@@ -297,11 +338,11 @@ public static partial class UnityPrefabParser
             ReadOverrideFloat(values, $"{prefix}.y", fallback.Y),
             ReadOverrideFloat(values, $"{prefix}.z", fallback.Z));
 
-    private static QuaternionValue ReadOverrideQuaternion(IReadOnlyDictionary<string, string> values) =>
-        new(ReadOverrideFloat(values, "m_LocalRotation.x", 0),
-            ReadOverrideFloat(values, "m_LocalRotation.y", 0),
-            ReadOverrideFloat(values, "m_LocalRotation.z", 0),
-            ReadOverrideFloat(values, "m_LocalRotation.w", 1));
+    private static QuaternionValue ReadOverrideQuaternion(IReadOnlyDictionary<string, string> values, QuaternionValue fallback) =>
+        new(ReadOverrideFloat(values, "m_LocalRotation.x", fallback.X),
+            ReadOverrideFloat(values, "m_LocalRotation.y", fallback.Y),
+            ReadOverrideFloat(values, "m_LocalRotation.z", fallback.Z),
+            ReadOverrideFloat(values, "m_LocalRotation.w", fallback.W));
 
     private static float ReadOverrideFloat(IReadOnlyDictionary<string, string> values, string path, float fallback)
     {
@@ -326,7 +367,5 @@ public static partial class UnityPrefabParser
         long FileId,
         UnityAssetReference SourcePrefab,
         long ParentTransformFileId,
-        Vector3Value Position,
-        QuaternionValue Rotation,
-        Vector3Value Scale);
+        IReadOnlyDictionary<string, string> TransformOverrides);
 }
