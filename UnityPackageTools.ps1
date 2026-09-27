@@ -71,19 +71,27 @@ function Resolve-PathForUnityPackagePath {
         return $null
     }
 
-    $parts = ($UnityPackagePath.Trim().TrimStart('/')).Trim().Replace('/', '\') -split '[\\]+'
+    $normalized = $UnityPackagePath.Trim().Replace('/', '\')
+    if ([IO.Path]::IsPathRooted($normalized) -or $normalized -match '^[A-Za-z]:') {
+        throw "絶対パスは展開できません: $UnityPackagePath"
+    }
+    $parts = $normalized -split '[\\]+'
     $safeParts = New-Object System.Collections.Generic.List[string]
 
     foreach ($part in $parts) {
-        if ([string]::IsNullOrWhiteSpace($part) -or $part -eq '.' -or $part -eq '..') {
+        if ([string]::IsNullOrWhiteSpace($part)) {
             continue
+        }
+
+        if ($part -eq '.' -or $part -eq '..') {
+            throw "相対パスの遡りは展開できません: $UnityPackagePath"
         }
 
         $clean = ($part.Trim() -replace '[<>:"/\\|?*]', '_').Trim()
         if ([string]::IsNullOrWhiteSpace($clean)) { continue }
 
-        if ($clean -cmatch '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
-            $clean = "${clean}_"
+        if ($clean -cmatch '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') {
+            throw "Windows 予約名は展開できません: $part"
         }
 
         $safeParts.Add($clean)
@@ -375,14 +383,12 @@ function Extract-SingleByTar {
 function Invoke-UnityPackageInspect {
     param([Parameter(Mandatory = $true)] [string]$PackagePath)
 
-    $entries = Get-UnityPackageEntries -PackagePath $PackagePath
-    $html = Build-InspectHtml -PackagePath $PackagePath -Entries $entries
-
-    $viewer = [IO.Path]::ChangeExtension($PackagePath, '.unitypackage.viewer.html')
-    Set-Content -LiteralPath $viewer -Value $html -Encoding UTF8
-    Start-Process -FilePath $viewer
-
-    return $viewer
+    $app = Join-Path $PSScriptRoot 'src\UnityPackageExplorer.App\bin\Release\net9.0-windows\UnityPackageExplorer.App.exe'
+    if (-not (Test-Path -LiteralPath $app)) {
+        throw 'Viewer app is not built. Run Install-UnityPackageExplorerContextMenu.ps1 first.'
+    }
+    Start-Process -FilePath $app -ArgumentList ('"' + $PackagePath + '"')
+    return $app
 }
 
 function Invoke-UnityPackageExtract {
