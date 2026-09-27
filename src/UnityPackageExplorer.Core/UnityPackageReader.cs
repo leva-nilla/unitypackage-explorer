@@ -8,21 +8,29 @@ namespace UnityPackageExplorer.Core;
 public sealed class UnityPackageReader
 {
     private const int MaximumPathNameBytes = 1024 * 1024;
-    private const long MaximumAssetBytes = 512L * 1024 * 1024;
+    public const long MaximumAssetBytes = 512L * 1024 * 1024;
+    public const long MaximumExpandedArchiveBytes = 2L * 1024 * 1024 * 1024;
     private readonly Func<Stream> _openStream;
+    private readonly long _maximumExpandedArchiveBytes;
 
     public UnityPackageReader(string packagePath)
     {
         var fullPath = Path.GetFullPath(packagePath);
         _openStream = () => new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024, FileOptions.SequentialScan);
+        _maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes;
     }
 
-    public UnityPackageReader(Func<Stream> openStream) => _openStream = openStream ?? throw new ArgumentNullException(nameof(openStream));
+    public UnityPackageReader(Func<Stream> openStream, long maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes)
+    {
+        _openStream = openStream ?? throw new ArgumentNullException(nameof(openStream));
+        if (maximumExpandedArchiveBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maximumExpandedArchiveBytes));
+        _maximumExpandedArchiveBytes = maximumExpandedArchiveBytes;
+    }
 
-    public IReadOnlyList<UnityPackageEntry> ReadIndex(CancellationToken cancellationToken = default)
+    public IReadOnlyList<UnityPackageEntry> ReadIndex(CancellationToken cancellationToken = default, ArchiveExpansionBudget? expansionBudget = null)
     {
         var records = new Dictionary<string, MutableEntry>(StringComparer.OrdinalIgnoreCase);
-        using var archive = OpenArchive();
+        using var archive = OpenArchive(expansionBudget);
         using var reader = new TarReader(archive, leaveOpen: false);
 
         TarEntry? entry;
@@ -67,10 +75,11 @@ public sealed class UnityPackageReader
             .ToArray();
     }
 
-    public byte[]? ReadAsset(string guid, string payloadName = "asset", CancellationToken cancellationToken = default)
+    public byte[]? ReadAsset(string guid, string payloadName = "asset", CancellationToken cancellationToken = default, long maximumBytes = MaximumAssetBytes)
     {
         if (!IsGuid(guid)) throw new ArgumentException("GUID must contain 32 hexadecimal characters.", nameof(guid));
         if (payloadName is not ("asset" or "asset.meta")) throw new ArgumentException("Unsupported Unity package payload.", nameof(payloadName));
+        if (maximumBytes is <= 0 or > MaximumAssetBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
 
         var target = $"{guid}/{payloadName}";
         using var archive = OpenArchive();
@@ -82,8 +91,8 @@ public sealed class UnityPackageReader
             if (string.Equals(entry.Name.Replace('\\', '/').TrimEnd('/'), target, StringComparison.OrdinalIgnoreCase))
             {
                 if (entry.DataStream is null) return [];
-                if (entry.Length > MaximumAssetBytes) throw new InvalidDataException($"Asset exceeds the {MaximumAssetBytes / 1024 / 1024} MiB safety limit.");
-                return ReadLimited(entry.DataStream, MaximumAssetBytes);
+                if (entry.Length > maximumBytes) throw new InvalidDataException($"Asset exceeds the {maximumBytes:N0} byte safety limit.");
+                return ReadLimited(entry.DataStream, maximumBytes);
             }
             Drain(entry.DataStream);
         }
@@ -187,25 +196,137 @@ public sealed class UnityPackageReader
         return match.Success ? match.Groups[1].Value.ToLowerInvariant() : null;
     }
 
-    private Stream OpenArchive()
+    private Stream OpenArchive(ArchiveExpansionBudget? expansionBudget = null)
     {
         var file = _openStream();
-        if (!file.CanRead || !file.CanSeek)
+        try
         {
-            file.Dispose();
-            throw new InvalidDataException("UnityPackage source must be a readable, seekable stream.");
+            if (!file.CanRead) throw new InvalidDataException("UnityPackage source must be readable.");
+
+            var signature = new byte[2];
+            var signatureLength = 0;
+            while (signatureLength < signature.Length)
+            {
+                var read = file.Read(signature, signatureLength, signature.Length - signatureLength);
+                if (read == 0) break;
+                signatureLength += read;
+            }
+
+            if (signatureLength != signature.Length) throw new InvalidDataException("Package is empty or truncated.");
+
+            Stream source;
+            if (file.CanSeek)
+            {
+                file.Position = 0;
+                source = file;
+            }
+            else
+            {
+                source = new PrefixReadStream(signature, file);
+            }
+
+            var archive = signature[0] == 0x1f && signature[1] == 0x8b
+                ? new GZipStream(source, CompressionMode.Decompress, leaveOpen: false)
+                : source;
+            return new ExpandedLimitStream(archive, expansionBudget ?? new ArchiveExpansionBudget(_maximumExpandedArchiveBytes));
         }
-        Span<byte> signature = stackalloc byte[2];
-        if (file.Read(signature) != 2)
+        catch
         {
             file.Dispose();
-            throw new InvalidDataException("Package is empty or truncated.");
+            throw;
+        }
+    }
+
+    private sealed class PrefixReadStream(byte[] prefix, Stream tail) : Stream
+    {
+        private int _prefixOffset;
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) tail.Dispose();
+            base.Dispose(disposing);
         }
 
-        file.Position = 0;
-        return signature[0] == 0x1f && signature[1] == 0x8b
-            ? new GZipStream(file, CompressionMode.Decompress)
-            : file;
+        public override bool CanRead => tail.CanRead;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var copied = Math.Min(count, prefix.Length - _prefixOffset);
+            if (copied > 0)
+            {
+                Array.Copy(prefix, _prefixOffset, buffer, offset, copied);
+                _prefixOffset += copied;
+                return copied;
+            }
+            return tail.Read(buffer, offset, count);
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            var copied = Math.Min(buffer.Length, prefix.Length - _prefixOffset);
+            if (copied > 0)
+            {
+                prefix.AsSpan(_prefixOffset, copied).CopyTo(buffer);
+                _prefixOffset += copied;
+                return copied;
+            }
+            return tail.Read(buffer);
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private sealed class ExpandedLimitStream(Stream inner, ArchiveExpansionBudget expansionBudget) : Stream
+    {
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) inner.Dispose();
+            base.Dispose(disposing);
+        }
+
+        public override bool CanRead => inner.CanRead;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = inner.Read(buffer, offset, count);
+            Count(read);
+            return read;
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            var read = inner.Read(buffer);
+            Count(read);
+            return read;
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => ReadAsyncCore(buffer, cancellationToken);
+
+        private async ValueTask<int> ReadAsyncCore(Memory<byte> buffer, CancellationToken cancellationToken)
+        {
+            var read = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            Count(read);
+            return read;
+        }
+
+        private void Count(int read)
+        {
+            expansionBudget.Consume(read);
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private static byte[] ReadLimited(Stream stream, long limit)

@@ -57,7 +57,7 @@ function Get-RegisteredPreviewHandler([string]$keyPath) {
 }
 
 $associationInfo = @{}
-foreach ($extension in @('.unitypackage', '.prefab')) {
+foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
     $extensionKey = $classesRoot.OpenSubKey($extension)
     $progId = if ($extensionKey) { [string]$extensionKey.GetValue('') } else { '' }
     if ($extensionKey) { $extensionKey.Dispose() }
@@ -104,7 +104,7 @@ $previewList = $reg.CreateSubKey('Software\Microsoft\Windows\CurrentVersion\Prev
 $previewList.SetValue("{$classId}", 'UnityPackage Explorer', [Microsoft.Win32.RegistryValueKind]::String)
 $previewList.Dispose()
 
-foreach ($extension in @('.unitypackage', '.prefab')) {
+foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
     Add-PreviewAssociation $extension $associationInfo[$extension]
 }
 
@@ -112,6 +112,7 @@ $state.SetValue('AppPath', $appPath, [Microsoft.Win32.RegistryValueKind]::String
 $state.SetValue('ComHost', $comHost, [Microsoft.Win32.RegistryValueKind]::String)
 $state.SetValue('UnityPackageProgId', $associationInfo['.unitypackage'], [Microsoft.Win32.RegistryValueKind]::String)
 $state.SetValue('PrefabProgId', $associationInfo['.prefab'], [Microsoft.Win32.RegistryValueKind]::String)
+$state.SetValue('ZipProgId', $associationInfo['.zip'], [Microsoft.Win32.RegistryValueKind]::String)
 $legacyInspectPath = "$classes\SystemFileAssociations\.unitypackage\shell\UnityPackageInspect"
 $legacyInspectKey = $reg.OpenSubKey($legacyInspectPath)
 $menuVerb = if ($legacyInspectKey) { 'UnityPackageInspect' } else { 'UnityPackageExplorerView' }
@@ -121,7 +122,7 @@ $state.SetValue('MenuVerb', $menuVerb, [Microsoft.Win32.RegistryValueKind]::Stri
 $state.Dispose()
 
 $menuKey = $reg.CreateSubKey($menuPath)
-$menuKey.SetValue('', '内容を表示（UnityPackage Explorer）', [Microsoft.Win32.RegistryValueKind]::String)
+$menuKey.SetValue('', 'プレビュー（UnityPackage Explorer）', [Microsoft.Win32.RegistryValueKind]::String)
 $menuKey.Dispose()
 $menuCommand = $reg.CreateSubKey("$menuPath\command")
 $menuCommand.SetValue('', '"' + $appPath + '" "%1"', [Microsoft.Win32.RegistryValueKind]::String)
@@ -129,11 +130,19 @@ $menuCommand.Dispose()
 
 $prefabMenuPath = "$classes\SystemFileAssociations\.prefab\shell\UnityPackageExplorerView"
 $prefabMenu = $reg.CreateSubKey($prefabMenuPath)
-$prefabMenu.SetValue('', 'Prefab を表示（UnityPackage Explorer）', [Microsoft.Win32.RegistryValueKind]::String)
+$prefabMenu.SetValue('', 'Prefab をプレビュー（UnityPackage Explorer）', [Microsoft.Win32.RegistryValueKind]::String)
 $prefabMenu.Dispose()
 $prefabCommand = $reg.CreateSubKey("$prefabMenuPath\command")
 $prefabCommand.SetValue('', '"' + $appPath + '" "%1"', [Microsoft.Win32.RegistryValueKind]::String)
 $prefabCommand.Dispose()
+
+$zipMenuPath = "$classes\SystemFileAssociations\.zip\shell\UnityPackageExplorerView"
+$zipMenu = $reg.CreateSubKey($zipMenuPath)
+$zipMenu.SetValue('', 'ZIP をプレビュー（UnityPackage Explorer）')
+$zipMenu.Dispose()
+$zipCommand = $reg.CreateSubKey("$zipMenuPath\command")
+$zipCommand.SetValue('', '"' + $appPath + '" "%1"')
+$zipCommand.Dispose()
 
 if (-not ('UnityPackageExplorerShellNotifications' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -148,6 +157,6 @@ public static class UnityPackageExplorerShellNotifications
 }
 [UnityPackageExplorerShellNotifications]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
 
-Write-Host '[OK] .unitypackage と .prefab の Explorer プレビューを登録しました。'
+Write-Host '[OK] .unitypackage、.zip、.prefab の Explorer プレビューを登録しました。'
 Write-Host '[OK] 右クリックメニューを登録しました。'
 Write-Host "App: $appPath"

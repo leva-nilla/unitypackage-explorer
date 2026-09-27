@@ -198,7 +198,9 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IInitializeWithFile, II
             var header = new byte[512];
             var read = adapter.Read(header, 0, header.Length);
             adapter.Position = 0;
-            if (read >= 2 && header[0] == 0x1f && header[1] == 0x8b) extension = ".unitypackage";
+            if (read >= 4 && header[0] == (byte)'P' && header[1] == (byte)'K'
+                && ((header[2] == 0x03 && header[3] == 0x04) || (header[2] == 0x05 && header[3] == 0x06) || (header[2] == 0x07 && header[3] == 0x08))) extension = ".zip";
+            else if (read >= 2 && header[0] == 0x1f && header[1] == 0x8b) extension = ".unitypackage";
             else if (read >= 262 && Encoding.ASCII.GetString(header, 257, 5) == "ustar") extension = ".unitypackage";
             else
             {
@@ -210,6 +212,13 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IInitializeWithFile, II
         var title = string.IsNullOrWhiteSpace(name) ? $"Unity Asset{extension}" : Path.GetFileName(name);
         if (extension == ".unitypackage")
             return PreviewContent.ReadPackage(title, new UnityPackageReader(() =>
+            {
+                var source = new ComStreamReader(stream);
+                source.Position = 0;
+                return source;
+            }));
+        if (extension == ".zip")
+            return PreviewContent.ReadZip(title, new UnityZipReader(() =>
             {
                 var source = new ComStreamReader(stream);
                 source.Position = 0;

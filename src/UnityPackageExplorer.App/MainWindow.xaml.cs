@@ -14,16 +14,20 @@ namespace UnityPackageExplorer.App;
 public partial class MainWindow : Window
 {
     private readonly string? _initialPath;
+    private readonly PreviewRequestGate _previewRequests = new();
     private UnityAssetCatalog? _catalog;
     private IReadOnlyList<UnityPackageEntry> _entries = [];
     private string? _packagePath;
     private string? _directPrefabPath;
+    private string? _sourcePath;
     private string? _temporaryRoot;
     private string _selectedKind = "すべて";
     private bool _updatingFilter;
+    private bool _isBusy;
 
     private sealed record TextureBinding(string MaterialName, string AssetPath);
     private sealed record ModelLoadResult(HelixToolkitScene Scene, IReadOnlyList<string> Warnings);
+    private static readonly string[] Categories = ["アクセサリー", "アバター", "その他", "ツール", "テクスチャ", "ワールド", "衣装", "小物", "髪型"];
 
     public MainWindow(string? initialPath = null)
     {
@@ -40,16 +44,23 @@ public partial class MainWindow : Window
 
     private async Task OpenPathAsync(string path)
     {
+        var requestId = _previewRequests.BeginRequest();
         try
         {
             SetBusy(true, "読み込み中…");
             ClearDisplay();
             _packagePath = null;
             _directPrefabPath = null;
+            _sourcePath = Path.GetFullPath(path);
+            CategoryPanel.Visibility = Visibility.Collapsed;
+            CategoryPicker.ItemsSource = null;
+            MoveToCategoryButton.IsEnabled = false;
             var extension = Path.GetExtension(path).ToLowerInvariant();
             if (extension == ".unitypackage")
             {
-                _catalog = await Task.Run(() => UnityAssetCatalog.OpenPackage(path));
+                var catalog = await Task.Run(() => UnityAssetCatalog.OpenPackage(path));
+                if (!_previewRequests.IsCurrent(requestId)) return;
+                _catalog = catalog;
                 _packagePath = Path.GetFullPath(path);
                 _entries = _catalog.Entries;
                 RefreshKindFilter();
@@ -59,9 +70,33 @@ public partial class MainWindow : Window
                 SetStatus($"{_entries.Count:N0} 個のパスを読み込みました。Unity は起動していません。");
                 RefreshTree();
             }
+            else if (extension == ".zip")
+            {
+                var catalog = await Task.Run(() => UnityAssetCatalog.OpenZip(path));
+                if (!_previewRequests.IsCurrent(requestId)) return;
+                _catalog = catalog;
+                _entries = _catalog.Entries;
+                RefreshKindFilter();
+                SourceLabel.Text = Path.GetFileName(path);
+                ExtractButton.IsEnabled = false;
+                CategoryPanel.Visibility = Visibility.Visible;
+                var categoryRoot = GetCategoryRoot(path);
+                var availableCategories = Categories.Where(name => Directory.Exists(Path.Combine(categoryRoot, name))).ToArray();
+                CategoryPicker.ItemsSource = availableCategories;
+                DetailsText.Text = BuildZipSummary(_entries, Path.GetFileName(path));
+                if (_catalog.Warnings.Count > 0)
+                    DetailsText.Text += Environment.NewLine + Environment.NewLine + "読み込めなかった内容" + Environment.NewLine + string.Join(Environment.NewLine, _catalog.Warnings);
+                if (availableCategories.Length == 0) DetailsText.Text += Environment.NewLine + Environment.NewLine + "同じ分類フォルダー群が見つからないため、画面からの分類移動は使えません。";
+                var warningsStatus = _catalog.Warnings.Count == 0 ? string.Empty : $" {_catalog.Warnings.Count:N0} 件の警告があります。";
+                var emptyStatus = _entries.Count == 0 ? " 対応する素材が見つかりません。" : string.Empty;
+                SetStatus($"ZIP内の素材を読み込みました。元ZIPは展開していません。{warningsStatus}{emptyStatus}");
+                RefreshTree();
+            }
             else if (extension == ".prefab")
             {
-                _catalog = await Task.Run(() => UnityAssetCatalog.OpenProjectPrefab(path));
+                var catalog = await Task.Run(() => UnityAssetCatalog.OpenProjectPrefab(path));
+                if (!_previewRequests.IsCurrent(requestId)) return;
+                _catalog = catalog;
                 _entries = _catalog.Entries;
                 RefreshKindFilter();
                 _directPrefabPath = Path.GetFullPath(path);
@@ -69,21 +104,22 @@ public partial class MainWindow : Window
                 ExtractButton.IsEnabled = false;
                 RefreshTree();
                 var entry = _entries.FirstOrDefault(x => string.Equals(Path.GetFullPath(Path.Combine(Path.GetDirectoryName(_directPrefabPath)!, x.PathName)), _directPrefabPath, StringComparison.OrdinalIgnoreCase));
-                await LoadPrefabAsync(entry, _directPrefabPath);
+                await LoadPrefabAsync(entry, _directPrefabPath, requestId);
             }
             else
             {
-                throw new InvalidDataException("対応形式は .unitypackage と .prefab です。");
+                throw new InvalidDataException("対応形式は .unitypackage、.zip、.prefab です。");
             }
         }
         catch (Exception ex)
         {
+            if (!_previewRequests.IsCurrent(requestId)) return;
             SetStatus($"読み込みに失敗しました: {ex.Message}");
             DetailsText.Text = ex.Message;
         }
         finally
         {
-            SetBusy(false);
+            if (_previewRequests.IsCurrent(requestId)) SetBusy(false);
         }
     }
 
@@ -99,6 +135,22 @@ public partial class MainWindow : Window
         if (prefabNames.Length > 0)
             text.AppendLine().AppendLine("Prefab").AppendLine(string.Join(Environment.NewLine, prefabNames));
         return text.ToString();
+    }
+
+    private static string BuildZipSummary(IReadOnlyList<UnityPackageEntry> entries, string fileName)
+    {
+        var packages = entries.Where(x => x.PackageMemberPath is not null).Select(x => x.PackageMemberPath!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var looseAssets = entries.Where(x => x.PackageMemberPath is null).ToArray();
+        var counts = entries.Where(x => x.HasAsset).GroupBy(x => x.Kind).OrderBy(x => x.Key).Select(x => $"{x.Key}: {x.Count():N0}");
+        var lines = new StringBuilder().AppendLine(fileName).AppendLine("ZIPを展開せずに読み取り").AppendLine($"確認できるファイル: {entries.Count:N0} 個");
+        if (packages.Length > 0) lines.AppendLine().AppendLine("同梱 UnityPackage").AppendLine(string.Join(Environment.NewLine, packages));
+        if (looseAssets.Length > 0)
+        {
+            lines.AppendLine().AppendLine("ZIP直収録").AppendLine(string.Join(Environment.NewLine, looseAssets.Take(12).Select(x => x.PathName)));
+            if (looseAssets.Length > 12) lines.AppendLine($"ほか {looseAssets.Length - 12:N0} 個");
+        }
+        lines.AppendLine().AppendLine(string.Join("   ·   ", counts));
+        return lines.ToString();
     }
 
     private void RefreshKindFilter()
@@ -135,15 +187,23 @@ public partial class MainWindow : Window
 
     private async void AssetTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
-        if (e.NewValue is not AssetTreeItemView { Entry: { } entry } || !entry.HasAsset) return;
+        if (_updatingFilter) return;
+        var requestId = _previewRequests.BeginRequest();
         if (_catalog is null) return;
+        if (e.NewValue is not AssetTreeItemView { Entry: { } entry } || !entry.HasAsset)
+        {
+            ClearDisplay();
+            DetailsText.Text = "ファイルを選択すると内容をプレビューできます。";
+            SetBusy(false);
+            return;
+        }
         try
         {
             SetBusy(true, $"{entry.PathName} を読み込み中…");
             switch (entry.Extension)
             {
-                case ".prefab": await LoadPrefabAsync(entry, null); break;
-                case ".fbx": await LoadPackageModelAsync(entry, Matrix4x4.Identity, []); break;
+                case ".prefab": await LoadPrefabAsync(entry, null, requestId); break;
+                case ".fbx": await LoadPackageModelAsync(entry, Matrix4x4.Identity, [], requestId); break;
                 case ".png": case ".jpg": case ".jpeg": case ".bmp": case ".gif": case ".tga": case ".psd": case ".tif": case ".tiff":
                     ShowImage(_catalog.ReadAsset(entry) ?? throw new InvalidDataException("画像データが見つかりません。"), entry.PathName);
                     break;
@@ -156,19 +216,35 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            if (!_previewRequests.IsCurrent(requestId)) return;
             SetStatus($"表示に失敗しました: {ex.Message}");
             DetailsText.Text = ex.Message;
         }
-        finally { SetBusy(false); }
+        finally { if (_previewRequests.IsCurrent(requestId)) SetBusy(false); }
     }
 
-    private async Task LoadPrefabAsync(UnityPackageEntry? entry, string? externalPath)
+    private async Task LoadPrefabAsync(UnityPackageEntry? entry, string? externalPath, long requestId)
     {
+        if (!_previewRequests.IsCurrent(requestId)) return;
         if (_catalog is null) return;
         ClearDisplay();
         byte[]? bytes = externalPath is null ? entry is null ? null : _catalog.ReadAsset(entry) : await File.ReadAllBytesAsync(externalPath);
         if (bytes is null) throw new InvalidDataException("Prefab の内容を読み取れません。");
-        var result = UnityPrefabParser.Parse(Encoding.UTF8.GetString(bytes));
+        var rootTransformIds = new Dictionary<string, long?>(StringComparer.OrdinalIgnoreCase);
+        var result = UnityPrefabParser.Parse(Encoding.UTF8.GetString(bytes), sourceGuid =>
+        {
+            if (rootTransformIds.TryGetValue(sourceGuid, out var cached)) return cached;
+            long? rootTransformId = null;
+            try
+            {
+                var sourceBytes = _catalog.ReadAssetByGuid(sourceGuid, packageMemberPath: entry?.PackageMemberPath, referenceEntry: entry);
+                if (sourceBytes is not null)
+                    rootTransformId = UnityPrefabParser.FindRootTransformFileId(Encoding.UTF8.GetString(sourceBytes));
+            }
+            catch (Exception) { }
+            rootTransformIds[sourceGuid] = rootTransformId;
+            return rootTransformId;
+        });
         PrefabTree.ItemsSource = result.Roots.Select(x => new PrefabNodeView(x)).ToArray();
         var warnings = new List<string>(result.Warnings);
         var placements = new List<(PrefabNode Node, string Guid, Matrix4x4 Transform)>();
@@ -177,7 +253,9 @@ public partial class MainWindow : Window
         var models = new List<HelixToolkitScene>();
         foreach (var (node, guid, transform) in placements)
         {
-            var modelPath = _catalog.ResolvePath(guid);
+            if (!_previewRequests.IsCurrent(requestId)) return;
+            var packageMemberPath = entry?.PackageMemberPath;
+            var modelPath = _catalog.ResolvePath(guid, packageMemberPath, entry);
             if (modelPath is null)
             {
                 warnings.Add($"{node.Name}: 参照 GUID {guid} の素材が見つかりません。");
@@ -190,7 +268,9 @@ public partial class MainWindow : Window
             }
             try
             {
-                var loaded = await LoadPackageModelAsyncCore(guid, transform, node.Materials);
+                var modelEntry = _catalog.FindByGuid(guid, packageMemberPath, entry);
+                var loaded = await LoadPackageModelAsyncCore(guid, transform, node.Materials, packageMemberPath, entry, modelEntry);
+                if (!_previewRequests.IsCurrent(requestId)) return;
                 models.Add(loaded.Scene);
                 SceneModels.AddNode(loaded.Scene.Root);
                 warnings.AddRange(loaded.Warnings.Select(x => $"{node.Name}: {x}"));
@@ -198,22 +278,30 @@ public partial class MainWindow : Window
             catch (Exception ex) { warnings.Add($"{node.Name}: {ex.Message}"); }
         }
 
+        if (!_previewRequests.IsCurrent(requestId)) return;
         var details = new StringBuilder()
             .AppendLine(externalPath ?? entry?.PathName ?? "Prefab")
             .AppendLine($"Prefab 階層: {CountNodes(result.Roots):N0} 個")
             .AppendLine($"FBX 表示: {models.Count:N0} 個");
         if (warnings.Count > 0) details.AppendLine().AppendLine("確認できない内容").AppendLine(string.Join(Environment.NewLine, warnings.Distinct()));
-        if (models.Count > 0) Viewport.ZoomExtents();
+        if (models.Count > 0)
+        {
+            ViewerEmpty.Visibility = Visibility.Collapsed;
+            Viewport.ZoomExtents();
+        }
         else ViewerEmpty.Text = "FBX 参照がありません。Prefab の階層を表示しています";
         DetailsText.Text = details.ToString();
         SetStatus(models.Count > 0 ? "参照 FBX と確認できたテクスチャを表示しています。シェーダーは使いません。" : "Prefab の構造を読み込みました。");
     }
 
-    private async Task LoadPackageModelAsync(UnityPackageEntry entry, Matrix4x4 transform, IReadOnlyList<UnityAssetReference> materials)
+    private async Task LoadPackageModelAsync(UnityPackageEntry entry, Matrix4x4 transform, IReadOnlyList<UnityAssetReference> materials, long requestId)
     {
-        var loaded = await LoadPackageModelAsyncCore(entry.Guid, transform, materials);
+        if (!_previewRequests.IsCurrent(requestId)) return;
+        var loaded = await LoadPackageModelAsyncCore(entry.Guid, transform, materials, entry.PackageMemberPath, entry, entry);
+        if (!_previewRequests.IsCurrent(requestId)) return;
         ClearSceneModels();
         SceneModels.AddNode(loaded.Scene.Root);
+        ViewerEmpty.Visibility = Visibility.Collapsed;
         Viewport.ZoomExtents();
         PrefabTree.ItemsSource = null;
         DetailsText.Text = $"{entry.PathName}{Environment.NewLine}種類: Model{Environment.NewLine}GUID: {entry.Guid}";
@@ -221,12 +309,20 @@ public partial class MainWindow : Window
         SetStatus(loaded.Warnings.Count == 0 ? "FBX を表示しています。" : "FBX を表示しました。一部の参照は確認できませんでした。");
     }
 
-    private async Task<ModelLoadResult> LoadPackageModelAsyncCore(string guid, Matrix4x4 transform, IReadOnlyList<UnityAssetReference> materials)
+    private async Task<ModelLoadResult> LoadPackageModelAsyncCore(
+        string guid,
+        Matrix4x4 transform,
+        IReadOnlyList<UnityAssetReference> materials,
+        string? packageMemberPath = null,
+        UnityPackageEntry? referenceEntry = null,
+        UnityPackageEntry? modelEntry = null)
     {
         if (_catalog is null) throw new InvalidOperationException("Asset catalog is not open.");
         var temp = EnsureTemporaryRoot();
-        var modelPath = _catalog.StageAsset(guid, temp);
-        StageSiblingImages(guid);
+        var modelPath = modelEntry is null
+            ? _catalog.StageAsset(guid, temp, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry)
+            : _catalog.StageAsset(modelEntry, temp);
+        StageSiblingImages(guid, packageMemberPath, referenceEntry, modelEntry);
         var textureBindings = new List<TextureBinding>();
         var warnings = new List<string>();
         foreach (var material in materials)
@@ -237,30 +333,30 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            var materialPath = _catalog.ResolvePath(material.Guid);
+            var materialPath = _catalog.ResolvePath(material.Guid, packageMemberPath, referenceEntry);
             if (materialPath is null)
             {
                 warnings.Add($"Material GUID {material.Guid} was not found.");
                 continue;
             }
-            if (_catalog.ReadAssetByGuid(material.Guid) is null)
+            if (_catalog.ReadAssetByGuid(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry) is null)
             {
                 warnings.Add($"Material data is missing: {materialPath}");
                 continue;
             }
 
-            var materialName = _catalog.ReadMaterialName(material.Guid) ?? Path.GetFileNameWithoutExtension(materialPath);
-            var materialTextureGuids = _catalog.ReadMaterialTextureGuids(material.Guid);
-            foreach (var textureGuid in _catalog.ReadUnsupportedMaterialTextureGuids(material.Guid))
+            var materialName = _catalog.ReadMaterialName(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry) ?? Path.GetFileNameWithoutExtension(materialPath);
+            var materialTextureGuids = _catalog.ReadMaterialTextureGuids(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry);
+            foreach (var textureGuid in _catalog.ReadUnsupportedMaterialTextureGuids(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry))
             {
-                var unsupportedPath = _catalog.ResolvePath(textureGuid);
+                var unsupportedPath = _catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
                 warnings.Add(unsupportedPath is null
                     ? $"Texture GUID {textureGuid} referenced by material '{materialName}' was not found."
                     : $"Texture {unsupportedPath} is referenced by a material slot that this simplified viewer does not render.");
             }
             foreach (var textureGuid in materialTextureGuids)
             {
-                var textureSourcePath = _catalog.ResolvePath(textureGuid);
+                var textureSourcePath = _catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
                 if (textureSourcePath is null)
                 {
                     warnings.Add($"Texture GUID {textureGuid} referenced by material '{materialName}' was not found.");
@@ -275,7 +371,7 @@ public partial class MainWindow : Window
                     continue;
                 }
 
-                var texturePath = _catalog.StageImage(textureGuid, temp);
+                var texturePath = _catalog.StageImage(textureGuid, temp, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry);
                 if (texturePath is null)
                 {
                     warnings.Add($"Texture data is missing: {textureSourcePath}");
@@ -299,15 +395,15 @@ public partial class MainWindow : Window
         });
     }
 
-    private void StageSiblingImages(string modelGuid)
+    private void StageSiblingImages(string modelGuid, string? packageMemberPath, UnityPackageEntry? referenceEntry, UnityPackageEntry? modelEntry)
     {
         if (_catalog is null) return;
-        var modelEntry = _catalog.Entries.FirstOrDefault(x => string.Equals(x.Guid, modelGuid, StringComparison.OrdinalIgnoreCase));
+        modelEntry ??= _catalog.FindByGuid(modelGuid, packageMemberPath, referenceEntry);
         if (modelEntry is null) return;
         var sourceDirectory = Path.GetDirectoryName(modelEntry.PathName.Replace('/', Path.DirectorySeparatorChar));
         foreach (var image in _catalog.Entries.Where(x => x.Kind == "Image" && string.Equals(Path.GetDirectoryName(x.PathName.Replace('/', Path.DirectorySeparatorChar)), sourceDirectory, StringComparison.OrdinalIgnoreCase)))
         {
-            try { _catalog.StageAsset(image.Guid, _temporaryRoot!); }
+            try { _catalog.StageAsset(image, _temporaryRoot!); }
             catch (Exception) { }
         }
     }
@@ -463,8 +559,10 @@ public partial class MainWindow : Window
 
     private void SetBusy(bool busy, string? message = null)
     {
+        _isBusy = busy;
         OpenButton.IsEnabled = !busy;
         ExtractButton.IsEnabled = !busy && _packagePath is not null;
+        MoveToCategoryButton.IsEnabled = !busy && CategoryPicker.SelectedItem is string;
         AssetTree.IsEnabled = !busy;
         if (message is not null) SetStatus(message);
         Cursor = busy ? System.Windows.Input.Cursors.Wait : System.Windows.Input.Cursors.Arrow;
@@ -477,9 +575,47 @@ public partial class MainWindow : Window
         var dialog = new OpenFileDialog
         {
             Title = "Unity アセットを選択",
-            Filter = "UnityPackage / Prefab|*.unitypackage;*.prefab|UnityPackage|*.unitypackage|Prefab|*.prefab|すべてのファイル|*.*"
+            Filter = "Unity アセット|*.unitypackage;*.zip;*.prefab|UnityPackage|*.unitypackage|ZIP|*.zip|Prefab|*.prefab|すべてのファイル|*.*"
         };
         if (dialog.ShowDialog(this) == true) await OpenPathAsync(dialog.FileName);
+    }
+
+    private static string GetCategoryRoot(string path)
+    {
+        var parent = new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        return Categories.Contains(parent.Name, StringComparer.OrdinalIgnoreCase) && parent.Parent is not null
+            ? parent.Parent.FullName
+            : parent.FullName;
+    }
+
+    private void CategoryPicker_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        MoveToCategoryButton.IsEnabled = !_isBusy && CategoryPicker.SelectedItem is string;
+    }
+
+    private void MoveToCategoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_sourcePath is null || _catalog is null || CategoryPicker.SelectedItem is not string category) return;
+        var root = GetCategoryRoot(_sourcePath);
+        var source = Path.GetFullPath(_sourcePath);
+        try
+        {
+            var destination = UnityZipCategorizer.MoveToExistingCategory(source, root, category);
+            if (string.Equals(source, destination, StringComparison.OrdinalIgnoreCase))
+            {
+                SetStatus($"すでに「{category}」にあります。");
+                return;
+            }
+            _catalog.RebindZipPath(destination);
+            _sourcePath = destination;
+            SourceLabel.Text = Path.GetFileName(destination);
+            CategoryPanel.Visibility = Visibility.Collapsed;
+            SetStatus($"「{category}」へ移動しました: {destination}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"分類先への移動に失敗しました: {ex.Message}");
+        }
     }
 
     private void ExtractButton_Click(object sender, RoutedEventArgs e)

@@ -10,14 +10,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Test-UnityPackagePath {
-    param([Parameter(Mandatory = $true)][string]$Path)
+function Test-UnityAssetPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][ValidateSet('inspect', 'extract', 'open')][string]$Action
+    )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "指定されたファイルが見つかりません: $Path"
     }
-    if ([IO.Path]::GetExtension($Path) -ine '.unitypackage') {
-        throw ".unitypackage ファイルを指定してください。: $Path"
+    $extension = [IO.Path]::GetExtension($Path)
+    if ($Action -eq 'inspect' -and $extension -in @('.unitypackage', '.zip', '.prefab')) { return }
+    if ($extension -ine '.unitypackage') {
+        throw "inspect は .unitypackage / .zip / .prefab、extract と open は .unitypackage に対応します。: $Path"
     }
 }
 
@@ -74,7 +79,7 @@ function Invoke-UnityPackageOpen {
 }
 
 try {
-    Test-UnityPackagePath -Path $File
+    Test-UnityAssetPath -Path $File -Action $Action
     $result = switch ($Action) {
         'inspect' { Invoke-UnityPackageInspect -PackagePath $File }
         'extract' { Invoke-UnityPackageExtract -PackagePath $File -Destination $Destination }

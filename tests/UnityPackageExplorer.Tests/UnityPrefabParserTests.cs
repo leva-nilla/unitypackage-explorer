@@ -103,6 +103,74 @@ public sealed class UnityPrefabParserTests
     }
 
     [Fact]
+    public void AppliesTransformOverridesToPrefabInstancesWithoutStrippedObjects()
+    {
+        const string yaml = """
+            --- !u!1001 &500
+            PrefabInstance:
+              m_Modification:
+                serializedVersion: 3
+                m_TransformParent: {fileID: 0}
+                m_Modifications:
+                - target: {fileID: 400000, guid: abcdefabcdefabcdefabcdefabcdefab, type: 3}
+                  propertyPath: m_LocalPosition.x
+                  value: 2.5
+                  objectReference: {fileID: 0}
+                - target: {fileID: 400000, guid: abcdefabcdefabcdefabcdefabcdefab, type: 3}
+                  propertyPath: m_LocalPosition.y
+                  value: -1
+                  objectReference: {fileID: 0}
+                - target: {fileID: 400000, guid: abcdefabcdefabcdefabcdefabcdefab, type: 3}
+                  propertyPath: m_LocalRotation.z
+                  value: 0.7071068
+                  objectReference: {fileID: 0}
+                - target: {fileID: 400000, guid: abcdefabcdefabcdefabcdefabcdefab, type: 3}
+                  propertyPath: m_LocalRotation.w
+                  value: 0.7071068
+                  objectReference: {fileID: 0}
+                - target: {fileID: 400000, guid: abcdefabcdefabcdefabcdefabcdefab, type: 3}
+                  propertyPath: m_LocalScale.x
+                  value: 2
+                  objectReference: {fileID: 0}
+                - target: {fileID: 400000, guid: 11111111111111111111111111111111, type: 3}
+                  propertyPath: m_LocalPosition.x
+                  value: 88
+                  objectReference: {fileID: 0}
+                - target: {fileID: 400001, guid: abcdefabcdefabcdefabcdefabcdefab, type: 3}
+                  propertyPath: m_LocalPosition.x
+                  value: 99
+                  objectReference: {fileID: 0}
+              m_SourcePrefab: {fileID: 100100000, guid: abcdefabcdefabcdefabcdefabcdefab, type: 3}
+            """;
+
+        var node = Assert.Single(UnityPrefabParser.Parse(yaml, _ => 400000).Roots);
+
+        Assert.Equal(new Vector3Value(2.5f, -1, 0), node.Position);
+        Assert.Equal(new QuaternionValue(0, 0, 0.7071068f, 0.7071068f), node.Rotation);
+        Assert.Equal(new Vector3Value(2, 1, 1), node.Scale);
+    }
+
+    [Fact]
+    public void DoesNotApplyChildTransformOverrideToKnownPrefabRoot()
+    {
+        const string yaml = """
+            --- !u!1001 &500
+            PrefabInstance:
+              m_Modification:
+                m_Modifications:
+                - target: {fileID: 400001, guid: abcdefabcdefabcdefabcdefabcdefab, type: 3}
+                  propertyPath: m_LocalPosition.x
+                  value: 99
+                  objectReference: {fileID: 0}
+              m_SourcePrefab: {fileID: 100100000, guid: abcdefabcdefabcdefabcdefabcdefab, type: 3}
+            """;
+
+        var node = Assert.Single(UnityPrefabParser.Parse(yaml, _ => 400000).Roots);
+
+        Assert.Equal(Vector3Value.Zero, node.Position);
+    }
+
+    [Fact]
     public void ReportsReferencesThatCannotBeResolvedWithoutGuids()
     {
         const string yaml = """

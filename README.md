@@ -1,13 +1,14 @@
 # UnityPackage Explorer
 
-Unity を起動せずに `.unitypackage` の中身、Prefab の階層、参照 FBX を確認する Windows ツールです。エクスプローラーの右クリックから専用画面を開けます。
+Unity を起動せずに `.unitypackage`、それを含む `.zip`、Prefab の階層、参照 FBX を確認する Windows ツールです。エクスプローラーの右クリックから専用画面を開けます。
 
 ## できること
 
 - `.unitypackage` 内をフォルダ階層、検索、実際に含まれるファイル種別で絞り込み。画像、Prefab、FBX をその場でプレビュー。
+- `.zip` は展開せず、内包する `.unitypackage` の仮想ツリーとZIP直収録ファイルを表示。内容を確認後、分類先を選んで移動ボタンを押した場合だけ、外側のZIPを既存フォルダーへ移動します。同名ファイルがある場合は番号を付け、上書きしません。
 - PNG、JPEG、BMP、GIF、一般的な TGA、TIFF の画像を表示。PSD は一覧には出ますが、プレビューには対応していません。
 - Prefab の GameObject 階層を表示し、参照 FBX を配置・回転・拡大して確認。同梱または同じ Unity プロジェクトにある画像を読み、基本テクスチャとして表示。
-- エクスプローラーのプレビュー欄向けハンドラーをユーザー単位で登録。パッケージの代表画像と種類別件数、または Prefab の階層要約を表示します。
+- エクスプローラーのプレビュー欄向けハンドラーをユーザー単位で登録。`.unitypackage` と `.zip` は画像と種類別件数、Prefab は階層と参照テクスチャを表示します。
 - パッケージの展開は共通の .NET 読み取り処理を使い、指定した場所に新しい `<名前>_extracted` フォルダーを作成。既存名がある場合は番号を付けて、既存ファイルを上書きしない。閲覧だけでは隣にファイルを作りません。
 
 シェーダー、Unity 独自コンポーネント、Unity による描画結果は再現しません。基本色テクスチャだけを対応するマテリアルと FBX 名から対応付けます。参照先がない、FBX 以外のメッシュ形式、対応しない画像形式など、表示できないものは画面に理由を出します。
@@ -22,7 +23,7 @@ pwsh -ExecutionPolicy Bypass -File .\Install-UnityPackageExplorerContextMenu.ps1
 
 スクリプトが Release ビルドを作成し、現在のユーザーの HKCU に右クリックメニューとプレビューハンドラーを登録します。管理者権限は使いません。
 
-エクスプローラーでプレビュー欄を表示するには `Alt+P` を押し、`.unitypackage` または `.prefab` を選択します。右クリックの「内容を表示（UnityPackage Explorer）」または「Prefab を表示（UnityPackage Explorer）」で専用画面を開きます。
+エクスプローラーでプレビュー欄を表示するには `Alt+P` を押し、`.unitypackage`、`.zip`、または `.prefab` を選択します。右クリックの「プレビュー（UnityPackage Explorer）」または「ZIP をプレビュー（UnityPackage Explorer）」から専用画面を開けます。Prefab は「Prefab をプレビュー（UnityPackage Explorer）」を選びます。
 
 ### 現在の制約
 
@@ -51,4 +52,4 @@ pwsh -ExecutionPolicy Bypass -File .\Uninstall-UnityPackageExplorerContextMenu.p
 
 ## 既存 PowerShell コマンド
 
-`UnityPackageTools.ps1` の `-Action extract|open` は引き続き使えます。`-Action inspect` は新しい専用画面を起動します。展開は共通 Core ライブラリが全パスを検証してから始めるため、危険なパスや壊れたアーカイブでは出力を作成せず、展開途中の失敗では新規出力だけを取り除きます。
+`UnityPackageTools.ps1` の `-Action inspect` は `.unitypackage`、`.zip`、`.prefab` を専用画面で開きます。`-Action extract|open` は従来どおり `.unitypackage` に対応します。展開は共通 Core ライブラリが全パスを検証してから始めるため、危険なパスや壊れたアーカイブでは出力を作成せず、展開途中の失敗では新規出力だけを取り除きます。

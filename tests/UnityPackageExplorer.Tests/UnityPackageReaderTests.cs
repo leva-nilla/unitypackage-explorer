@@ -41,6 +41,71 @@ public sealed class UnityPackageReaderTests
         Assert.Equal("prefab payload", Encoding.UTF8.GetString(reader.ReadAsset(item.Guid)!));
     }
 
+    [Fact]
+    public void DisposesSourceWhenReadingThePackageSignatureFails()
+    {
+        var stream = new FailingReadStream();
+        var reader = new UnityPackageReader(() => stream);
+
+        Assert.Throws<IOException>(() => reader.ReadIndex());
+
+        Assert.True(stream.WasDisposed);
+    }
+
+    [Fact]
+    public void RejectsPackagesThatExceedTheAggregateDecompressedSizeLimit()
+    {
+        using var package = TemporaryPackage.Create([
+            ("a".PadLeft(32, '0') + "/pathname", "Assets/Props/Item.prefab"),
+            ("a".PadLeft(32, '0') + "/asset", new string('x', 4096))
+        ]);
+        var reader = new UnityPackageReader(
+            () => new FileStream(package.Path, FileMode.Open, FileAccess.Read, FileShare.Read),
+            maximumExpandedArchiveBytes: 256);
+
+        var exception = Assert.Throws<InvalidDataException>(() => reader.ReadIndex());
+
+        Assert.Contains("decompressed size limit", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void CanApplyASmallerPerAssetReadLimit()
+    {
+        var guid = "a".PadLeft(32, '0');
+        using var package = TemporaryPackage.Create([
+            ($"{guid}/pathname", "Assets/Props/Item.prefab"),
+            ($"{guid}/asset", new string('x', 4096))
+        ]);
+        var reader = new UnityPackageReader(package.Path);
+
+        var exception = Assert.Throws<InvalidDataException>(() => reader.ReadAsset(guid, maximumBytes: 128));
+
+        Assert.Contains("128 byte", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SharesExpansionBudgetAcrossMultiplePackageReaders()
+    {
+        var guid = "a".PadLeft(32, '0');
+        using var first = TemporaryPackage.Create([
+            ($"{guid}/pathname", "Assets/Props/Item.prefab"),
+            ($"{guid}/asset", new string('x', 4096))
+        ]);
+        using var second = TemporaryPackage.Create([
+            ($"{guid}/pathname", "Assets/Props/Item.prefab"),
+            ($"{guid}/asset", new string('y', 4096))
+        ]);
+        var budget = new ArchiveExpansionBudget(GetExpandedLength(first.Path) + 64);
+        var firstReader = new UnityPackageReader(() => File.OpenRead(first.Path));
+        var secondReader = new UnityPackageReader(() => File.OpenRead(second.Path));
+
+        Assert.Single(firstReader.ReadIndex(expansionBudget: budget));
+        Assert.Equal(new string('x', 4096), Encoding.UTF8.GetString(firstReader.ReadAsset(guid)!));
+        var exception = Assert.Throws<InvalidDataException>(() => secondReader.ReadIndex(expansionBudget: budget));
+
+        Assert.Contains("aggregate decompressed size limit", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("Assets/Props/Item.prefab", "Assets\\Props\\Item.prefab")]
     [InlineData("Packages/com.example/Textures/a.png", "Packages\\com.example\\Textures\\a.png")]
@@ -161,6 +226,36 @@ public sealed class UnityPackageReaderTests
         public void Dispose()
         {
             if (File.Exists(Path)) File.Delete(Path);
+        }
+    }
+
+    private static long GetExpandedLength(string path)
+    {
+        using var input = File.OpenRead(path);
+        using var gzip = new GZipStream(input, CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        gzip.CopyTo(output);
+        return output.Length;
+    }
+
+    private sealed class FailingReadStream : Stream
+    {
+        public bool WasDisposed { get; private set; }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count) => throw new IOException("test read failure");
+        public override int Read(Span<byte> buffer) => throw new IOException("test read failure");
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) WasDisposed = true;
+            base.Dispose(disposing);
         }
     }
 }

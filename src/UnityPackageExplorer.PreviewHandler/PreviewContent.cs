@@ -8,6 +8,8 @@ namespace UnityPackageExplorer.PreviewHandler;
 
 internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposable
 {
+    private const long MaximumPreviewImageBytes = 64L * 1024 * 1024;
+
     public void Dispose() => Image.Dispose();
 
     public static PreviewContent Read(string path)
@@ -16,9 +18,51 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
         return extension switch
         {
             ".unitypackage" => ReadPackage(Path.GetFileName(path), new UnityPackageReader(path)),
+            ".zip" => ReadZip(path),
             ".prefab" => ReadPrefab(path),
-            _ => Create(path, "Unity アセット", ["対応形式: .unitypackage / .prefab"], null)
+            _ => Create(path, "Unity アセット", ["対応形式: .unitypackage / .zip / .prefab"], null)
         };
+    }
+
+    private static PreviewContent ReadZip(string path)
+        => ReadZip(Path.GetFileName(path), new UnityZipReader(path));
+
+    internal static PreviewContent ReadZip(string title, UnityZipReader reader)
+    {
+        var catalog = UnityAssetCatalog.OpenZip(reader);
+        var assets = catalog.Entries.Where(x => x.HasAsset).ToArray();
+        var packages = assets.Where(x => x.PackageMemberPath is not null).Select(x => x.PackageMemberPath!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var loose = assets.Where(x => x.ZipMemberPath is not null).ToArray();
+        var lines = new List<string>();
+        if (packages.Length > 0)
+        {
+            lines.Add("同梱 UnityPackage");
+            lines.AddRange(packages.Take(5).Select(x => Path.GetFileName(x)));
+            if (packages.Length > 5) lines.Add($"ほか {packages.Length - 5:N0} 個");
+        }
+        var kindCounts = assets.GroupBy(x => x.Kind)
+            .OrderBy(x => x.Key).Select(x => $"{x.Key}: {x.Count():N0}");
+        lines.AddRange(kindCounts);
+        lines.AddRange(loose.Take(3).Select(x => $"ZIP直収録: {x.PathName}"));
+        lines.AddRange(catalog.Warnings.Take(3).Select(x => $"注意: {x}"));
+
+        Bitmap? image = null;
+        var representativeImage = assets.Where(x => x.Kind == "Image").Take(8);
+        foreach (var entry in representativeImage)
+        {
+            try
+            {
+                var bytes = catalog.ReadAsset(entry, maximumBytes: MaximumPreviewImageBytes);
+                if (bytes is not null) image = DecodeImage(bytes);
+            }
+            catch (Exception) { }
+            if (image is not null)
+            {
+                lines.Insert(0, $"代表画像: {entry.PathName}");
+                break;
+            }
+        }
+        return Create(Path.GetFileName(title), $"UnityPackage {packages.Length:N0} · assets {assets.Length:N0} · direct files {loose.Length:N0}", lines, image);
     }
 
     internal static PreviewContent ReadPackage(string title, UnityPackageReader reader) => ReadPackage(reader, title);
@@ -35,7 +79,7 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
         {
             try
             {
-                var bytes = reader.ReadAsset(imageEntry.Guid);
+                var bytes = reader.ReadAsset(imageEntry.Guid, maximumBytes: MaximumPreviewImageBytes);
                 if (bytes is not null) image = DecodeImage(bytes);
             }
             catch (Exception) { }
@@ -47,15 +91,81 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
     private static PreviewContent ReadPrefab(string path)
     {
         var text = File.ReadAllText(path, Encoding.UTF8);
-        return ReadPrefab(Path.GetFileName(path), text);
+        var parsed = UnityPrefabParser.Parse(text);
+        Bitmap? image = null;
+        string? texturePath = null;
+        var textureWarning = (string?)null;
+        try
+        {
+            var catalog = UnityAssetCatalog.OpenProjectPrefab(path);
+            var ownGuid = File.Exists(path + ".meta") ? UnityPackageReader.ReadGuid(File.ReadAllText(path + ".meta", Encoding.UTF8)) : null;
+            var contextEntry = ownGuid is null ? null : catalog.FindByGuid(ownGuid);
+            var rootTransformIds = new Dictionary<string, long?>(StringComparer.OrdinalIgnoreCase);
+            parsed = UnityPrefabParser.Parse(text, sourceGuid =>
+            {
+                if (rootTransformIds.TryGetValue(sourceGuid, out var cached)) return cached;
+                long? rootTransformId = null;
+                try
+                {
+                    var sourceBytes = catalog.ReadAssetByGuid(sourceGuid, referenceEntry: contextEntry);
+                    if (sourceBytes is not null)
+                        rootTransformId = UnityPrefabParser.FindRootTransformFileId(Encoding.UTF8.GetString(sourceBytes));
+                }
+                catch (Exception) { }
+                rootTransformIds[sourceGuid] = rootTransformId;
+                return rootTransformId;
+            });
+            (image, texturePath) = ReadReferencedTexture(catalog, parsed, contextEntry);
+        }
+        catch (Exception)
+        {
+            textureWarning = "参照テクスチャを検索できませんでした。";
+        }
+        return ReadPrefab(Path.GetFileName(path), parsed, image, texturePath, textureWarning);
     }
 
     internal static PreviewContent ReadPrefab(string title, string text)
     {
         var parsed = UnityPrefabParser.Parse(text);
+        return ReadPrefab(title, parsed, null, null);
+    }
+
+    private static PreviewContent ReadPrefab(string title, PrefabParseResult parsed, Bitmap? image, string? texturePath, string? textureWarning = null)
+    {
         var names = Flatten(parsed.Roots).Take(14).Select((x, index) => $"{new string(' ', Math.Min(index, 5) * 2)}{x}").ToArray();
-        var lines = names.Concat(parsed.Warnings.Take(3).Select(x => $"注意: {x}")).ToArray();
-        return Create(Path.GetFileName(title), $"Prefab hierarchy: {Flatten(parsed.Roots).Count()} objects", lines, null);
+        var lines = (texturePath is null ? names : new[] { $"参照テクスチャ: {texturePath}" }.Concat(names))
+            .Concat(parsed.Warnings.Take(3).Select(x => $"注意: {x}"))
+            .Concat(textureWarning is null ? [] : [$"注意: {textureWarning}"]).ToArray();
+        return Create(Path.GetFileName(title), $"Prefab hierarchy: {Flatten(parsed.Roots).Count()} objects", lines, image);
+    }
+
+    private static (Bitmap? Image, string? Path) ReadReferencedTexture(UnityAssetCatalog catalog, PrefabParseResult parsed, UnityPackageEntry? contextEntry)
+    {
+        foreach (var material in EnumerateNodes(parsed.Roots).SelectMany(x => x.Materials))
+        {
+            if (material.Guid is null) continue;
+            foreach (var textureGuid in catalog.ReadMaterialTextureGuids(material.Guid, referenceEntry: contextEntry))
+            {
+                var textureEntry = catalog.FindByGuid(textureGuid, referenceEntry: contextEntry);
+                if (textureEntry is null || textureEntry.Kind != "Image") continue;
+                try
+                {
+                    var bytes = catalog.ReadAsset(textureEntry, maximumBytes: MaximumPreviewImageBytes);
+                    if (bytes is not null) return (DecodeImage(bytes), textureEntry.PathName);
+                }
+                catch (Exception) { }
+            }
+        }
+        return (null, null);
+    }
+
+    private static IEnumerable<PrefabNode> EnumerateNodes(IEnumerable<PrefabNode> nodes)
+    {
+        foreach (var node in nodes)
+        {
+            yield return node;
+            foreach (var child in EnumerateNodes(node.Children)) yield return child;
+        }
     }
 
     private static IEnumerable<string> Flatten(IEnumerable<PrefabNode> nodes)

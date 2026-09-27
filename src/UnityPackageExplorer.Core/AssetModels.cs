@@ -6,6 +6,15 @@ public sealed record UnityPackageEntry(
     bool HasAsset,
     bool HasMeta)
 {
+    /// <summary>The outer ZIP member containing this UnityPackage, when browsing a ZIP.</summary>
+    public string? PackageMemberPath { get; init; }
+
+    /// <summary>The original asset path inside its UnityPackage.</summary>
+    public string? AssetPathName { get; init; }
+
+    /// <summary>The outer ZIP member containing a loose file, when this is not in a UnityPackage.</summary>
+    public string? ZipMemberPath { get; init; }
+
     public string Extension => Path.GetExtension(PathName).ToLowerInvariant();
     public string Kind => Extension switch
     {

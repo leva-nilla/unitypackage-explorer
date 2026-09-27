@@ -37,9 +37,11 @@ function Remove-OurPreviewAssociation([string]$extension, [string]$progId) {
 
 $unityPackageProgId = if ($state) { [string]$state.GetValue('UnityPackageProgId') } else { '' }
 $prefabProgId = if ($state) { [string]$state.GetValue('PrefabProgId') } else { '' }
+$zipProgId = if ($state) { [string]$state.GetValue('ZipProgId') } else { '' }
 if ($state) { $state.Dispose() }
 Remove-OurPreviewAssociation '.unitypackage' $unityPackageProgId
 Remove-OurPreviewAssociation '.prefab' $prefabProgId
+Remove-OurPreviewAssociation '.zip' $zipProgId
 
 $previewList = $reg.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\PreviewHandlers', $true)
 if ($previewList) {
@@ -49,7 +51,8 @@ if ($previewList) {
 
 $associationMenus = @(
     "$classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorerView",
-    "$classes\SystemFileAssociations\.prefab\shell\UnityPackageExplorerView"
+    "$classes\SystemFileAssociations\.prefab\shell\UnityPackageExplorerView",
+    "$classes\SystemFileAssociations\.zip\shell\UnityPackageExplorerView"
 )
 foreach ($keyPath in $associationMenus) {
     $reg.DeleteSubKeyTree($keyPath, $false)

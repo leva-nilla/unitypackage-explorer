@@ -9,7 +9,7 @@ public static partial class UnityPrefabParser
     private static readonly Regex DocumentHeader = new("(?m)^--- !u!(?<class>\\d+) &(?<id>-?\\d+)[^\\r\\n]*", RegexOptions.Compiled);
     private static readonly Regex FileReference = new("\\{\\s*fileID:\\s*(-?\\d+)(?:\\s*,\\s*guid:\\s*([0-9a-fA-F]{32}))?", RegexOptions.Compiled);
 
-    public static PrefabParseResult Parse(string yaml)
+    public static PrefabParseResult Parse(string yaml, Func<string, long?>? rootTransformLookup = null)
     {
         ArgumentNullException.ThrowIfNull(yaml);
         var warnings = new List<string>();
@@ -46,7 +46,13 @@ public static partial class UnityPrefabParser
                     if (source is not null)
                     {
                         var parent = ReadSingleReference(document.Body, "m_TransformParent")?.FileId ?? 0;
-                        prefabInstances[document.FileId] = new PrefabInstanceData(document.FileId, source, parent);
+                        var modifications = ReadPrefabTransformOverrides(document.Body);
+                        var rootTransformFileId = source.Guid is null ? null : rootTransformLookup?.Invoke(source.Guid);
+                        var transformOverrides = SelectRootTransformOverrides(modifications, source.Guid, rootTransformFileId, warnings);
+                        prefabInstances[document.FileId] = new PrefabInstanceData(document.FileId, source, parent,
+                            ReadOverrideVector(transformOverrides, "m_LocalPosition", Vector3Value.Zero),
+                            ReadOverrideQuaternion(transformOverrides),
+                            ReadOverrideVector(transformOverrides, "m_LocalScale", Vector3Value.One));
                     }
                     break;
                 default:
@@ -113,6 +119,9 @@ public static partial class UnityPrefabParser
                 FileId = instance.FileId,
                 Name = $"Prefab ({instance.SourcePrefab.Guid ?? instance.SourcePrefab.FileId.ToString(CultureInfo.InvariantCulture)})",
                 ParentFileId = parentId,
+                Position = instance.Position,
+                Rotation = instance.Rotation,
+                Scale = instance.Scale,
                 SourcePrefab = instance.SourcePrefab
             };
         }
@@ -156,6 +165,20 @@ public static partial class UnityPrefabParser
         1001 => "PrefabInstance",
         _ => $"Unity component {classId}"
     };
+
+    public static long? FindRootTransformFileId(string yaml)
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        var documents = SplitDocuments(yaml);
+        var rootGameObjects = documents.Where(x => x.ClassId == 1).Select(x => x.FileId).ToHashSet();
+        foreach (var document in documents.Where(x => x.ClassId is 4 or 224))
+        {
+            var gameObject = ReadSingleReference(document.Body, "m_GameObject")?.FileId ?? 0;
+            var parent = ReadSingleReference(document.Body, "m_Father")?.FileId ?? 0;
+            if (rootGameObjects.Contains(gameObject) && parent == 0) return document.FileId;
+        }
+        return null;
+    }
 
     private static List<YamlDocument> SplitDocuments(string text)
     {
@@ -221,6 +244,73 @@ public static partial class UnityPrefabParser
         return new QuaternionValue(ReadFloat(value, "x", 0), ReadFloat(value, "y", 0), ReadFloat(value, "z", 0), ReadFloat(value, "w", 1));
     }
 
+    private static Dictionary<PrefabTransformTarget, Dictionary<string, string>> ReadPrefabTransformOverrides(string body)
+    {
+        var values = new Dictionary<PrefabTransformTarget, Dictionary<string, string>>();
+        var modifications = Regex.Matches(body, "(?ms)^\\s*-\\s*target:\\s*\\{[^\\r\\n]*\\}(?<block>.*?)(?=^\\s*-\\s*target:|\\z)");
+        foreach (Match modification in modifications)
+        {
+            var target = Regex.Match(modification.Value, "target:\\s*\\{[^}]*fileID:\\s*(?<id>-?\\d+)(?:\\s*,\\s*guid:\\s*(?<guid>[0-9a-fA-F]{32}))?");
+            var propertyPath = Regex.Match(modification.Groups["block"].Value, "(?m)^\\s*propertyPath:\\s*(?<value>[^\\r\\n]+)");
+            var value = Regex.Match(modification.Groups["block"].Value, "(?m)^\\s*value:\\s*(?<value>[^\\r\\n]+)");
+            if (!target.Success || !propertyPath.Success || !value.Success) continue;
+            var targetKey = new PrefabTransformTarget(
+                target.Groups["guid"].Success ? target.Groups["guid"].Value.ToLowerInvariant() : null,
+                long.Parse(target.Groups["id"].Value, CultureInfo.InvariantCulture));
+            if (!values.TryGetValue(targetKey, out var targetValues))
+            {
+                targetValues = new Dictionary<string, string>(StringComparer.Ordinal);
+                values.Add(targetKey, targetValues);
+            }
+            targetValues[propertyPath.Groups["value"].Value.Trim()] = value.Groups["value"].Value.Trim();
+        }
+        return values;
+    }
+
+    private static IReadOnlyDictionary<string, string> SelectRootTransformOverrides(
+        IReadOnlyDictionary<PrefabTransformTarget, Dictionary<string, string>> overrides,
+        string? sourceGuid,
+        long? rootTransformFileId,
+        ICollection<string> warnings)
+    {
+        if (rootTransformFileId is not null)
+            return sourceGuid is not null && overrides.TryGetValue(new PrefabTransformTarget(sourceGuid.ToLowerInvariant(), rootTransformFileId.Value), out var rootOverrides)
+                ? rootOverrides
+                : new Dictionary<string, string>(StringComparer.Ordinal);
+
+        var transformOverrides = overrides.Where(x =>
+            (sourceGuid is null || string.Equals(x.Key.Guid, sourceGuid, StringComparison.OrdinalIgnoreCase))
+            && x.Value.Keys.Any(IsTransformOverride)).ToArray();
+        if (transformOverrides.Length == 1) return transformOverrides[0].Value;
+        if (transformOverrides.Length > 1)
+            warnings.Add("Prefab instance transform overrides target multiple objects; the root transform could not be identified.");
+        return new Dictionary<string, string>(StringComparer.Ordinal);
+    }
+
+    private static bool IsTransformOverride(string path) =>
+        path.StartsWith("m_LocalPosition.", StringComparison.Ordinal)
+        || path.StartsWith("m_LocalRotation.", StringComparison.Ordinal)
+        || path.StartsWith("m_LocalScale.", StringComparison.Ordinal);
+
+    private static Vector3Value ReadOverrideVector(IReadOnlyDictionary<string, string> values, string prefix, Vector3Value fallback) =>
+        new(ReadOverrideFloat(values, $"{prefix}.x", fallback.X),
+            ReadOverrideFloat(values, $"{prefix}.y", fallback.Y),
+            ReadOverrideFloat(values, $"{prefix}.z", fallback.Z));
+
+    private static QuaternionValue ReadOverrideQuaternion(IReadOnlyDictionary<string, string> values) =>
+        new(ReadOverrideFloat(values, "m_LocalRotation.x", 0),
+            ReadOverrideFloat(values, "m_LocalRotation.y", 0),
+            ReadOverrideFloat(values, "m_LocalRotation.z", 0),
+            ReadOverrideFloat(values, "m_LocalRotation.w", 1));
+
+    private static float ReadOverrideFloat(IReadOnlyDictionary<string, string> values, string path, float fallback)
+    {
+        return values.TryGetValue(path, out var text)
+            && float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : fallback;
+    }
+
     private static float ReadFloat(string text, string key, float fallback)
     {
         var match = Regex.Match(text, $"(?:^|,)\\s*{key}:\\s*(-?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)");
@@ -231,5 +321,12 @@ public static partial class UnityPrefabParser
     private sealed record GameObjectData(long FileId, string Name, long[] ComponentFileIds, long PrefabInstanceId);
     private sealed record TransformData(long FileId, long GameObjectFileId, long FatherFileId, Vector3Value Position, QuaternionValue Rotation, Vector3Value Scale);
     private sealed record ComponentData(long FileId, int ClassId, string Body);
-    private sealed record PrefabInstanceData(long FileId, UnityAssetReference SourcePrefab, long ParentTransformFileId);
+    private readonly record struct PrefabTransformTarget(string? Guid, long FileId);
+    private sealed record PrefabInstanceData(
+        long FileId,
+        UnityAssetReference SourcePrefab,
+        long ParentTransformFileId,
+        Vector3Value Position,
+        QuaternionValue Rotation,
+        Vector3Value Scale);
 }
