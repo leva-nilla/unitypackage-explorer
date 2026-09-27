@@ -85,9 +85,17 @@ public static partial class UnityPrefabParser
                 var componentName = GetClassName(component.ClassId);
                 node.Components.Add(componentName);
                 if (component.ClassId is 33 or 137)
+                {
                     node.Mesh = ReadSingleReference(component.Body, "m_Mesh");
+                    if (node.Mesh is { FileId: not 0, Guid: null })
+                        warnings.Add($"'{node.Name}' has a mesh reference without a GUID; it cannot be resolved from the available assets.");
+                }
                 if (component.ClassId is 23 or 137)
+                {
                     node.Materials.AddRange(ReadReferences(component.Body, "m_Materials", "m_Bits"));
+                    if (node.Materials.Any(x => x.FileId != 0 && x.Guid is null))
+                        warnings.Add($"'{node.Name}' has a material reference without a GUID; its texture cannot be resolved from the available assets.");
+                }
             }
 
             if (gameObject.PrefabInstanceId != 0 && prefabInstances.TryGetValue(gameObject.PrefabInstanceId, out var instance))

@@ -101,4 +101,39 @@ public sealed class UnityPrefabParserTests
         var root = Assert.Single(result.Roots);
         Assert.Equal("abcdefabcdefabcdefabcdefabcdefab", root.Mesh?.Guid);
     }
+
+    [Fact]
+    public void ReportsReferencesThatCannotBeResolvedWithoutGuids()
+    {
+        const string yaml = """
+            --- !u!1 &100
+            GameObject:
+              m_Component:
+              - component: {fileID: 101}
+              - component: {fileID: 102}
+              - component: {fileID: 103}
+              m_Name: Unresolved
+            --- !u!4 &101
+            Transform:
+              m_GameObject: {fileID: 100}
+              m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+              m_LocalPosition: {x: 0, y: 0, z: 0}
+              m_LocalScale: {x: 1, y: 1, z: 1}
+              m_Father: {fileID: 0}
+            --- !u!33 &102
+            MeshFilter:
+              m_GameObject: {fileID: 100}
+              m_Mesh: {fileID: 4300000}
+            --- !u!23 &103
+            MeshRenderer:
+              m_GameObject: {fileID: 100}
+              m_Materials:
+              - {fileID: 2100000}
+            """;
+
+        var result = UnityPrefabParser.Parse(yaml);
+
+        Assert.Contains(result.Warnings, x => x.Contains("mesh reference without a GUID", StringComparison.Ordinal));
+        Assert.Contains(result.Warnings, x => x.Contains("material reference without a GUID", StringComparison.Ordinal));
+    }
 }

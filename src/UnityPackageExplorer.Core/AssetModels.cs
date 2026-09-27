@@ -11,7 +11,7 @@ public sealed record UnityPackageEntry(
     {
         ".prefab" => "Prefab",
         ".fbx" or ".obj" or ".blend" => "Model",
-        ".png" or ".jpg" or ".jpeg" or ".tga" or ".psd" or ".tif" or ".tiff" => "Image",
+        ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".tga" or ".psd" or ".tif" or ".tiff" => "Image",
         ".mat" => "Material",
         ".cs" => "Script",
         ".unity" => "Scene",

@@ -5,13 +5,14 @@ $ErrorActionPreference = 'Stop'
 $rootPath = [IO.Path]::GetFullPath($Root)
 $output = Join-Path $rootPath 'src\UnityPackageExplorer.App\bin\Release\net9.0-windows'
 $appPath = Join-Path $output 'UnityPackageExplorer.App.exe'
+$extractorPath = Join-Path $rootPath 'src\UnityPackageExplorer.Cli\bin\Release\net9.0\UnityPackageExplorer.Cli.exe'
 $comHost = Join-Path $rootPath 'src\UnityPackageExplorer.PreviewHandler\bin\Release\net9.0-windows\UnityPackageExplorer.PreviewHandler.comhost.dll'
 
-if (-not (Test-Path -LiteralPath $appPath) -or -not (Test-Path -LiteralPath $comHost)) {
-    & dotnet build (Join-Path $rootPath 'UnityPackageExplorer.sln') -c Release
-    if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
-}
+$solutionPath = Join-Path $rootPath 'UnityPackageExplorer.sln'
+& dotnet build $solutionPath -c Release
+if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
 if (-not (Test-Path -LiteralPath $appPath)) { throw "App executable was not produced: $appPath" }
+if (-not (Test-Path -LiteralPath $extractorPath)) { throw "Safe extractor was not produced: $extractorPath" }
 if (-not (Test-Path -LiteralPath $comHost)) { throw "Preview handler COM host was not produced: $comHost" }
 
 $classId = 'C24F7D7D-2C91-4AA9-969D-FADE6F9A17D2'

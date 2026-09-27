@@ -54,7 +54,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IInitializeWithFile, II
 
     public int GetWindow(out IntPtr window)
     {
-        window = _panel?.IsHandleCreated == true ? _panel.Handle : _parent;
+        window = _panel?.IsHandleCreated == true ? _panel.Handle : IntPtr.Zero;
         return window == IntPtr.Zero ? unchecked((int)0x80004005) : 0;
     }
 

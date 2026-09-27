@@ -100,6 +100,30 @@ public sealed class UnityAssetCatalog
             .Select(x => x.Groups[1].Value.ToLowerInvariant()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
+    public IReadOnlyList<string> ReadUnsupportedMaterialTextureGuids(string materialGuid, CancellationToken cancellationToken = default)
+    {
+        var bytes = ReadAssetByGuid(materialGuid, cancellationToken: cancellationToken);
+        if (bytes is null) return [];
+        var text = Encoding.UTF8.GetString(bytes);
+        var supported = ReadMaterialTextureGuids(materialGuid, cancellationToken).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return Regex.Matches(text, "(?m)^\\s*m_Texture:\\s*\\{\\s*fileID:\\s*-?\\d+\\s*,\\s*guid:\\s*([0-9a-fA-F]{32})")
+            .Cast<Match>()
+            .Select(x => x.Groups[1].Value.ToLowerInvariant())
+            .Where(guid => !supported.Contains(guid))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public string? ReadMaterialName(string materialGuid, CancellationToken cancellationToken = default)
+    {
+        var bytes = ReadAssetByGuid(materialGuid, cancellationToken: cancellationToken);
+        if (bytes is null) return null;
+        var match = Regex.Match(Encoding.UTF8.GetString(bytes), "(?m)^m_Name:\\s*(?<name>[^\\r\\n]*)");
+        if (!match.Success) return null;
+        var name = match.Groups["name"].Value.Trim().Trim('"', '\'');
+        return string.IsNullOrWhiteSpace(name) ? null : name;
+    }
+
     public string StageAsset(string guid, string temporaryRoot, string? fallbackName = null, CancellationToken cancellationToken = default)
     {
         var sourcePath = ResolvePath(guid);

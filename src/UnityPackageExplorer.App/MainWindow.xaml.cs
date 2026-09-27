@@ -2,6 +2,7 @@ using System.IO;
 using System.Numerics;
 using System.Text;
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HelixToolkit.SharpDX.Assimp;
 using HelixToolkit.Wpf.SharpDX;
@@ -21,11 +22,14 @@ public partial class MainWindow : Window
     private string _selectedKind = "すべて";
     private bool _updatingFilter;
 
+    private sealed record TextureBinding(string MaterialName, string AssetPath);
+    private sealed record ModelLoadResult(HelixToolkitScene Scene, IReadOnlyList<string> Warnings);
+
     public MainWindow(string? initialPath = null)
     {
         InitializeComponent();
         _initialPath = initialPath;
-        KindFilter.ItemsSource = new[] { "すべて", "Prefab", "Model", "Image", "Material", "Script", "Scene" };
+        KindFilter.ItemsSource = new[] { "すべて" };
         KindFilter.SelectedIndex = 0;
         Loaded += async (_, _) =>
         {
@@ -48,6 +52,7 @@ public partial class MainWindow : Window
                 _catalog = await Task.Run(() => UnityAssetCatalog.OpenPackage(path));
                 _packagePath = Path.GetFullPath(path);
                 _entries = _catalog.Entries;
+                RefreshKindFilter();
                 SourceLabel.Text = Path.GetFileName(path);
                 ExtractButton.IsEnabled = true;
                 DetailsText.Text = BuildSummary(_entries, Path.GetFileName(path));
@@ -58,6 +63,7 @@ public partial class MainWindow : Window
             {
                 _catalog = await Task.Run(() => UnityAssetCatalog.OpenProjectPrefab(path));
                 _entries = _catalog.Entries;
+                RefreshKindFilter();
                 _directPrefabPath = Path.GetFullPath(path);
                 SourceLabel.Text = Path.GetFileName(path);
                 ExtractButton.IsEnabled = false;
@@ -65,17 +71,9 @@ public partial class MainWindow : Window
                 var entry = _entries.FirstOrDefault(x => string.Equals(Path.GetFullPath(Path.Combine(Path.GetDirectoryName(_directPrefabPath)!, x.PathName)), _directPrefabPath, StringComparison.OrdinalIgnoreCase));
                 await LoadPrefabAsync(entry, _directPrefabPath);
             }
-            else if (extension == ".fbx")
-            {
-                _catalog = null;
-                _entries = [];
-                SourceLabel.Text = Path.GetFileName(path);
-                ExtractButton.IsEnabled = false;
-                await LoadStandaloneModelAsync(path);
-            }
             else
             {
-                throw new InvalidDataException("対応形式は .unitypackage、.prefab、.fbx です。");
+                throw new InvalidDataException("対応形式は .unitypackage と .prefab です。");
             }
         }
         catch (Exception ex)
@@ -103,6 +101,24 @@ public partial class MainWindow : Window
         return text.ToString();
     }
 
+    private void RefreshKindFilter()
+    {
+        var kinds = _entries.Where(x => x.HasAsset)
+            .Select(x => x.Kind)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        _updatingFilter = true;
+        try
+        {
+            KindFilter.ItemsSource = new[] { "すべて" }.Concat(kinds).ToArray();
+            if (!_entries.Any(x => x.HasAsset && string.Equals(x.Kind, _selectedKind, StringComparison.OrdinalIgnoreCase)))
+                _selectedKind = "すべて";
+            KindFilter.SelectedItem = _selectedKind;
+        }
+        finally { _updatingFilter = false; }
+    }
+
     private void RefreshTree()
     {
         _updatingFilter = true;
@@ -128,7 +144,7 @@ public partial class MainWindow : Window
             {
                 case ".prefab": await LoadPrefabAsync(entry, null); break;
                 case ".fbx": await LoadPackageModelAsync(entry, Matrix4x4.Identity, []); break;
-                case ".png": case ".jpg": case ".jpeg": case ".tga": case ".psd": case ".tif": case ".tiff":
+                case ".png": case ".jpg": case ".jpeg": case ".bmp": case ".gif": case ".tga": case ".psd": case ".tif": case ".tiff":
                     ShowImage(_catalog.ReadAsset(entry) ?? throw new InvalidDataException("画像データが見つかりません。"), entry.PathName);
                     break;
                 default:
@@ -174,9 +190,10 @@ public partial class MainWindow : Window
             }
             try
             {
-                var scene = await LoadPackageModelAsyncCore(guid, transform, node.Materials);
-                models.Add(scene);
-                SceneModels.AddNode(scene.Root);
+                var loaded = await LoadPackageModelAsyncCore(guid, transform, node.Materials);
+                models.Add(loaded.Scene);
+                SceneModels.AddNode(loaded.Scene.Root);
+                warnings.AddRange(loaded.Warnings.Select(x => $"{node.Name}: {x}"));
             }
             catch (Exception ex) { warnings.Add($"{node.Name}: {ex.Message}"); }
         }
@@ -194,28 +211,79 @@ public partial class MainWindow : Window
 
     private async Task LoadPackageModelAsync(UnityPackageEntry entry, Matrix4x4 transform, IReadOnlyList<UnityAssetReference> materials)
     {
-        var scene = await LoadPackageModelAsyncCore(entry.Guid, transform, materials);
+        var loaded = await LoadPackageModelAsyncCore(entry.Guid, transform, materials);
         ClearSceneModels();
-        SceneModels.AddNode(scene.Root);
+        SceneModels.AddNode(loaded.Scene.Root);
         Viewport.ZoomExtents();
         PrefabTree.ItemsSource = null;
         DetailsText.Text = $"{entry.PathName}{Environment.NewLine}種類: Model{Environment.NewLine}GUID: {entry.Guid}";
-        SetStatus("FBX を表示しています。");
+        if (loaded.Warnings.Count > 0) DetailsText.Text += Environment.NewLine + Environment.NewLine + "確認できない内容" + Environment.NewLine + string.Join(Environment.NewLine, loaded.Warnings);
+        SetStatus(loaded.Warnings.Count == 0 ? "FBX を表示しています。" : "FBX を表示しました。一部の参照は確認できませんでした。");
     }
 
-    private async Task<HelixToolkitScene> LoadPackageModelAsyncCore(string guid, Matrix4x4 transform, IReadOnlyList<UnityAssetReference> materials)
+    private async Task<ModelLoadResult> LoadPackageModelAsyncCore(string guid, Matrix4x4 transform, IReadOnlyList<UnityAssetReference> materials)
     {
         if (_catalog is null) throw new InvalidOperationException("Asset catalog is not open.");
         var temp = EnsureTemporaryRoot();
         var modelPath = _catalog.StageAsset(guid, temp);
         StageSiblingImages(guid);
-        var texturePaths = new List<string>();
-        foreach (var material in materials.Where(x => x.Guid is not null))
+        var textureBindings = new List<TextureBinding>();
+        var warnings = new List<string>();
+        foreach (var material in materials)
         {
-            foreach (var textureGuid in _catalog.ReadMaterialTextureGuids(material.Guid!))
+            if (material.Guid is null)
             {
+                if (material.FileId != 0) warnings.Add($"Material fileID {material.FileId} has no GUID and cannot be resolved.");
+                continue;
+            }
+
+            var materialPath = _catalog.ResolvePath(material.Guid);
+            if (materialPath is null)
+            {
+                warnings.Add($"Material GUID {material.Guid} was not found.");
+                continue;
+            }
+            if (_catalog.ReadAssetByGuid(material.Guid) is null)
+            {
+                warnings.Add($"Material data is missing: {materialPath}");
+                continue;
+            }
+
+            var materialName = _catalog.ReadMaterialName(material.Guid) ?? Path.GetFileNameWithoutExtension(materialPath);
+            var materialTextureGuids = _catalog.ReadMaterialTextureGuids(material.Guid);
+            foreach (var textureGuid in _catalog.ReadUnsupportedMaterialTextureGuids(material.Guid))
+            {
+                var unsupportedPath = _catalog.ResolvePath(textureGuid);
+                warnings.Add(unsupportedPath is null
+                    ? $"Texture GUID {textureGuid} referenced by material '{materialName}' was not found."
+                    : $"Texture {unsupportedPath} is referenced by a material slot that this simplified viewer does not render.");
+            }
+            foreach (var textureGuid in materialTextureGuids)
+            {
+                var textureSourcePath = _catalog.ResolvePath(textureGuid);
+                if (textureSourcePath is null)
+                {
+                    warnings.Add($"Texture GUID {textureGuid} referenced by material '{materialName}' was not found.");
+                    continue;
+                }
+
+                var textureExtension = Path.GetExtension(textureSourcePath);
+                if (textureExtension.Equals(".psd", StringComparison.OrdinalIgnoreCase)
+                    || !new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".tga" }.Contains(textureExtension, StringComparer.OrdinalIgnoreCase))
+                {
+                    warnings.Add($"Texture format is not supported for 3D display: {textureSourcePath}");
+                    continue;
+                }
+
                 var texturePath = _catalog.StageImage(textureGuid, temp);
-                if (texturePath is not null) texturePaths.Add(texturePath);
+                if (texturePath is null)
+                {
+                    warnings.Add($"Texture data is missing: {textureSourcePath}");
+                    continue;
+                }
+                if (textureExtension.Equals(".tga", StringComparison.OrdinalIgnoreCase))
+                    texturePath = ConvertTgaToPng(texturePath);
+                textureBindings.Add(new TextureBinding(materialName, texturePath));
             }
         }
 
@@ -226,8 +294,8 @@ public partial class MainWindow : Window
             var scene = importer.Load(modelPath, configuration);
             if (scene is null) throw new InvalidDataException("FBX を読み込めませんでした。");
             scene.Root.ModelMatrix *= transform;
-            if (texturePaths.Count > 0) ApplyUnityTextures(scene.Root, texturePaths);
-            return scene;
+            warnings.AddRange(ApplyUnityTextures(scene.Root, textureBindings, materials));
+            return new ModelLoadResult(scene, warnings);
         });
     }
 
@@ -244,19 +312,48 @@ public partial class MainWindow : Window
         }
     }
 
-    private static void ApplyUnityTextures(HelixToolkit.SharpDX.Model.Scene.SceneNode root, IReadOnlyList<string> texturePaths)
+    private static IReadOnlyList<string> ApplyUnityTextures(
+        HelixToolkit.SharpDX.Model.Scene.SceneNode root,
+        IReadOnlyList<TextureBinding> textureBindings,
+        IReadOnlyList<UnityAssetReference> materialReferences)
     {
+        if (textureBindings.Count == 0) return [];
         var meshNodes = EnumerateSceneNodes(root).OfType<HelixToolkit.SharpDX.Model.Scene.MeshNode>().ToArray();
-        for (var i = 0; i < meshNodes.Length && texturePaths.Count > 0; i++)
+        var warnings = new List<string>();
+        var applied = new HashSet<TextureBinding>();
+        foreach (var mesh in meshNodes)
         {
-            var path = texturePaths[Math.Min(i, texturePaths.Count - 1)];
-            meshNodes[i].Material = new HelixToolkit.SharpDX.Model.PhongMaterialCore
+            var matching = textureBindings.Where(x => string.Equals(x.MaterialName, mesh.Name, StringComparison.OrdinalIgnoreCase)).ToArray();
+            var paths = matching.Select(x => x.AssetPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (paths.Length == 1)
             {
-                DiffuseColor = new HelixToolkit.Maths.Color4(1, 1, 1, 1),
-                DiffuseMap = HelixToolkit.SharpDX.TextureModel.Create(path)
-            };
+                SetDiffuseTexture(mesh, paths[0]);
+                foreach (var item in matching) applied.Add(item);
+            }
+            else if (paths.Length > 1)
+                warnings.Add($"Several textures match FBX material '{mesh.Name}'; no texture was selected automatically.");
         }
+
+        var allReferencedMaterialsHaveOneTexture = materialReferences.Count == 1
+            && textureBindings.Select(x => x.AssetPath).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1;
+        if (applied.Count == 0 && allReferencedMaterialsHaveOneTexture)
+        {
+            var path = textureBindings[0].AssetPath;
+            foreach (var mesh in meshNodes) SetDiffuseTexture(mesh, path);
+            foreach (var item in textureBindings) applied.Add(item);
+        }
+
+        foreach (var binding in textureBindings.Except(applied))
+            warnings.Add($"Texture for material '{binding.MaterialName}' could not be matched to an FBX mesh and was left unused.");
+        return warnings;
     }
+
+    private static void SetDiffuseTexture(HelixToolkit.SharpDX.Model.Scene.MeshNode mesh, string path) =>
+        mesh.Material = new HelixToolkit.SharpDX.Model.PhongMaterialCore
+        {
+            DiffuseColor = new HelixToolkit.Maths.Color4(1, 1, 1, 1),
+            DiffuseMap = HelixToolkit.SharpDX.TextureModel.Create(path)
+        };
 
     private static IEnumerable<HelixToolkit.SharpDX.Model.Scene.SceneNode> EnumerateSceneNodes(HelixToolkit.SharpDX.Model.Scene.SceneNode root)
     {
@@ -278,40 +375,31 @@ public partial class MainWindow : Window
 
     private static int CountNodes(IEnumerable<PrefabNode> nodes) => nodes.Sum(x => 1 + CountNodes(x.Children));
 
-    private async Task LoadStandaloneModelAsync(string path)
-    {
-        var temp = EnsureTemporaryRoot();
-        var staged = Path.Combine(temp, Path.GetFileName(path));
-        await Task.Run(() =>
-        {
-            File.Copy(path, staged, overwrite: true);
-            foreach (var sidecar in Directory.EnumerateFiles(Path.GetDirectoryName(path)!).Where(x =>
-                         new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff" }.Contains(Path.GetExtension(x), StringComparer.OrdinalIgnoreCase)))
-                File.Copy(sidecar, Path.Combine(temp, Path.GetFileName(sidecar)), overwrite: true);
-        });
-        var scene = await Task.Run(() =>
-        {
-            using var importer = new Importer();
-            return importer.Load(staged, new ImporterConfiguration { ImportMaterialType = MaterialType.BlinnPhong })
-                ?? throw new InvalidDataException("FBX を読み込めませんでした。");
-        });
-        ClearSceneModels();
-        SceneModels.AddNode(scene.Root);
-        Viewport.ZoomExtents();
-        DetailsText.Text = Path.GetFullPath(path);
-        SetStatus("FBX を表示しています。");
-    }
-
     private void ShowImage(byte[] bytes, string pathName)
     {
         ClearSceneModels();
-        var bitmap = new BitmapImage();
-        using (var stream = new MemoryStream(bytes))
+        BitmapSource bitmap;
+        if (Path.GetExtension(pathName).Equals(".tga", StringComparison.OrdinalIgnoreCase))
         {
-            bitmap.BeginInit();
-            bitmap.CacheOption = BitmapCacheOption.OnLoad;
-            bitmap.StreamSource = stream;
-            bitmap.EndInit();
+            var decoded = TgaDecoder.Decode(bytes);
+            bitmap = BitmapSource.Create(decoded.Width, decoded.Height, 96, 96, PixelFormats.Bgra32, null, decoded.Bgra32Pixels, decoded.Width * 4);
+        }
+        else if (Path.GetExtension(pathName).Equals(".psd", StringComparison.OrdinalIgnoreCase))
+        {
+            ClearDisplay();
+            DetailsText.Text = $"{pathName}{Environment.NewLine}PSD 画像のプレビューには対応していません。PNG、JPEG、BMP、GIF、TGA、TIFF に変換して確認してください。";
+            SetStatus("PSD は一覧に表示できますが、画像プレビューには対応していません。");
+            return;
+        }
+        else
+        {
+            var decoded = new BitmapImage();
+            using var stream = new MemoryStream(bytes);
+            decoded.BeginInit();
+            decoded.CacheOption = BitmapCacheOption.OnLoad;
+            decoded.StreamSource = stream;
+            decoded.EndInit();
+            bitmap = decoded;
         }
         bitmap.Freeze();
         AssetImage.Source = bitmap;
@@ -350,6 +438,19 @@ public partial class MainWindow : Window
         return _temporaryRoot;
     }
 
+    private string ConvertTgaToPng(string tgaPath)
+    {
+        var decoded = TgaDecoder.Decode(File.ReadAllBytes(tgaPath));
+        var bitmap = BitmapSource.Create(decoded.Width, decoded.Height, 96, 96, PixelFormats.Bgra32, null, decoded.Bgra32Pixels, decoded.Width * 4);
+        bitmap.Freeze();
+        var pngPath = Path.ChangeExtension(tgaPath, ".png");
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var stream = File.Create(pngPath);
+        encoder.Save(stream);
+        return pngPath;
+    }
+
     private void CleanupTemporaryFiles()
     {
         if (_temporaryRoot is not null && Directory.Exists(_temporaryRoot))
@@ -376,7 +477,7 @@ public partial class MainWindow : Window
         var dialog = new OpenFileDialog
         {
             Title = "Unity アセットを選択",
-            Filter = "UnityPackage / Prefab / FBX|*.unitypackage;*.prefab;*.fbx|UnityPackage|*.unitypackage|Prefab|*.prefab|FBX|*.fbx|すべてのファイル|*.*"
+            Filter = "UnityPackage / Prefab|*.unitypackage;*.prefab|UnityPackage|*.unitypackage|Prefab|*.prefab|すべてのファイル|*.*"
         };
         if (dialog.ShowDialog(this) == true) await OpenPathAsync(dialog.FileName);
     }
