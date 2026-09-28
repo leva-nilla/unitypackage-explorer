@@ -246,9 +246,8 @@ public partial class MainWindow : Window
         {
             var search = SearchBox.Text.Trim();
             var tree = UnityAssetCatalog.BuildTree(_entries, x => x.HasAsset || x.HasMeta);
-            var filtered = UnityAssetCatalog.FilterTree(tree, search, _selectedKind)
-                .Select(x => new AssetTreeItemView(x)).ToArray();
-            AssetTree.ItemsSource = filtered;
+            var filtered = UnityAssetCatalog.FilterTree(tree, search, _selectedKind).ToArray();
+            AssetTree.ItemsSource = AssetTreeItemView.CreateTree(filtered);
         }
         finally { _updatingFilter = false; }
     }

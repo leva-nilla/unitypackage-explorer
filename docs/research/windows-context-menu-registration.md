@@ -133,4 +133,10 @@ version `1.0.0.3`をCurrentUserへ登録後、インストール済みCLSIDの�
 
 `.ico`をEXEのApplicationIconおよびWPF MainWindowのIconへ設定し、同じ意匠からMSIXの150px/44pxロゴを生成する。アイコン差し替え版のsparse packageはExternalLocation更新に合わせてversion `1.0.0.5`へ上げる。14:21に確認目的で起動した旧EXEがインストールフォルダーを使用中だったため、既定インストール先を安定パス`Current`サブフォルダーにした。旧インスタンスとそのファイルは終了・削除せず残す。更新版のApplicationIconをEXEから抽出して確認し、Start Menu / Send To / sparse packageのExternalLocationが`Current`を参照することを確認した。Explorer右クリック画面での目視確認は未実施。
 
+## ZIPツリー初期展開（2026-09-28）
+
+`Luminous_China.zip`は36素材、ツリー40ノード、最大深さ7。旧`AssetTreeItemView`は各トップレベル項目のみ展開し、ZIP内`.unitypackage`と`Assets`の階層が初期状態で閉じていた。現在は2,000ノード以下のツリーを全展開し、それ以上はZIP wrapperと`Assets`を含む深さ3まで開いて、初回生成の負荷を抑える。
+
+`UnityAssetCatalog.OpenZip`から`FilterTree`と`AssetTreeItemView.CreateTree`までを指定ZIPで実行し、変更前にcollapsed foldersがある状態、変更後は40ノード・0 collapsed foldersとなることを確認した。48件のテストが通過。旧インスタンスは動作中のまま残し、修正版を`%LOCALAPPDATA%\Programs\UnityPackageExplorer\Release`へ配置し、Start Menu / Send To / preview handler / sparse package `1.0.0.6`を新しい場所へ切り替えた。修正版で同ZIPを開いたアプリプロセスの起動も確認した。Explorerの右クリック表示自体は依然として目視未確認。
+
 Explorerの右クリック画面上で項目が表示されること、および画面から選んで起動する操作は引き続き目視未確認。

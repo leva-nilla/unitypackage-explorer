@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$Root = $PSScriptRoot,
-    [string]$InstallDirectory = (Join-Path $env:LOCALAPPDATA 'Programs\UnityPackageExplorer\Current'),
+    [string]$InstallDirectory = (Join-Path $env:LOCALAPPDATA 'Programs\UnityPackageExplorer\Release'),
     [string]$ContextMenuCertificateThumbprint,
     [string]$TrustCertificatePath,
     [switch]$SkipBuild

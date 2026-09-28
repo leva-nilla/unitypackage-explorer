@@ -6,17 +6,31 @@ namespace UnityPackageExplorer.Tests;
 public sealed class TreeExpansionTests
 {
     [Fact]
-    public void AssetTreeExpandsOnlyTopLevelItemsByDefault()
+    public void SmallNestedArchiveTreesExpandAllFoldersByDefault()
     {
-        var grandchild = new AssetTreeItem("file", "root/child/file", null, []);
-        var child = new AssetTreeItem("child", "root/child", null, [grandchild]);
-        var root = new AssetTreeItem("root", "root", null, [child]);
+        var entry = new UnityPackageEntry("guid", "Luminous China/Luminous China.unitypackage/Assets/Clothing/coat.fbx", true, true);
+        var root = Assert.Single(UnityAssetCatalog.BuildTree([entry]));
 
-        var view = new AssetTreeItemView(root);
+        var view = Assert.Single(AssetTreeItemView.CreateTree([root]));
 
         Assert.True(view.IsExpanded);
-        Assert.False(view.Children[0].IsExpanded);
-        Assert.False(view.Children[0].Children[0].IsExpanded);
+        Assert.True(view.Children[0].IsExpanded);
+        Assert.True(view.Children[0].Children[0].IsExpanded);
+        Assert.True(view.Children[0].Children[0].Children[0].IsExpanded);
+    }
+
+    [Fact]
+    public void LargeAssetTreesExpandArchiveAndAssetsRootsButKeepDeeperFoldersCollapsed()
+    {
+        var entry = new UnityPackageEntry("guid", "Luminous China/Luminous China.unitypackage/Assets/Clothing/coat.fbx", true, true);
+        var root = Assert.Single(UnityAssetCatalog.BuildTree([entry]));
+
+        var view = Assert.Single(AssetTreeItemView.CreateTree([root], maximumFullyExpandedItems: 1));
+
+        Assert.True(view.IsExpanded);
+        Assert.True(view.Children[0].IsExpanded);
+        Assert.True(view.Children[0].Children[0].IsExpanded);
+        Assert.False(view.Children[0].Children[0].Children[0].IsExpanded);
     }
 
     [Fact]

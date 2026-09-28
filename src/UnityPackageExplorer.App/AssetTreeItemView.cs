@@ -2,13 +2,47 @@ using UnityPackageExplorer.Core;
 
 namespace UnityPackageExplorer.App;
 
-public sealed class AssetTreeItemView(AssetTreeItem item, bool isRoot = true)
+public sealed class AssetTreeItemView
 {
-    public string Name => item.Entry is null ? item.Name : $"{item.Name}  ·  {item.Entry.Kind}";
-    public string PathName => item.PathName;
-    public UnityPackageEntry? Entry => item.Entry;
-    public bool IsExpanded { get; set; } = isRoot;
-    public IReadOnlyList<AssetTreeItemView> Children { get; } = item.Children.Select(x => new AssetTreeItemView(x, false)).ToArray();
+    private const int DefaultFullyExpandedTreeLimit = 2_000;
+    private const int ShallowExpansionDepth = 3;
+
+    public static IReadOnlyList<AssetTreeItemView> CreateTree(
+        IReadOnlyList<AssetTreeItem> roots,
+        int maximumFullyExpandedItems = DefaultFullyExpandedTreeLimit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFullyExpandedItems);
+        var expandAll = CountItems(roots, maximumFullyExpandedItems) <= maximumFullyExpandedItems;
+        return roots.Select(x => new AssetTreeItemView(x, expandAll, 0)).ToArray();
+    }
+
+    private AssetTreeItemView(AssetTreeItem item, bool expandAll, int depth)
+    {
+        Name = item.Entry is null ? item.Name : $"{item.Name}  ·  {item.Entry.Kind}";
+        PathName = item.PathName;
+        Entry = item.Entry;
+        IsExpanded = expandAll || depth < ShallowExpansionDepth;
+        Children = item.Children.Select(x => new AssetTreeItemView(x, expandAll, depth + 1)).ToArray();
+    }
+
+    private static int CountItems(IReadOnlyList<AssetTreeItem> roots, int stopAfter)
+    {
+        var pending = new Stack<AssetTreeItem>(roots);
+        var count = 0;
+        while (pending.Count > 0 && count <= stopAfter)
+        {
+            var item = pending.Pop();
+            count++;
+            foreach (var child in item.Children) pending.Push(child);
+        }
+        return count;
+    }
+
+    public string Name { get; }
+    public string PathName { get; }
+    public UnityPackageEntry? Entry { get; }
+    public bool IsExpanded { get; set; }
+    public IReadOnlyList<AssetTreeItemView> Children { get; }
 }
 
 public sealed class PrefabNodeView(PrefabNode node, bool isRoot = true)
