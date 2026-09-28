@@ -4,6 +4,10 @@ using System.Text;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Input;
+using System.Windows.Media.Media3D;
+using System.Diagnostics;
+using HelixToolkit.SharpDX;
 using HelixToolkit.SharpDX.Assimp;
 using HelixToolkit.Wpf.SharpDX;
 using Microsoft.Win32;
@@ -15,6 +19,7 @@ public partial class MainWindow : Window
 {
     private readonly string? _initialPath;
     private readonly PreviewRequestGate _previewRequests = new();
+    private readonly DefaultEffectsManager _effectsManager = new();
     private UnityAssetCatalog? _catalog;
     private IReadOnlyList<UnityPackageEntry> _entries = [];
     private string? _packagePath;
@@ -24,6 +29,12 @@ public partial class MainWindow : Window
     private string _selectedKind = "すべて";
     private bool _updatingFilter;
     private bool _isBusy;
+    private readonly HashSet<Key> _flightKeys = [];
+    private readonly List<HelixToolkitScene> _currentScenes = [];
+    private Point _lastLookPoint;
+    private bool _looking;
+    private double _flightSpeed = 12;
+    private long _lastMovementTimestamp;
 
     private sealed record TextureBinding(string MaterialName, string AssetPath);
     private sealed record ModelLoadResult(HelixToolkitScene Scene, IReadOnlyList<string> Warnings);
@@ -32,6 +43,7 @@ public partial class MainWindow : Window
     public MainWindow(string? initialPath = null)
     {
         InitializeComponent();
+        Viewport.EffectsManager = _effectsManager;
         _initialPath = initialPath;
         KindFilter.ItemsSource = new[] { "すべて" };
         KindFilter.SelectedIndex = 0;
@@ -39,8 +51,64 @@ public partial class MainWindow : Window
         {
             if (!string.IsNullOrWhiteSpace(_initialPath) && File.Exists(_initialPath)) await OpenPathAsync(_initialPath);
         };
-        Closed += (_, _) => CleanupTemporaryFiles();
+        Closed += (_, _) =>
+        {
+            CleanupTemporaryFiles();
+            StopCameraInput();
+            _effectsManager.Dispose();
+        };
     }
+
+    private void Window_DragEnter(object sender, DragEventArgs e)
+    {
+        var paths = GetDroppedPaths(e);
+        if (paths.Length == 1 && IsSupportedDrop(paths[0]) && !_isBusy)
+        {
+            e.Effects = DragDropEffects.Copy;
+            SetStatus("対応ファイルをドロップするとプレビューします。元ファイルは移動・展開しません。");
+        }
+        else
+        {
+            e.Effects = DragDropEffects.None;
+            SetStatus(paths.Length > 1 ? "一度に開けるファイルは1つだけです。" : paths.Length == 1 ? "対応形式は .zip、.unitypackage、.prefab です。" : "対応ファイルをドロップしてください。");
+        }
+        e.Handled = true;
+    }
+
+    private void Window_DragOver(object sender, DragEventArgs e)
+    {
+        var paths = GetDroppedPaths(e);
+        e.Effects = !_isBusy && paths.Length == 1 && IsSupportedDrop(paths[0]) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void Window_Drop(object sender, DragEventArgs e)
+    {
+        var paths = GetDroppedPaths(e);
+        e.Handled = true;
+        if (paths.Length != 1)
+        {
+            SetStatus(paths.Length > 1 ? "一度に開けるファイルは1つだけです。" : "ファイルを読み取れませんでした。");
+            return;
+        }
+        if (!IsSupportedDrop(paths[0]))
+        {
+            SetStatus("対応形式は .zip、.unitypackage、.prefab です。元ファイルは変更していません。");
+            return;
+        }
+        if (_isBusy)
+        {
+            SetStatus("読み込みが終わってからファイルをドロップしてください。");
+            return;
+        }
+        await OpenPathAsync(paths[0]);
+    }
+
+    private static string[] GetDroppedPaths(DragEventArgs e) =>
+        e.Data.GetDataPresent(DataFormats.FileDrop) && e.Data.GetData(DataFormats.FileDrop) is string[] paths ? paths : [];
+
+    private static bool IsSupportedDrop(string path) =>
+        new[] { ".zip", ".unitypackage", ".prefab" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
     private async Task OpenPathAsync(string path)
     {
@@ -204,7 +272,15 @@ public partial class MainWindow : Window
             {
                 case ".prefab": await LoadPrefabAsync(entry, null, requestId); break;
                 case ".fbx": await LoadPackageModelAsync(entry, Matrix4x4.Identity, [], requestId); break;
-                case ".png": case ".jpg": case ".jpeg": case ".bmp": case ".gif": case ".tga": case ".psd": case ".tif": case ".tiff":
+                case ".png":
+                case ".jpg":
+                case ".jpeg":
+                case ".bmp":
+                case ".gif":
+                case ".tga":
+                case ".psd":
+                case ".tif":
+                case ".tiff":
                     ShowImage(_catalog.ReadAsset(entry) ?? throw new InvalidDataException("画像データが見つかりません。"), entry.PathName);
                     break;
                 default:
@@ -228,6 +304,10 @@ public partial class MainWindow : Window
         if (!_previewRequests.IsCurrent(requestId)) return;
         if (_catalog is null) return;
         ClearDisplay();
+        var sourceName = externalPath ?? entry?.PathName ?? "Prefab";
+        ViewerEmpty.Text = "Prefab を解析して FBX モデルを準備しています…";
+        DetailsText.Text = $"{sourceName}{Environment.NewLine}Prefab と参照アセットを読み込んでいます…";
+        SetStatus($"{Path.GetFileName(sourceName)} の Prefab と FBX を読み込み中…");
         byte[]? bytes = externalPath is null ? entry is null ? null : _catalog.ReadAsset(entry) : await File.ReadAllBytesAsync(externalPath);
         if (bytes is null) throw new InvalidDataException("Prefab の内容を読み取れません。");
         var rootTransformIds = new Dictionary<string, long?>(StringComparer.OrdinalIgnoreCase);
@@ -276,6 +356,8 @@ public partial class MainWindow : Window
                 var loaded = await LoadPackageModelAsyncCore(guid, placement.Transform, placement.Materials, packageMemberPath, entry, modelEntry);
                 if (!_previewRequests.IsCurrent(requestId)) return;
                 models.Add(loaded.Scene);
+                HideSkeletonHelpers(loaded.Scene.Root);
+                _currentScenes.Add(loaded.Scene);
                 SceneModels.AddNode(loaded.Scene.Root);
                 warnings.AddRange(loaded.Warnings.Select(x => $"{node.Name}: {x}"));
             }
@@ -288,15 +370,19 @@ public partial class MainWindow : Window
             .AppendLine($"Prefab 階層: {CountNodes(result.Roots):N0} 個")
             .AppendLine($"FBX 参照: {CountModelReferences(result.Roots):N0} 個")
             .AppendLine($"FBX モデル表示: {models.Count:N0} 個");
-        if (warnings.Count > 0) details.AppendLine().AppendLine("確認できない内容").AppendLine(string.Join(Environment.NewLine, warnings.Distinct()));
+        var renderHost = Viewport.RenderHost;
+        details.AppendLine().AppendLine($"3D 描画ホスト: {(renderHost is null ? "未初期化" : renderHost.EffectsManager is null ? "描画設定なし" : renderHost.IsRendering ? "稼働中" : "停止中")}");
+        var distinctWarnings = warnings.Distinct(StringComparer.Ordinal).ToArray();
+        if (distinctWarnings.Length > 0)
+            details.AppendLine($"確認できない内容: {distinctWarnings.Length:N0} 件").AppendLine().AppendLine("詳細").AppendLine(string.Join(Environment.NewLine, distinctWarnings));
         if (models.Count > 0)
         {
             ViewerEmpty.Visibility = Visibility.Collapsed;
-            Viewport.ZoomExtents();
+            FrameModels(models);
         }
         else ViewerEmpty.Text = "表示できる FBX がありません。Prefab の階層と確認できない内容を表示しています";
         DetailsText.Text = details.ToString();
-        SetStatus(models.Count > 0 ? "参照 FBX と確認できたテクスチャを表示しています。シェーダーは使いません。" : "Prefab の構造を読み込みました。");
+        SetStatus(models.Count > 0 ? "参照 FBX を表示しました。テクスチャとシェーダーは簡易表示です。" : "Prefab の構造を読み込みました。");
     }
 
     private async Task LoadPackageModelAsync(UnityPackageEntry entry, Matrix4x4 transform, IReadOnlyList<UnityAssetReference> materials, long requestId)
@@ -305,9 +391,11 @@ public partial class MainWindow : Window
         var loaded = await LoadPackageModelAsyncCore(entry.Guid, transform, materials, entry.PackageMemberPath, entry, entry);
         if (!_previewRequests.IsCurrent(requestId)) return;
         ClearSceneModels();
+        HideSkeletonHelpers(loaded.Scene.Root);
+        _currentScenes.Add(loaded.Scene);
         SceneModels.AddNode(loaded.Scene.Root);
         ViewerEmpty.Visibility = Visibility.Collapsed;
-        Viewport.ZoomExtents();
+        FrameModels([loaded.Scene]);
         PrefabTree.ItemsSource = null;
         DetailsText.Text = $"{entry.PathName}{Environment.NewLine}種類: Model{Environment.NewLine}GUID: {entry.Guid}";
         if (loaded.Warnings.Count > 0) DetailsText.Text += Environment.NewLine + Environment.NewLine + "確認できない内容" + Environment.NewLine + string.Join(Environment.NewLine, loaded.Warnings);
@@ -324,77 +412,78 @@ public partial class MainWindow : Window
     {
         if (_catalog is null) throw new InvalidOperationException("Asset catalog is not open.");
         var temp = EnsureTemporaryRoot();
-        var modelPath = modelEntry is null
-            ? _catalog.StageAsset(guid, temp, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry)
-            : _catalog.StageAsset(modelEntry, temp);
-        StageSiblingImages(guid, packageMemberPath, referenceEntry, modelEntry);
-        var textureBindings = new List<TextureBinding>();
-        var warnings = new List<string>();
-        foreach (var material in materials)
-        {
-            if (material.Guid is null)
-            {
-                if (material.FileId != 0) warnings.Add($"Material fileID {material.FileId} has no GUID and cannot be resolved.");
-                continue;
-            }
-
-            var materialPath = _catalog.ResolvePath(material.Guid, packageMemberPath, referenceEntry);
-            if (materialPath is null)
-            {
-                warnings.Add($"Material GUID {material.Guid} was not found.");
-                continue;
-            }
-            if (_catalog.ReadAssetByGuid(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry) is null)
-            {
-                warnings.Add($"Material data is missing: {materialPath}");
-                continue;
-            }
-
-            var materialName = _catalog.ReadMaterialName(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry) ?? Path.GetFileNameWithoutExtension(materialPath);
-            var materialTextureGuids = _catalog.ReadMaterialTextureGuids(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry);
-            foreach (var textureGuid in _catalog.ReadUnsupportedMaterialTextureGuids(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry))
-            {
-                var unsupportedPath = _catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
-                warnings.Add(unsupportedPath is null
-                    ? $"Texture GUID {textureGuid} referenced by material '{materialName}' was not found."
-                    : $"Texture {unsupportedPath} is referenced by a material slot that this simplified viewer does not render.");
-            }
-            foreach (var textureGuid in materialTextureGuids)
-            {
-                var textureSourcePath = _catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
-                if (textureSourcePath is null)
-                {
-                    warnings.Add($"Texture GUID {textureGuid} referenced by material '{materialName}' was not found.");
-                    continue;
-                }
-
-                var textureExtension = Path.GetExtension(textureSourcePath);
-                if (textureExtension.Equals(".psd", StringComparison.OrdinalIgnoreCase)
-                    || !new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".tga" }.Contains(textureExtension, StringComparer.OrdinalIgnoreCase))
-                {
-                    warnings.Add($"Texture format is not supported for 3D display: {textureSourcePath}");
-                    continue;
-                }
-
-                var texturePath = _catalog.StageImage(textureGuid, temp, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry);
-                if (texturePath is null)
-                {
-                    warnings.Add($"Texture data is missing: {textureSourcePath}");
-                    continue;
-                }
-                if (textureExtension.Equals(".tga", StringComparison.OrdinalIgnoreCase))
-                    texturePath = ConvertTgaToPng(texturePath);
-                textureBindings.Add(new TextureBinding(materialName, texturePath));
-            }
-        }
-
         return await Task.Run(() =>
         {
+            var modelPath = modelEntry is null
+            ? _catalog.StageAsset(guid, temp, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry)
+            : _catalog.StageAsset(modelEntry, temp);
+            StageSiblingImages(guid, packageMemberPath, referenceEntry, modelEntry);
+            var textureBindings = new List<TextureBinding>();
+            var warnings = new List<string>();
+            foreach (var material in materials)
+            {
+                if (material.Guid is null)
+                {
+                    if (material.FileId != 0) warnings.Add($"Material fileID {material.FileId} has no GUID and cannot be resolved.");
+                    continue;
+                }
+
+                var materialPath = _catalog.ResolvePath(material.Guid, packageMemberPath, referenceEntry);
+                if (materialPath is null)
+                {
+                    warnings.Add($"Material GUID {material.Guid} was not found.");
+                    continue;
+                }
+                if (_catalog.ReadAssetByGuid(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry) is null)
+                {
+                    warnings.Add($"Material data is missing: {materialPath}");
+                    continue;
+                }
+
+                var materialName = _catalog.ReadMaterialName(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry) ?? Path.GetFileNameWithoutExtension(materialPath);
+                var materialTextureGuids = _catalog.ReadMaterialTextureGuids(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry);
+                foreach (var textureGuid in _catalog.ReadUnsupportedMaterialTextureGuids(material.Guid, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry))
+                {
+                    var unsupportedPath = _catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
+                    warnings.Add(unsupportedPath is null
+                        ? $"Texture GUID {textureGuid} referenced by material '{materialName}' was not found."
+                        : $"Texture {unsupportedPath} is referenced by a material slot that this simplified viewer does not render.");
+                }
+                foreach (var textureGuid in materialTextureGuids)
+                {
+                    var textureSourcePath = _catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
+                    if (textureSourcePath is null)
+                    {
+                        warnings.Add($"Texture GUID {textureGuid} referenced by material '{materialName}' was not found.");
+                        continue;
+                    }
+
+                    var textureExtension = Path.GetExtension(textureSourcePath);
+                    if (textureExtension.Equals(".psd", StringComparison.OrdinalIgnoreCase)
+                        || !new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".tga" }.Contains(textureExtension, StringComparer.OrdinalIgnoreCase))
+                    {
+                        warnings.Add($"Texture format is not supported for 3D display: {textureSourcePath}");
+                        continue;
+                    }
+
+                    var texturePath = _catalog.StageImage(textureGuid, temp, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry);
+                    if (texturePath is null)
+                    {
+                        warnings.Add($"Texture data is missing: {textureSourcePath}");
+                        continue;
+                    }
+                    if (textureExtension.Equals(".tga", StringComparison.OrdinalIgnoreCase))
+                        texturePath = ConvertTgaToPng(texturePath);
+                    textureBindings.Add(new TextureBinding(materialName, texturePath));
+                }
+            }
+
             using var importer = new Importer();
-            var configuration = new ImporterConfiguration { ImportMaterialType = MaterialType.BlinnPhong };
+            var configuration = PreviewImporterConfiguration.Create();
             var scene = importer.Load(modelPath, configuration);
             if (scene is null) throw new InvalidDataException("FBX を読み込めませんでした。");
             scene.Root.ModelMatrix *= transform;
+            scene.Root.UpdateAllTransformMatrix();
             warnings.AddRange(ApplyUnityTextures(scene.Root, textureBindings, materials));
             return new ModelLoadResult(scene, warnings);
         });
@@ -515,9 +604,161 @@ public partial class MainWindow : Window
         PrefabTree.ItemsSource = null;
     }
 
+    private void FrameModels(IEnumerable<HelixToolkitScene> scenes)
+    {
+        var found = false;
+        var minimum = new Vector3(float.PositiveInfinity);
+        var maximum = new Vector3(float.NegativeInfinity);
+        foreach (var scene in scenes)
+        {
+            scene.Root.UpdateAllTransformMatrix();
+            if (!scene.Root.TryGetBound(out var bounds)) continue;
+            minimum = Vector3.Min(minimum, bounds.Minimum);
+            maximum = Vector3.Max(maximum, bounds.Maximum);
+            found = true;
+        }
+
+        if (!found || Viewport.Camera is not HelixToolkit.Wpf.SharpDX.PerspectiveCamera camera)
+        {
+            Viewport.ZoomExtents();
+            return;
+        }
+
+        var center = (minimum + maximum) * 0.5f;
+        var extent = MathF.Max((maximum - minimum).Length(), 1f);
+        var direction = Vector3.Normalize(new Vector3(0.28f, 0.12f, 1f));
+        var distance = extent * 1.45f;
+        camera.Position = new Point3D(center.X + direction.X * distance, center.Y + direction.Y * distance, center.Z + direction.Z * distance);
+        camera.LookDirection = new Vector3D(-direction.X * distance, -direction.Y * distance, -direction.Z * distance);
+        camera.UpDirection = new Vector3D(0, 1, 0);
+        _flightSpeed = Math.Max(extent * 0.14, 1);
+    }
+
+    private void Viewport_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.F)
+        {
+            if (_currentScenes.Count > 0) FrameModels(_currentScenes);
+            e.Handled = true;
+            return;
+        }
+        if (!_looking || e.Key is not (Key.W or Key.A or Key.S or Key.D or Key.Q or Key.E or Key.LeftShift or Key.RightShift)) return;
+        _flightKeys.Add(e.Key);
+        if (_flightKeys.Count == 1)
+        {
+            _lastMovementTimestamp = Stopwatch.GetTimestamp();
+            CompositionTarget.Rendering += OnRendering;
+        }
+        e.Handled = true;
+    }
+
+    private void Viewport_PreviewKeyUp(object sender, KeyEventArgs e)
+    {
+        _flightKeys.Remove(e.Key);
+        if (_flightKeys.Count == 0) CompositionTarget.Rendering -= OnRendering;
+        e.Handled = true;
+    }
+
+    private void Viewport_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _looking = true;
+        _lastLookPoint = e.GetPosition(Viewport);
+        Viewport.Focus();
+        Mouse.Capture(Viewport, CaptureMode.SubTree);
+        e.Handled = true;
+    }
+
+    private void Viewport_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        _looking = false;
+        _flightKeys.Clear();
+        CompositionTarget.Rendering -= OnRendering;
+        if (Mouse.Captured == Viewport) Mouse.Capture(null);
+        e.Handled = true;
+    }
+
+    private void Viewport_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_looking || Viewport.Camera is not HelixToolkit.Wpf.SharpDX.PerspectiveCamera camera) return;
+        var point = e.GetPosition(Viewport);
+        var delta = point - _lastLookPoint;
+        _lastLookPoint = point;
+        var look = camera.LookDirection;
+        var length = look.Length;
+        if (length < 0.001) return;
+        var direction = Vector3.Normalize(new Vector3((float)look.X, (float)look.Y, (float)look.Z));
+        var yaw = Math.Atan2(direction.X, direction.Z) - delta.X * 0.004;
+        var pitch = Math.Clamp(Math.Asin(Math.Clamp(direction.Y, -0.999, 0.999)) - delta.Y * 0.004, -1.52, 1.52);
+        var cosPitch = Math.Cos(pitch);
+        camera.LookDirection = new Vector3D(Math.Sin(yaw) * cosPitch * length, Math.Sin(pitch) * length, Math.Cos(yaw) * cosPitch * length);
+        camera.UpDirection = new Vector3D(0, 1, 0);
+        e.Handled = true;
+    }
+
+    private void Viewport_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (!_looking) return;
+        _flightSpeed = Math.Clamp(_flightSpeed * (e.Delta > 0 ? 1.2 : 1 / 1.2), 0.1, 10000);
+        SetStatus($"移動速度: {_flightSpeed:0.##}　｜　右ドラッグ中のホイールで速度変更");
+        e.Handled = true;
+    }
+
+    private void Viewport_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => StopCameraInput();
+
+    private void Viewport_LostMouseCapture(object sender, MouseEventArgs e) => StopCameraInput();
+
+    private void Window_Deactivated(object sender, EventArgs e) => StopCameraInput();
+
+    private void StopCameraInput()
+    {
+        _flightKeys.Clear();
+        CompositionTarget.Rendering -= OnRendering;
+        _looking = false;
+        if (Mouse.Captured == Viewport) Mouse.Capture(null);
+    }
+
+    private void OnRendering(object? sender, EventArgs e)
+    {
+        if (!_looking || _flightKeys.Count == 0 || Viewport.Camera is not HelixToolkit.Wpf.SharpDX.PerspectiveCamera camera) return;
+        var now = Stopwatch.GetTimestamp();
+        var elapsed = Math.Clamp((now - _lastMovementTimestamp) / (double)Stopwatch.Frequency, 0, 0.05);
+        _lastMovementTimestamp = now;
+        var look = camera.LookDirection;
+        var forward = new Vector3D(look.X, look.Y, look.Z);
+        if (forward.LengthSquared < 0.0001) return;
+        forward.Normalize();
+        var right = Vector3D.CrossProduct(forward, new Vector3D(0, 1, 0));
+        if (right.LengthSquared < 0.0001) right = new Vector3D(1, 0, 0);
+        right.Normalize();
+        var up = new Vector3D(0, 1, 0);
+        var movement = new Vector3D();
+        if (_flightKeys.Contains(Key.W)) movement += forward;
+        if (_flightKeys.Contains(Key.S)) movement -= forward;
+        if (_flightKeys.Contains(Key.D)) movement += right;
+        if (_flightKeys.Contains(Key.A)) movement -= right;
+        if (_flightKeys.Contains(Key.E)) movement += up;
+        if (_flightKeys.Contains(Key.Q)) movement -= up;
+        if (movement.LengthSquared < 0.0001) return;
+        movement.Normalize();
+        var shift = _flightKeys.Contains(Key.LeftShift) || _flightKeys.Contains(Key.RightShift);
+        var displacement = movement * _flightSpeed * (shift ? 4 : 1) * elapsed;
+        camera.Position += displacement;
+    }
+
+    private static void HideSkeletonHelpers(HelixToolkit.SharpDX.Model.Scene.SceneNode node)
+    {
+        if (node.Name?.StartsWith("HxSK_", StringComparison.Ordinal) == true)
+        {
+            node.Visible = false;
+            return;
+        }
+        foreach (var child in node.Items) HideSkeletonHelpers(child);
+    }
+
     private void ClearSceneModels()
     {
         SceneModels.Clear();
+        _currentScenes.Clear();
         Viewport.Visibility = Visibility.Visible;
         ImagePanel.Visibility = Visibility.Collapsed;
         ViewerEmpty.Visibility = Visibility.Visible;
@@ -561,6 +802,8 @@ public partial class MainWindow : Window
         ExtractButton.IsEnabled = !busy && _packagePath is not null;
         MoveToCategoryButton.IsEnabled = !busy && CategoryPicker.SelectedItem is string;
         AssetTree.IsEnabled = !busy;
+        SearchBox.IsEnabled = !busy;
+        KindFilter.IsEnabled = !busy;
         if (message is not null) SetStatus(message);
         Cursor = busy ? System.Windows.Input.Cursors.Wait : System.Windows.Input.Cursors.Arrow;
     }

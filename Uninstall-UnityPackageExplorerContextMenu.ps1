@@ -38,6 +38,10 @@ function Remove-OurPreviewAssociation([string]$extension, [string]$progId) {
 $unityPackageProgId = if ($state) { [string]$state.GetValue('UnityPackageProgId') } else { '' }
 $prefabProgId = if ($state) { [string]$state.GetValue('PrefabProgId') } else { '' }
 $zipProgId = if ($state) { [string]$state.GetValue('ZipProgId') } else { '' }
+$appPath = if ($state) { [string]$state.GetValue('AppPath') } else { '' }
+$sendToShortcutPath = if ($state) { [string]$state.GetValue('SendToShortcutPath') } else { '' }
+$zipFolderMenuPath = if ($state) { [string]$state.GetValue('ZipFolderMenuPath') } else { '' }
+$legacyCompressedFolderMenuPath = if ($state) { [string]$state.GetValue('CompressedFolderMenuPath') } else { '' }
 if ($state) { $state.Dispose() }
 Remove-OurPreviewAssociation '.unitypackage' $unityPackageProgId
 Remove-OurPreviewAssociation '.prefab' $prefabProgId
@@ -52,10 +56,43 @@ if ($previewList) {
 $associationMenus = @(
     "$classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorerView",
     "$classes\SystemFileAssociations\.prefab\shell\UnityPackageExplorerView",
-    "$classes\SystemFileAssociations\.zip\shell\UnityPackageExplorerView"
+    "$classes\SystemFileAssociations\.zip\shell\UnityPackageExplorerView",
+    "$classes\SystemFileAssociations\.unitypackage\shell\UnityPackageInspect",
+    "$classes\Folder\shell\UnityPackageExplorerZipPreview",
+    "$classes\CompressedFolder\shell\UnityPackageExplorerZipPreview"
 )
 foreach ($keyPath in $associationMenus) {
-    $reg.DeleteSubKeyTree($keyPath, $false)
+    $commandKey = $reg.OpenSubKey("$keyPath\command")
+    $registeredCommand = if ($commandKey) { [string]$commandKey.GetValue('') } else { '' }
+    if ($commandKey) { $commandKey.Dispose() }
+    if ($appPath -and $registeredCommand -eq ('"' + $appPath + '" "%1"')) {
+        $reg.DeleteSubKeyTree($keyPath, $false)
+    }
+}
+
+if ($appPath -and $sendToShortcutPath -and (Test-Path -LiteralPath $sendToShortcutPath)) {
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($sendToShortcutPath)
+    if ($shortcut.TargetPath -and
+        ([IO.Path]::GetFullPath($shortcut.TargetPath) -eq [IO.Path]::GetFullPath($appPath))) {
+        Remove-Item -LiteralPath $sendToShortcutPath -Force
+    }
+}
+if ($appPath -and $zipFolderMenuPath) {
+    $commandKey = $reg.OpenSubKey("$zipFolderMenuPath\command")
+    $registeredCommand = if ($commandKey) { [string]$commandKey.GetValue('') } else { '' }
+    if ($commandKey) { $commandKey.Dispose() }
+    if ($registeredCommand -eq ('"' + $appPath + '" "%1"')) {
+        $reg.DeleteSubKeyTree($zipFolderMenuPath, $false)
+    }
+}
+if ($appPath -and $legacyCompressedFolderMenuPath) {
+    $commandKey = $reg.OpenSubKey("$legacyCompressedFolderMenuPath\command")
+    $registeredCommand = if ($commandKey) { [string]$commandKey.GetValue('') } else { '' }
+    if ($commandKey) { $commandKey.Dispose() }
+    if ($registeredCommand -eq ('"' + $appPath + '" "%1"')) {
+        $reg.DeleteSubKeyTree($legacyCompressedFolderMenuPath, $false)
+    }
 }
 
 # Remove verbs from the first PowerShell version when present; keep all unrelated file handlers.

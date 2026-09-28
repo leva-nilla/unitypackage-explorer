@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([string]$Root = $PSScriptRoot)
 
 $ErrorActionPreference = 'Stop'
@@ -8,6 +8,8 @@ $appPath = Join-Path $output 'UnityPackageExplorer.App.exe'
 $extractorPath = Join-Path $rootPath 'src\UnityPackageExplorer.Cli\bin\Release\net9.0\UnityPackageExplorer.Cli.exe'
 $comHost = Join-Path $rootPath 'src\UnityPackageExplorer.PreviewHandler\bin\Release\net9.0-windows\UnityPackageExplorer.PreviewHandler.comhost.dll'
 
+$appCommandLine = '"{0}" "%1"' -f $appPath
+$sendToShortcutPath = Join-Path ([Environment]::GetFolderPath('SendTo')) 'UnityPackage Explorer.lnk'
 $solutionPath = Join-Path $rootPath 'UnityPackageExplorer.sln'
 & dotnet build $solutionPath -c Release
 if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
@@ -113,37 +115,48 @@ $state.SetValue('ComHost', $comHost, [Microsoft.Win32.RegistryValueKind]::String
 $state.SetValue('UnityPackageProgId', $associationInfo['.unitypackage'], [Microsoft.Win32.RegistryValueKind]::String)
 $state.SetValue('PrefabProgId', $associationInfo['.prefab'], [Microsoft.Win32.RegistryValueKind]::String)
 $state.SetValue('ZipProgId', $associationInfo['.zip'], [Microsoft.Win32.RegistryValueKind]::String)
-$legacyInspectPath = "$classes\SystemFileAssociations\.unitypackage\shell\UnityPackageInspect"
-$legacyInspectKey = $reg.OpenSubKey($legacyInspectPath)
-$menuVerb = if ($legacyInspectKey) { 'UnityPackageInspect' } else { 'UnityPackageExplorerView' }
-if ($legacyInspectKey) { $legacyInspectKey.Dispose() }
-$menuPath = "$classes\SystemFileAssociations\.unitypackage\shell\$menuVerb"
-$state.SetValue('MenuVerb', $menuVerb, [Microsoft.Win32.RegistryValueKind]::String)
 $state.Dispose()
 
-$menuKey = $reg.CreateSubKey($menuPath)
-$menuKey.SetValue('', 'プレビュー（UnityPackage Explorer）', [Microsoft.Win32.RegistryValueKind]::String)
-$menuKey.Dispose()
-$menuCommand = $reg.CreateSubKey("$menuPath\command")
-$menuCommand.SetValue('', '"' + $appPath + '" "%1"', [Microsoft.Win32.RegistryValueKind]::String)
-$menuCommand.Dispose()
+$state = $reg.CreateSubKey($statePath)
+$state.SetValue('SendToShortcutPath', $sendToShortcutPath, [Microsoft.Win32.RegistryValueKind]::String)
+$state.DeleteValue('ZipFolderMenuPath', $false)
+$state.DeleteValue('CompressedFolderMenuPath', $false)
+$state.Dispose()
 
-$prefabMenuPath = "$classes\SystemFileAssociations\.prefab\shell\UnityPackageExplorerView"
-$prefabMenu = $reg.CreateSubKey($prefabMenuPath)
-$prefabMenu.SetValue('', 'Prefab をプレビュー（UnityPackage Explorer）', [Microsoft.Win32.RegistryValueKind]::String)
-$prefabMenu.Dispose()
-$prefabCommand = $reg.CreateSubKey("$prefabMenuPath\command")
-$prefabCommand.SetValue('', '"' + $appPath + '" "%1"', [Microsoft.Win32.RegistryValueKind]::String)
-$prefabCommand.Dispose()
+# Windows 11 may suppress unregistered static verbs in its primary context menu.
+# Send To is built in and passes the selected path to the shortcut.
+if (Test-Path -LiteralPath $sendToShortcutPath) {
+    $existingShell = New-Object -ComObject WScript.Shell
+    $existingShortcut = $existingShell.CreateShortcut($sendToShortcutPath)
+    if ($existingShortcut.TargetPath -and
+        ([IO.Path]::GetFullPath($existingShortcut.TargetPath) -ne [IO.Path]::GetFullPath($appPath))) {
+        throw "既存の Send To ショートカットを上書きしません: $sendToShortcutPath"
+    }
+}
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut($sendToShortcutPath)
+$shortcut.TargetPath = $appPath
+$shortcut.WorkingDirectory = $output
+$shortcut.Description = 'ZIP、unitypackage、Prefab を UnityPackage Explorer で開く'
+$shortcut.Save()
 
-$zipMenuPath = "$classes\SystemFileAssociations\.zip\shell\UnityPackageExplorerView"
-$zipMenu = $reg.CreateSubKey($zipMenuPath)
-$zipMenu.SetValue('', 'ZIP をプレビュー（UnityPackage Explorer）')
-$zipMenu.Dispose()
-$zipCommand = $reg.CreateSubKey("$zipMenuPath\command")
-$zipCommand.SetValue('', '"' + $appPath + '" "%1"')
-$zipCommand.Dispose()
-
+# Remove earlier static ZIP verbs only when their command points to this installation.
+foreach ($oldMenuPath in @(
+    "$classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorerView",
+    "$classes\SystemFileAssociations\.prefab\shell\UnityPackageExplorerView",
+    "$classes\SystemFileAssociations\.zip\shell\UnityPackageExplorerView",
+    "$classes\Folder\shell\UnityPackageExplorerZipPreview",
+    "$classes\CompressedFolder\shell\UnityPackageExplorerZipPreview"
+)) {
+    $oldCommandKey = $reg.OpenSubKey("$oldMenuPath\command")
+    $oldCommand = if ($oldCommandKey) { [string]$oldCommandKey.GetValue('') } else { '' }
+    if ($oldCommandKey) { $oldCommandKey.Dispose() }
+    if ($oldCommand -eq $appCommandLine) { $reg.DeleteSubKeyTree($oldMenuPath, $false) }
+}
+$state = $reg.CreateSubKey($statePath)
+$state.DeleteValue('ZipFolderMenuPath', $false)
+$state.DeleteValue('CompressedFolderMenuPath', $false)
+$state.Dispose()
 if (-not ('UnityPackageExplorerShellNotifications' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -157,6 +170,6 @@ public static class UnityPackageExplorerShellNotifications
 }
 [UnityPackageExplorerShellNotifications]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
 
-Write-Host '[OK] .unitypackage、.zip、.prefab の Explorer プレビューを登録しました。'
-Write-Host '[OK] 右クリックメニューを登録しました。'
+Write-Host '[OK] .unitypackage、.zip、.prefab の Explorer プレビューハンドラー関連付けを登録しました。'
+Write-Host '[OK] Send To に UnityPackage Explorer を登録しました。'
 Write-Host "App: $appPath"

@@ -36,10 +36,17 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
         var lines = new List<string>();
         if (packages.Length > 0)
         {
-            lines.Add("同梱 UnityPackage");
-            lines.AddRange(packages.Take(5).Select(x => Path.GetFileName(x)));
-            if (packages.Length > 5) lines.Add($"ほか {packages.Length - 5:N0} 個");
+            lines.Add($"同梱 UnityPackage: {string.Join("、", packages.Take(3).Select(Path.GetFileName))}{(packages.Length > 3 ? $" ほか {packages.Length - 3:N0} 個" : string.Empty)}");
         }
+        var prefabPaths = assets.Where(x => x.Extension == ".prefab").Select(x => x.AssetPathName ?? x.PathName).ToArray();
+        if (prefabPaths.Length > 0)
+            lines.Add($"Prefab: {string.Join("、", prefabPaths.Take(4).Select(Path.GetFileNameWithoutExtension))}{(prefabPaths.Length > 4 ? $" ほか {prefabPaths.Length - 4:N0} 個" : string.Empty)}");
+        var topFolders = assets.Select(x => x.PackageMemberPath is null ? x.PathName : x.AssetPathName ?? x.PathName)
+            .Select(x => x.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries))
+            .Select(parts => parts.Length > 1 && string.Equals(parts[0], "Assets", StringComparison.OrdinalIgnoreCase) ? parts[1] : parts.FirstOrDefault())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToArray();
+        if (topFolders.Length > 0) lines.Add($"上位フォルダー: {string.Join("、", topFolders)}");
         var kindCounts = assets.GroupBy(x => x.Kind)
             .OrderBy(x => x.Key).Select(x => $"{x.Key}: {x.Count():N0}");
         lines.AddRange(kindCounts);
@@ -270,8 +277,13 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
         var y = 126f;
         foreach (var line in lines.Take(10))
         {
-            var isHeader = line is "Prefab" or "注意: ";
-            graphics.DrawString(Trim(line, 58), isHeader ? summaryFont : lineFont, isHeader ? mint : white, new RectangleF(322, y, 398, 27));
+            var isHeader = line.StartsWith("Prefab:", StringComparison.Ordinal)
+                || line.StartsWith("上位フォルダー:", StringComparison.Ordinal)
+                || line.StartsWith("注意:", StringComparison.Ordinal);
+            var font = isHeader ? summaryFont : lineFont;
+            var color = isHeader ? mint : white;
+            var bounds = new RectangleF(322, y, 398, 27);
+            graphics.DrawString(FitToWidth(graphics, font, line, bounds.Width), font, color, bounds);
             y += 30;
             if (y > 352) break;
         }
@@ -285,6 +297,21 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
     }
 
     private static string Trim(string text, int length) => text.Length <= length ? text : text[..(length - 1)] + "…";
+
+    private static string FitToWidth(Graphics graphics, Font font, string text, float width)
+    {
+        if (graphics.MeasureString(text, font).Width <= width) return text;
+        const string ellipsis = "…";
+        var low = 0;
+        var high = text.Length;
+        while (low < high)
+        {
+            var middle = (low + high + 1) / 2;
+            if (graphics.MeasureString(text[..middle] + ellipsis, font).Width <= width) low = middle;
+            else high = middle - 1;
+        }
+        return text[..low] + ellipsis;
+    }
 }
 
 internal static class GraphicsExtensions

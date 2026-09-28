@@ -3,19 +3,49 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:hx="http://helix-toolkit.org/wpf/SharpDX"
         xmlns:local="clr-namespace:UnityPackageExplorer.App"
-        Title="UnityPackage Explorer" Height="780" Width="1280" MinHeight="560" MinWidth="860"
-        Background="#15191F" Foreground="#E5E9EF" WindowStartupLocation="CenterScreen">
+        Title="UnityPackage Explorer" Height="780" Width="1280" MinHeight="560" MinWidth="860" Deactivated="Window_Deactivated"
+        Background="#15191F" Foreground="#E5E9EF" WindowStartupLocation="CenterScreen" AllowDrop="True" DragEnter="Window_DragEnter" DragOver="Window_DragOver" Drop="Window_Drop">
     <Window.Resources>
+        <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#315B66" />
+        <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFFFFF" />
         <HierarchicalDataTemplate DataType="{x:Type local:AssetTreeItemView}" ItemsSource="{Binding Children}">
-            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+            <TextBlock Text="{Binding Name}" Foreground="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=Foreground}" TextTrimming="CharacterEllipsis" />
         </HierarchicalDataTemplate>
         <HierarchicalDataTemplate DataType="{x:Type local:PrefabNodeView}" ItemsSource="{Binding Children}">
-            <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
+            <TextBlock Text="{Binding DisplayName}" Foreground="{Binding RelativeSource={RelativeSource AncestorType=TreeViewItem}, Path=Foreground}" TextTrimming="CharacterEllipsis" />
         </HierarchicalDataTemplate>
         <Style TargetType="TreeView">
             <Setter Property="Background" Value="#1C222B" />
-            <Setter Property="Foreground" Value="#E5E9EF" />
+            <Setter Property="Foreground" Value="#F0F4F8" />
             <Setter Property="BorderBrush" Value="#303946" />
+        </Style>
+        <Style TargetType="TreeViewItem">
+            <Setter Property="Foreground" Value="#F0F4F8" />
+            <Setter Property="Padding" Value="4,3" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TreeViewItem">
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                            <ToggleButton x:Name="Expander" Grid.Column="0" Width="16" Height="22" Content="›" FontSize="18"
+                                          Foreground="#9BAABA" Background="Transparent" BorderThickness="0"
+                                          IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}}" />
+                            <Border x:Name="HeaderBorder" Grid.Column="1" Background="Transparent" CornerRadius="3" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter x:Name="PART_Header" ContentSource="Header" HorizontalAlignment="Left" VerticalAlignment="Center" />
+                            </Border>
+                            <ItemsPresenter x:Name="ItemsHost" Grid.Row="1" Grid.Column="1" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="False"><Setter TargetName="ItemsHost" Property="Visibility" Value="Collapsed"/><Setter TargetName="Expander" Property="Content" Value="›"/></Trigger>
+                            <Trigger Property="IsExpanded" Value="True"><Setter TargetName="Expander" Property="Content" Value="⌄"/></Trigger>
+                            <Trigger Property="HasItems" Value="False"><Setter TargetName="Expander" Property="Visibility" Value="Hidden"/></Trigger>
+                            <Trigger Property="IsSelected" Value="True"><Setter TargetName="HeaderBorder" Property="Background" Value="#315B66"/><Setter Property="Foreground" Value="#FFFFFF"/></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="#B1BBC6"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="TextBox">
             <Setter Property="Background" Value="#202833" />
@@ -62,9 +92,9 @@
                 <Grid>
                     <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="190"/></Grid.RowDefinitions>
                     <Grid Grid.Row="0">
-                        <hx:Viewport3DX x:Name="Viewport" BackgroundColor="#14191F" ShowCoordinateSystem="True" ShowViewCube="True" ZoomExtentsWhenLoaded="True">
+                        <hx:Viewport3DX x:Name="Viewport" BackgroundColor="#14191F" ShowCoordinateSystem="True" ShowViewCube="True" ZoomExtentsWhenLoaded="True" Focusable="True" PreviewKeyDown="Viewport_PreviewKeyDown" PreviewKeyUp="Viewport_PreviewKeyUp" PreviewMouseRightButtonDown="Viewport_PreviewMouseRightButtonDown" PreviewMouseRightButtonUp="Viewport_PreviewMouseRightButtonUp" PreviewMouseMove="Viewport_PreviewMouseMove" PreviewMouseWheel="Viewport_PreviewMouseWheel" LostKeyboardFocus="Viewport_LostKeyboardFocus" LostMouseCapture="Viewport_LostMouseCapture">
                             <hx:Viewport3DX.Camera>
-                                <hx:PerspectiveCamera Position="3,3,5" LookDirection="-3,-3,-5" UpDirection="0,1,0" FieldOfView="42" />
+                                <hx:PerspectiveCamera Position="3,60,105" LookDirection="-3,-3,-105" UpDirection="0,1,0" FieldOfView="42" />
                             </hx:Viewport3DX.Camera>
                             <hx:AmbientLight3D Color="#FFFFFFFF" />
                             <hx:DirectionalLight3D Direction="-1,-1,-1" Color="#FFFFFFFF" />
@@ -74,6 +104,9 @@
                             <Image x:Name="AssetImage" Stretch="Uniform" Margin="8" />
                         </Border>
                         <TextBlock x:Name="ViewerEmpty" Text="FBX・Prefab・画像を選択すると、ここに表示される" Foreground="#718092" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
+                        <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" Padding="8,5" CornerRadius="4" Background="#B814191F" IsHitTestVisible="False">
+                            <TextBlock Text="右ドラッグ 見回し　·　WASD 移動　·　Q/E 上下　·　Shift 加速　·　ホイール ズーム（右ドラッグ中は速度）" FontSize="11" Foreground="#D5DCE5" />
+                        </Border>
                     </Grid>
                     <Grid Grid.Row="1" Margin="0,10,0,0">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
