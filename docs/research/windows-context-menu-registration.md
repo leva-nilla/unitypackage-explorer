@@ -68,7 +68,7 @@ Microsoft Learn の [unsigned MSIX guidance](https://learn.microsoft.com/en-us/w
 
 `Add-AppxPackage -Path <package> -ExternalLocation <app-output> -AllowUnsigned -ForceUpdateFromAnyVersion` は HRESULT `0x80073D2B` で拒否された。エラーはunsigned packageが実行可能ファイルのactivationを含むため登録できない旨。失敗後にCurrentUserの対象package登録が残っていないことも確認した。証明書ストア、Developer Mode、管理者設定には触れていない。
 
-この実験はunsigned packageでのユーザー単位登録ができないことを示すが、署名済みsparse packageでの新コンテキストメニュー表示・COM起動は未検証。実施には発行者証明書への信頼設定とCurrentUser package登録が必要で、両方とも作業者の明示的な確認後に限る。
+この時点では署名済みsparse packageでの新コンテキストメニュー表示・COM起動は未検証だった。その後の証明書ストア再試行と署名済みpackage登録結果は下記に記録する。
 
 ## 開発用署名証明書の形式
 
@@ -89,6 +89,14 @@ Remove-Item -LiteralPath 'Cert:\LocalMachine\TrustedPeople\<thumbprint>' -Force
 
 ## 署名済みCurrentUser登録の証明書ストア再試行（2026-09-28）
 
-前回の `0x800B0109` を受け、Code Signing EKUと明示的なCA:false Basic Constraintsを持つ新しい開発証明書を使い、公開CERを `Cert:\CurrentUser\TrustedPeople` に追加して再試行した。`Add-AppxPackage` は同じ `0x800B0109` で失敗し、失敗時のrollbackで今回追加したCurrentUser TrustedPeople entryは削除された。対象AppX packageの登録は0件。LocalMachineストアへの追加は未実施。
+前回の `0x800B0109` を受け、Code Signing EKUと明示的なCA:false Basic Constraintsを持つ新しい開発証明書を使い、公開CERを `Cert:\CurrentUser\TrustedPeople` に追加して再試行した。`Add-AppxPackage` は同じ `0x800B0109` で失敗し、失敗時のrollbackで今回追加したCurrentUser TrustedPeople entryは削除された。対象AppX packageの登録は0件。LocalMachineストアへの追加はこの段階では未実施。
 
 この実機結果は、Microsoft Learnの [MSIX troubleshooting guide](https://learn.microsoft.com/en-us/windows/msix/msix-troubleshooting-guide) の説明（App InstallerはCurrentUserではなくLocalMachine Trusted Peopleを確認、追加は管理者権限）と一致する。一方、Microsoftの [sparse package identity guide](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps) はper-user手順にCurrentUser TrustedPeople例を示す。資料間の差と現場のAdd-AppxPackage結果を分けて記録し、このアプリではLocalMachine TrustedPeopleに署名証明書thumbprintがある場合のみ登録に進める。欠落時には正確な `Import-Certificate -FilePath '<公開CER>' -CertStoreLocation Cert:\LocalMachine\TrustedPeople` を提示して停止する。インストーラーは昇格も信頼追加もせず、アンインストーラーも全ユーザーに影響するmachine certificateを削除しない。
+
+## LocalMachine trust後の署名済み登録とCOM activation確認
+
+後続の実機確認では、管理者として公開CERを `Cert:\LocalMachine\TrustedPeople` にインポートした後、通常ユーザーとして `Install-ExplorerContextMenuPackage.ps1` を実行し、CurrentUserへの登録が成功した。`Get-AppxPackage` に `UnityPackageExplorer.SparseContextMenu_1.0.0.0_neutral__k490yjxqyg3te` が現れ、CLSID `1C490A47-4D85-4AA0-A2A3-4A7827B5DA79` のCOM class activationも成功した。Manifest上の対象は `.zip`、`.unitypackage`、`.prefab`。
+
+証明書信頼、CurrentUser package登録、COM起動までは実機確認済み。Explorerの実際の右クリック画面で3拡張子向けメニュー項目が見えるか、選択後にアプリが起動するかは未確認。LocalMachine信頼は同じPCの他ユーザーにも及ぶため、アプリ解除時も自動削除しない。
+
+その後、COM probeで`GetTitle`を呼び出したところ、日本語のwide literalがMSVC側で文字化けしていた。タイトルをUniversal Character Name（`\u3067\u958B\u304F`）で表記し、manifest versionを`1.0.0.1`へ上げて署名packageを更新した。同一versionの異なるpayloadは`0x80073CFB`で拒否されたため、version bump後に`UnityPackageExplorer.SparseContextMenu_1.0.0.1_neutral__k490yjxqyg3te`のCurrentUser更新が成功。再度のCOM probeでHRESULT `S_OK`、タイトル「UnityPackage Explorer で開く」を確認した。machine trust証明書は変更していない。Explorer右クリック画面での表示・Invoke起動は引き続き未確認。

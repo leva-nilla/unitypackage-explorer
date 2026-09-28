@@ -30,7 +30,7 @@ pwsh -ExecutionPolicy Bypass -File .\Install-UnityPackageExplorerContextMenu.ps1
 
 ### Windows 11 の右クリック直下メニュー
 
-右クリック直下の項目は sparse MSIX と署名が必要です。この環境では静的verbは実際の Explorer メニューに表示されず、sparse package の登録前なので新方式の表示もまだ確認できていません。既定のセットアップだけでは直下メニューを登録せず、「送る」とドラッグ＆ドロップが使えます。
+右クリック直下の項目には sparse MSIX と署名を使います。CurrentUserへのsparse package登録と、`IExplorerCommand`のCOMクラスactivationは実機で確認済みで、COMの`GetTitle`は「UnityPackage Explorer で開く」を返します。Windowsのmanifestには`.zip`、`.unitypackage`、`.prefab`を登録していますが、実際のExplorer右クリック画面で新メニュー項目が表示されるかはまだ目視確認できていません。既定のセットアップは直下メニューを登録せず、「送る」とドラッグ＆ドロップが使えます。
 
 開発用の自己署名証明書を使う場合、署名用秘密鍵は `Cert:\CurrentUser\My` にエクスポート不可で作成し、sparse packageはCurrentUserに登録します。ただし、この環境では署名証明書を `Cert:\LocalMachine\TrustedPeople` に信頼登録する必要があり、管理者権限とPC全ユーザーへの影響があります。証明書はCode Signing EKUと明示的なCA:false Basic Constraintsを持ち、公開 `.cer` のみ `%LOCALAPPDATA%\UnityPackageExplorer\Signing` に保存します。生成スクリプトは証明書ストアとファイルへの変更前に確認し、`-WhatIf` で変更内容だけ確認できます。
 
@@ -62,7 +62,7 @@ Remove-Item -LiteralPath 'Cert:\LocalMachine\TrustedPeople\<thumbprint>' -Force
 
 ### 現在の制約
 
-Explorer のプレビュー欄用ハンドラーも登録しますが、現時点で Explorer 上の表示は確認できていません。Mark of the Web がないテスト ZIP でもプレビュー欄に内容が出ず、コンテキストメニューの直接項目もこの環境では表示されませんでした。そのため「送る」またはアプリへのドラッグ＆ドロップを使ってください。Windows 11 はインターネット由来の Mark of the Web が付いたファイルのプレビューを別途ブロックする場合もあります。unsigned package はmanifest検証・ビルドには使えますが、この実行可能アプリ起動を含む sparse package は `-AllowUnsigned` でもユーザー単位登録できませんでした。署名済みpackageの登録前のため、新メニューの表示と項目起動は未確認です。元ファイルのブロック解除は不要です。詳細は [Microsoft の案内](https://support.microsoft.com/en-us/servicing/os/windows/docs/2025/10/file-explorer-automatically-disables-the-preview-feature-for-files-downloaded-from-the-internet) を参照。
+Explorer のプレビュー欄用ハンドラーは登録済みですが、Explorer上の表示は確認できていません。Mark of the Web がないテスト ZIP でもプレビュー欄に内容が出ませんでした。従来の静的verbも実際の右クリック画面では表示されませんでしたが、sparse packageとCOM activationは確認済みで、新方式メニューの実画面確認は残っています。Windows 11 はインターネット由来の Mark of the Web が付いたファイルのプレビューを別途ブロックする場合もあります。unsigned packageはmanifest検証・ビルドには使えますが、この実行可能アプリ起動を含むsparse packageは `-AllowUnsigned` で登録できませんでした。元ファイルのブロック解除は不要です。詳細は [Microsoft の案内](https://support.microsoft.com/en-us/servicing/os/windows/docs/2025/10/file-explorer-automatically-disables-the-preview-feature-for-files-downloaded-from-the-internet) を参照。
 
 ## 開発
 

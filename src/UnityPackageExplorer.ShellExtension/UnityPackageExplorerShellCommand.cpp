@@ -154,7 +154,7 @@ namespace
 
         IFACEMETHODIMP GetTitle(IShellItemArray*, PWSTR* title) override
         {
-            return SHStrDupW(L"UnityPackage Explorer で開く", title);
+            return SHStrDupW(L"UnityPackage Explorer \u3067\u958B\u304F", title);
         }
 
         IFACEMETHODIMP GetIcon(IShellItemArray*, PWSTR* icon) override

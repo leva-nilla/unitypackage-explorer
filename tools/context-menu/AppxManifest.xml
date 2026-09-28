@@ -11,7 +11,7 @@
   <Identity
     Name="UnityPackageExplorer.SparseContextMenu"
     Publisher="@@PUBLISHER@@"
-    Version="1.0.0.0"
+    Version="1.0.0.1"
     ProcessorArchitecture="neutral" />
   <Properties>
     <DisplayName>UnityPackage Explorer</DisplayName>
