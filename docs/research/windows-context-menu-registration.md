@@ -61,3 +61,34 @@ Shellのassociation arrayはShell項目の種類ごとに異なる。Microsoft�
 - [KNOWNFOLDERID: FOLDERID_SendTo](https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid) — ユーザー別SendTo既定パス。
 - [IContextMenu::QueryContextMenu](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-icontextmenu-querycontextmenu) — Send Toメニュー向けの呼び出しフラグ `CMF_NOVERBS`。
 - [Windows 11 release information](https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information) — Windows 11 version 25H2 の OS build 系列 `26200` と、現行リリース build `26200.9457`。
+
+## sparse package のunsigned登録実験（2026-09-28）
+
+Microsoft Learn の [unsigned MSIX guidance](https://learn.microsoft.com/en-us/windows/msix/package/unsigned-package) を参照し、Windows 11 build 26200.9457 でmanifestとネイティブCOM DLLだけを含む sparse package を MakeAppx で生成した。WPF実行ファイルは外部配置を参照するmanifestである。
+
+`Add-AppxPackage -Path <package> -ExternalLocation <app-output> -AllowUnsigned -ForceUpdateFromAnyVersion` は HRESULT `0x80073D2B` で拒否された。エラーはunsigned packageが実行可能ファイルのactivationを含むため登録できない旨。失敗後にCurrentUserの対象package登録が残っていないことも確認した。証明書ストア、Developer Mode、管理者設定には触れていない。
+
+この実験はunsigned packageでのユーザー単位登録ができないことを示すが、署名済みsparse packageでの新コンテキストメニュー表示・COM起動は未検証。実施には発行者証明書への信頼設定とCurrentUser package登録が必要で、両方とも作業者の明示的な確認後に限る。
+
+## 開発用署名証明書の形式
+
+開発用証明書の生成はMicrosoft Learnの [Create a certificate for package signing](https://learn.microsoft.com/en-us/windows/msix/package/create-certificate-package-signing) にある `New-SelfSignedCertificate -Type Custom` の例に合わせる。Code Signing EKU (`1.3.6.1.5.5.7.3.3`) に加え、`2.5.29.19={text}` でBasic Constraintsを明示し、生成後・署名前にEKUと `CA:false` を確認する。秘密鍵を含む署名証明書は `Cert:\CurrentUser\My` に作成し、公開CERをMSIX署名信頼のためにどのストアへ追加するかは、以下の登録実測に従う。
+
+## 署名済みsparse packageのCurrentUser登録と信頼ストア実測（2026-09-28）
+
+Windows 11 build 26200.9457で、Code Signing EKUと明示的なCA:false Basic Constraintsを持つ署名済みidentity/sparse packageを `Add-AppxPackage -ExternalLocation` でCurrentUser登録しようとした。公開証明書を `Cert:\CurrentUser\TrustedPeople` へインポートした状態でも、登録は `0x800B0109`（CERT_E_UNTRUSTEDROOT）で失敗した。処理後にこの試行で追加したCurrentUser TrustedPeople証明書はrollbackされ、対象packageの登録がないことを確認した。LocalMachineストアへの変更・昇格・再試行は行っていない。
+
+Microsoft Learnの資料には説明差がある。 [sparse packageによるpackage identity付与手順](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps) は、per-user registration手順の信頼追加例としてCurrentUser TrustedPeopleを示し、machine-wideの場合はLocalMachineを案内する。一方、[MSIX troubleshooting guideの0x800B0109項](https://learn.microsoft.com/en-us/windows/msix/msix-troubleshooting-guide) は、App InstallerはCurrentUserではなくLocalMachine Trusted Peopleのみを確認すると明記し、管理者権限でのImport-Certificateを案内する。このPCのAdd-AppxPackage実測は後者と一致したため、アプリのinstallerは `Cert:\LocalMachine\TrustedPeople` に正確な署名thumbprintが存在することを事前確認する。存在しない場合は管理者用コマンドを表示して停止し、自動昇格・ストア変更はしない。
+
+LocalMachine TrustedPeopleへの追加は同じPCの全ユーザーに影響し、管理者権限を必要とする。Root storeへ追加しない。アプリのuninstallerもmachine trust certificateを削除しない。他ユーザーや別アプリの利用がないことを確認した上で、明示的に削除する管理者のみ、次のコマンドを実行する。
+
+```powershell
+Import-Certificate -FilePath '<公開CERの絶対パス>' -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+Remove-Item -LiteralPath 'Cert:\LocalMachine\TrustedPeople\<thumbprint>' -Force
+```
+
+## 署名済みCurrentUser登録の証明書ストア再試行（2026-09-28）
+
+前回の `0x800B0109` を受け、Code Signing EKUと明示的なCA:false Basic Constraintsを持つ新しい開発証明書を使い、公開CERを `Cert:\CurrentUser\TrustedPeople` に追加して再試行した。`Add-AppxPackage` は同じ `0x800B0109` で失敗し、失敗時のrollbackで今回追加したCurrentUser TrustedPeople entryは削除された。対象AppX packageの登録は0件。LocalMachineストアへの追加は未実施。
+
+この実機結果は、Microsoft Learnの [MSIX troubleshooting guide](https://learn.microsoft.com/en-us/windows/msix/msix-troubleshooting-guide) の説明（App InstallerはCurrentUserではなくLocalMachine Trusted Peopleを確認、追加は管理者権限）と一致する。一方、Microsoftの [sparse package identity guide](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/grant-identity-to-nonpackaged-apps) はper-user手順にCurrentUser TrustedPeople例を示す。資料間の差と現場のAdd-AppxPackage結果を分けて記録し、このアプリではLocalMachine TrustedPeopleに署名証明書thumbprintがある場合のみ登録に進める。欠落時には正確な `Import-Certificate -FilePath '<公開CER>' -CertStoreLocation Cert:\LocalMachine\TrustedPeople` を提示して停止する。インストーラーは昇格も信頼追加もせず、アンインストーラーも全ユーザーに影響するmachine certificateを削除しない。

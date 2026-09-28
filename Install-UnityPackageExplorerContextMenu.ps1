@@ -1,5 +1,9 @@
 ﻿[CmdletBinding()]
-param([string]$Root = $PSScriptRoot)
+param(
+    [string]$Root = $PSScriptRoot,
+    [string]$ContextMenuCertificateThumbprint,
+    [string]$TrustCertificatePath
+)
 
 $ErrorActionPreference = 'Stop'
 $rootPath = [IO.Path]::GetFullPath($Root)
@@ -151,7 +155,9 @@ foreach ($oldMenuPath in @(
     $oldCommandKey = $reg.OpenSubKey("$oldMenuPath\command")
     $oldCommand = if ($oldCommandKey) { [string]$oldCommandKey.GetValue('') } else { '' }
     if ($oldCommandKey) { $oldCommandKey.Dispose() }
-    if ($oldCommand -eq $appCommandLine) { $reg.DeleteSubKeyTree($oldMenuPath, $false) }
+    if ($oldCommand -eq $appCommandLine) {
+        $reg.DeleteSubKeyTree($oldMenuPath, $false)
+    }
 }
 $state = $reg.CreateSubKey($statePath)
 $state.DeleteValue('ZipFolderMenuPath', $false)
@@ -169,6 +175,20 @@ public static class UnityPackageExplorerShellNotifications
 '@
 }
 [UnityPackageExplorerShellNotifications]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+
+if ($ContextMenuCertificateThumbprint) {
+    $modernMenuInstaller = Join-Path $rootPath 'tools\context-menu\Install-ExplorerContextMenuPackage.ps1'
+    $installParameters = @{
+        Root = $rootPath
+        CertificateThumbprint = $ContextMenuCertificateThumbprint
+    }
+    if ($TrustCertificatePath) { $installParameters.TrustCertificatePath = $TrustCertificatePath }
+    & $modernMenuInstaller @installParameters
+} elseif ($TrustCertificatePath) {
+    throw 'Supply -ContextMenuCertificateThumbprint together with -TrustCertificatePath.'
+} else {
+    Write-Warning 'The direct Windows 11 context-menu command was not installed. Supply a trusted -ContextMenuCertificateThumbprint to use the sparse package flow; Send To remains available.'
+}
 
 Write-Host '[OK] .unitypackage、.zip、.prefab の Explorer プレビューハンドラー関連付けを登録しました。'
 Write-Host '[OK] Send To に UnityPackage Explorer を登録しました。'

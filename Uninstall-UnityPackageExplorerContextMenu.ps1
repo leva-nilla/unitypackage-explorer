@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$DevelopmentCertificateThumbprint
+)
 
 $ErrorActionPreference = 'Stop'
 $classId = 'C24F7D7D-2C91-4AA9-969D-FADE6F9A17D2'
@@ -43,6 +45,14 @@ $sendToShortcutPath = if ($state) { [string]$state.GetValue('SendToShortcutPath'
 $zipFolderMenuPath = if ($state) { [string]$state.GetValue('ZipFolderMenuPath') } else { '' }
 $legacyCompressedFolderMenuPath = if ($state) { [string]$state.GetValue('CompressedFolderMenuPath') } else { '' }
 if ($state) { $state.Dispose() }
+
+$packageUninstaller = Join-Path $PSScriptRoot 'tools\context-menu\Uninstall-ExplorerContextMenuPackage.ps1'
+if ($DevelopmentCertificateThumbprint) {
+    & $packageUninstaller -DevelopmentCertificateThumbprint $DevelopmentCertificateThumbprint -SkipPackageConfirmation
+} else {
+    & $packageUninstaller -SkipPackageConfirmation
+}
+
 Remove-OurPreviewAssociation '.unitypackage' $unityPackageProgId
 Remove-OurPreviewAssociation '.prefab' $prefabProgId
 Remove-OurPreviewAssociation '.zip' $zipProgId
