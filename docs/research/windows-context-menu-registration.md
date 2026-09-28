@@ -123,4 +123,10 @@ version `1.0.0.2` の登録後、Explorerからverbを実行すると `0x8007000
 
 version `1.0.0.3`をCurrentUserへ登録後、インストール済みCLSIDの直接probeで実ファイル `Shinano Outfit.unitypackage` のstateが`ECS_ENABLED`、`Invoke`が`S_OK`を返すことを確認した。起動したアプリのprocess command lineには同ファイルの日本語を含む完全パスが渡っていた。従って登録済みCOMからのプロセス起動と引数受け渡しは確認済み。
 
+## per-user EXE install path（2026-09-28）
+
+root installerは自己完結型win-x64 publishを既定の `%LOCALAPPDATA%\Programs\UnityPackageExplorer` に配置し、Start Menu / Send To shortcut と shell command の起動先をインストール済み `UnityPackageExplorer.App.exe` に統一する。Preview HandlerのCOM hostは `PreviewHandler` サブフォルダーに配置するが、self-contained publishの外なので.NET 9 Desktop Runtimeが必要。sparse packageのExternalLocationもアプリのインストール先にするため、manifest package versionは`1.0.0.4`へ更新した。
+
+インストール先は所有マーカーとCurrentUserのInstallDirectory記録を照合し、別用途または所有を確認できない非空フォルダーを拒否する。マーカーの一時ファイルはbuild stagingに作成し、所有記録の書き込み後に同一ボリューム内で配置する。コピー失敗後は所有マーカーにより同じディレクトリを再実行可能とし、uninstallerはファイルを削除せず、shortcuts/登録だけを解除する。2026-09-28にユーザー専用インストールを実行し、Start Menu/Send Toのショートカット、sparse package 1.0.0.4のExternalLocation、プレビューハンドラー登録がインストール先を指すこと、およびインストール済みEXEの起動を確認した。Explorer右クリックUIからの表示・起動は目視未確認。
+
 Explorerの右クリック画面上で項目が表示されること、および画面から選んで起動する操作は引き続き目視未確認。

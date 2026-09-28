@@ -27,6 +27,8 @@ if ($storedName -eq $packageName -and $storedPublisher -and $storedFullName) {
             $state.DeleteValue('SparsePackageName', $false)
             $state.DeleteValue('SparsePackagePublisher', $false)
             $state.DeleteValue('SparsePackageFullName', $false)
+            $state.DeleteValue('SparseExternalLocation', $false)
+            $state.DeleteValue('SparsePackageCertificateThumbprint', $false)
             $state.Dispose()
         }
     }

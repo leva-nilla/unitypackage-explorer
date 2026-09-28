@@ -19,13 +19,15 @@ Unity を起動せずに `.unitypackage`、それを含む `.zip`、Prefab の�
 
 ## セットアップ
 
-Windows x64 と .NET 9 SDK が必要です。次を PowerShell で実行します。
+Windows x64、.NET 9 SDK、Visual Studio C++ x64 build tools が必要です。初回インストールまたは更新時に、次を PowerShell で実行します。
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File .\Install-UnityPackageExplorerContextMenu.ps1
 ```
 
-スクリプトが Release ビルドを作成し、現在のユーザーの「送る」メニューに UnityPackage Explorer のショートカットを登録します。署名済み sparse package がCurrentUserに登録済みの場合は、「その他のオプションを確認」に対象ファイルを開く項目も登録します。選択したファイルのパスをアプリへ渡します。管理者権限は使いません。
+スクリプトは自己完結型 win-x64 アプリを `%LOCALAPPDATA%\Programs\UnityPackageExplorer` に配置し、Start Menu と現在のユーザーの「送る」にショートカットを作成します。ドラッグ＆ドロップと「送る」から開くアプリは、このインストール先の `UnityPackageExplorer.App.exe` です。署名済み sparse package が同じインストール先で CurrentUser に登録済みの場合は、対象ファイル用の右クリックコマンドも登録します。既存の空でないフォルダーは、製品の所有マーカーとユーザー単位のインストール記録が一致しない限り更新しません。
+
+Preview Handler COM host は `PreviewHandler` サブフォルダーに配置します。これは自己完結型publishには含まれず、Explorerで使うには .NET 9 Desktop Runtime が必要です。インストール解除時は関連付けとショートカットだけを外し、アプリ本体と所有マーカーは保持します。安全に再インストールできるよう、ファイルの削除は行いません。
 
 ファイルを右クリックし、「送る」→「UnityPackage Explorer」を選ぶと専用画面で開きます。複数ファイルを一度に送った場合はアプリ側で案内を表示します。
 
@@ -74,10 +76,10 @@ dotnet build .\UnityPackageExplorer.sln -c Release
 dotnet test .\tests\UnityPackageExplorer.Tests\UnityPackageExplorer.Tests.csproj
 ```
 
-アプリを直接起動する場合:
+インストール後にアプリを直接起動する場合:
 
 ```powershell
-dotnet run --project .\src\UnityPackageExplorer.App -- "C:\Assets\sample.unitypackage"
+& "$env:LOCALAPPDATA\Programs\UnityPackageExplorer\UnityPackageExplorer.App.exe" "C:\Assets\sample.unitypackage"
 ```
 
 ## 解除

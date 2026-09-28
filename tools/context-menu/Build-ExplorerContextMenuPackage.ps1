@@ -1,12 +1,13 @@
 [CmdletBinding()]
 param(
     [string]$Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
-    [string]$CertificateThumbprint
+    [string]$CertificateThumbprint,
+    [string]$ExternalLocation
 )
 
 $ErrorActionPreference = 'Stop'
 $rootPath = [IO.Path]::GetFullPath($Root)
-$appOutput = Join-Path $rootPath 'src\UnityPackageExplorer.App\bin\Release\net9.0-windows'
+$appOutput = if ($ExternalLocation) { [IO.Path]::GetFullPath($ExternalLocation) } else { Join-Path $rootPath 'src\UnityPackageExplorer.App\bin\Release\net9.0-windows' }
 $appExe = Join-Path $appOutput 'UnityPackageExplorer.App.exe'
 $shellDll = Join-Path $appOutput 'UnityPackageExplorer.ShellExtension.dll'
 $manifestSource = Join-Path $PSScriptRoot 'AppxManifest.xml'
@@ -36,22 +37,26 @@ if ($CertificateThumbprint) {
     $publisher = $certificate.Subject
 }
 
-if (-not (Test-Path -LiteralPath $appExe)) { throw "Build the WPF app first: $appExe" }
-if (-not (Test-Path -LiteralPath $shellDll)) { throw "Build the native shell extension first: $shellDll" }
 if (-not (Test-Path -LiteralPath $manifestSource)) { throw "Package manifest not found: $manifestSource" }
 foreach ($asset in @('Square150x150Logo.png', 'Square44x44Logo.png')) {
     if (-not (Test-Path -LiteralPath (Join-Path $assetsSource $asset))) { throw "Manifest asset is missing: $asset" }
 }
 
-$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio Installer vswhere.exe was not found.' }
-$vsPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-if (-not $vsPath) { throw 'A Visual Studio C++ x64 toolchain is required.' }
-$msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
-if (-not (Test-Path -LiteralPath $msbuild)) { throw "MSBuild was not found: $msbuild" }
-$nativeProject = Join-Path $rootPath 'src\UnityPackageExplorer.ShellExtension\UnityPackageExplorer.ShellExtension.vcxproj'
-& $msbuild $nativeProject /m /v:minimal /p:Configuration=Release /p:Platform=x64 "/p:ShellOutputDirectory=$appOutput"
-if ($LASTEXITCODE -ne 0) { throw 'Native Explorer command build failed.' }
+if ($ExternalLocation) {
+    if (-not (Test-Path -LiteralPath $appExe)) { throw "Installed app executable was not found: $appExe" }
+    if (-not (Test-Path -LiteralPath $shellDll)) { throw "Installed native command DLL was not found: $shellDll" }
+} else {
+    if (-not (Test-Path -LiteralPath $appExe)) { throw "Build the WPF app first: $appExe" }
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio Installer vswhere.exe was not found.' }
+    $vsPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if (-not $vsPath) { throw 'A Visual Studio C++ x64 toolchain is required.' }
+    $msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
+    if (-not (Test-Path -LiteralPath $msbuild)) { throw "MSBuild was not found: $msbuild" }
+    $nativeProject = Join-Path $rootPath 'src\UnityPackageExplorer.ShellExtension\UnityPackageExplorer.ShellExtension.vcxproj'
+    & $msbuild $nativeProject /m /v:minimal /p:Configuration=Release /p:Platform=x64 "/p:ShellOutputDirectory=$appOutput"
+    if ($LASTEXITCODE -ne 0) { throw 'Native Explorer command build failed.' }
+}
 
 $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
 $makeAppx = Get-ChildItem -LiteralPath $sdkRoot -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |

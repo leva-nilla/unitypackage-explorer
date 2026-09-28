@@ -3,12 +3,13 @@ param(
     [string]$Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     [Parameter(Mandatory)]
     [string]$CertificateThumbprint,
+    [string]$ExternalLocation,
     [string]$TrustCertificatePath = (Join-Path $env:LOCALAPPDATA 'UnityPackageExplorer\Signing\UnityPackageExplorer.Development.cer')
 )
 
 $ErrorActionPreference = 'Stop'
 $rootPath = [IO.Path]::GetFullPath($Root)
-$appOutput = Join-Path $rootPath 'src\UnityPackageExplorer.App\bin\Release\net9.0-windows'
+$appOutput = if ($ExternalLocation) { [IO.Path]::GetFullPath($ExternalLocation) } else { Join-Path $rootPath 'src\UnityPackageExplorer.App\bin\Release\net9.0-windows' }
 $packagePath = Join-Path $PSScriptRoot 'obj\UnityPackageExplorer.SparseContextMenu.msix'
 $packageName = 'UnityPackageExplorer.SparseContextMenu'
 $thumbprint = $CertificateThumbprint.Replace(' ', '').ToUpperInvariant()
@@ -26,7 +27,7 @@ if (-not $basicConstraints -or $basicConstraints.CertificateAuthority) {
     throw 'The selected certificate must contain an explicit Basic Constraints extension with CA:false.'
 }
 
-& (Join-Path $PSScriptRoot 'Build-ExplorerContextMenuPackage.ps1') -Root $rootPath -CertificateThumbprint $thumbprint
+& (Join-Path $PSScriptRoot 'Build-ExplorerContextMenuPackage.ps1') -Root $rootPath -CertificateThumbprint $thumbprint -ExternalLocation $appOutput
 if (-not (Test-Path -LiteralPath $packagePath)) { throw "Signed package was not created: $packagePath" }
 
 $existingPackages = @(Get-AppxPackage -Name $packageName -ErrorAction SilentlyContinue)
@@ -58,7 +59,7 @@ if (-not $trusted) {
     throw "The signing certificate is not in Cert:\LocalMachine\TrustedPeople. This step requires an administrator; no elevation or import was attempted. Open PowerShell as Administrator and run:`r`n$importCommand`r`nThen rerun this installer."
 }
 
-if (-not $PSCmdlet.ShouldProcess("CurrentUser AppX package $packageName", 'Install signed sparse package with the app output folder as ExternalLocation')) {
+if (-not $PSCmdlet.ShouldProcess("CurrentUser AppX package $packageName", "Install signed sparse package with $appOutput as ExternalLocation")) {
     Write-Host 'Package registration was not approved; no trust store was changed.'
     return
 }
@@ -76,6 +77,8 @@ try {
     $installState.SetValue('SparsePackageName', $packageName, [Microsoft.Win32.RegistryValueKind]::String)
     $installState.SetValue('SparsePackagePublisher', $registeredPackage.Publisher, [Microsoft.Win32.RegistryValueKind]::String)
     $installState.SetValue('SparsePackageFullName', $registeredPackage.PackageFullName, [Microsoft.Win32.RegistryValueKind]::String)
+    $installState.SetValue('SparseExternalLocation', $appOutput, [Microsoft.Win32.RegistryValueKind]::String)
+    $installState.SetValue('SparsePackageCertificateThumbprint', $thumbprint, [Microsoft.Win32.RegistryValueKind]::String)
 } finally {
     $installState.Dispose()
 }

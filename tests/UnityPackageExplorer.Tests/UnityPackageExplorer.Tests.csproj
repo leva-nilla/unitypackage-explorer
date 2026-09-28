@@ -24,6 +24,8 @@
     <None Include="..\..\src\UnityPackageExplorer.ShellExtension\UnityPackageExplorerShellCommand.cpp" Link="TestData\UnityPackageExplorerShellCommand.cpp" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\Install-UnityPackageExplorerContextMenu.ps1" Link="TestData\Install-UnityPackageExplorerContextMenu.ps1" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\Uninstall-UnityPackageExplorerContextMenu.ps1" Link="TestData\Uninstall-UnityPackageExplorerContextMenu.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tools\context-menu\Build-ExplorerContextMenuPackage.ps1" Link="TestData\Build-ExplorerContextMenuPackage.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tools\context-menu\Install-ExplorerContextMenuPackage.ps1" Link="TestData\Install-ExplorerContextMenuPackage.ps1" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

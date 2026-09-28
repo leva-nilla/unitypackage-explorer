@@ -42,6 +42,7 @@ $prefabProgId = if ($state) { [string]$state.GetValue('PrefabProgId') } else { '
 $zipProgId = if ($state) { [string]$state.GetValue('ZipProgId') } else { '' }
 $appPath = if ($state) { [string]$state.GetValue('AppPath') } else { '' }
 $sendToShortcutPath = if ($state) { [string]$state.GetValue('SendToShortcutPath') } else { '' }
+$startMenuShortcutPath = if ($state) { [string]$state.GetValue('StartMenuShortcutPath') } else { '' }
 $zipFolderMenuPath = if ($state) { [string]$state.GetValue('ZipFolderMenuPath') } else { '' }
 $legacyCompressedFolderMenuPath = if ($state) { [string]$state.GetValue('CompressedFolderMenuPath') } else { '' }
 $legacyContextMenuPath = if ($state) { [string]$state.GetValue('LegacyContextMenuPath') } else { '' }
@@ -97,6 +98,14 @@ if ($appPath -and $sendToShortcutPath -and (Test-Path -LiteralPath $sendToShortc
     if ($shortcut.TargetPath -and
         ([IO.Path]::GetFullPath($shortcut.TargetPath) -eq [IO.Path]::GetFullPath($appPath))) {
         Remove-Item -LiteralPath $sendToShortcutPath -Force
+    }
+}
+if ($appPath -and $startMenuShortcutPath -and (Test-Path -LiteralPath $startMenuShortcutPath)) {
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($startMenuShortcutPath)
+    if ($shortcut.TargetPath -and
+        ([IO.Path]::GetFullPath($shortcut.TargetPath) -eq [IO.Path]::GetFullPath($appPath))) {
+        Remove-Item -LiteralPath $startMenuShortcutPath -Force
     }
 }
 if ($appPath -and $zipFolderMenuPath) {
@@ -165,3 +174,4 @@ public static class UnityPackageExplorerShellNotifications
 [UnityPackageExplorerShellNotifications]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
 
 Write-Host '[OK] UnityPackage Explorer のプレビューと右クリック登録を解除しました。'
+Write-Host 'アプリ本体のファイルは削除せず、インストールフォルダーと所有マーカーを保持しました。'

@@ -15,7 +15,7 @@ public sealed class ExplorerCommandRegistrationTests
 
         XNamespace foundation = "http://schemas.microsoft.com/appx/manifest/foundation/windows10";
         var identity = Assert.Single(manifest.Descendants(foundation + "Identity"));
-        Assert.Equal("1.0.0.3", (string?)identity.Attribute("Version"));
+        Assert.Equal("1.0.0.4", (string?)identity.Attribute("Version"));
         var itemType = Assert.Single(itemTypes);
         Assert.Equal("*", (string?)itemType.Attribute("Type"));
         Assert.Single(itemType.Elements(desktop5 + "Verb"));
@@ -56,10 +56,31 @@ public sealed class ExplorerCommandRegistrationTests
         var installer = File.ReadAllText(Path.Combine(testData, "Install-UnityPackageExplorerContextMenu.ps1"));
 
         Assert.Contains("[switch]$SkipBuild", installer, StringComparison.Ordinal);
-        Assert.Contains("if (-not $SkipBuild)", installer, StringComparison.Ordinal);
+        Assert.Contains("if ($SkipBuild)", installer, StringComparison.Ordinal);
+        Assert.Contains("Skipping publish/build and reusing the verified installed files.", installer, StringComparison.Ordinal);
         Assert.Contains("if (-not (Test-Path -LiteralPath $appPath))", installer, StringComparison.Ordinal);
-        Assert.Contains("if (-not (Test-Path -LiteralPath $extractorPath))", installer, StringComparison.Ordinal);
         Assert.Contains("if (-not (Test-Path -LiteralPath $comHost))", installer, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void InstallerPublishesAndRegistersPerUserApplicationOutsideTheRepository()
+    {
+        var testData = Path.Combine(AppContext.BaseDirectory, "TestData");
+        var installer = File.ReadAllText(Path.Combine(testData, "Install-UnityPackageExplorerContextMenu.ps1"));
+        var packageInstaller = File.ReadAllText(Path.Combine(testData, "Install-ExplorerContextMenuPackage.ps1"));
+        var packageBuilder = File.ReadAllText(Path.Combine(testData, "Build-ExplorerContextMenuPackage.ps1"));
+        var uninstaller = File.ReadAllText(Path.Combine(testData, "Uninstall-UnityPackageExplorerContextMenu.ps1"));
+
+        Assert.Contains("Programs\\UnityPackageExplorer", installer, StringComparison.Ordinal);
+        Assert.Contains("dotnet publish $appProject -c Release -r win-x64 --self-contained true", installer, StringComparison.Ordinal);
+        Assert.Contains("-p:BaseOutputPath=$baseOutputPath", installer, StringComparison.Ordinal);
+        Assert.Contains("[Environment]::GetFolderPath('Programs')", installer, StringComparison.Ordinal);
+        Assert.Contains("Install destination is non-empty and is not a verified UnityPackage Explorer installation", installer, StringComparison.Ordinal);
+        Assert.Contains("ExternalLocation = $installDirectory", installer, StringComparison.Ordinal);
+        Assert.Contains("-ExternalLocation $appOutput", packageInstaller, StringComparison.Ordinal);
+        Assert.Contains("if ($ExternalLocation)", packageBuilder, StringComparison.Ordinal);
+        Assert.Contains("アプリ本体のファイルは削除せず", uninstaller, StringComparison.Ordinal);
+        Assert.DoesNotContain("Remove-Item -LiteralPath $installDirectory", uninstaller, StringComparison.Ordinal);
     }
 
     [Fact]
