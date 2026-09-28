@@ -44,6 +44,8 @@ $appPath = if ($state) { [string]$state.GetValue('AppPath') } else { '' }
 $sendToShortcutPath = if ($state) { [string]$state.GetValue('SendToShortcutPath') } else { '' }
 $zipFolderMenuPath = if ($state) { [string]$state.GetValue('ZipFolderMenuPath') } else { '' }
 $legacyCompressedFolderMenuPath = if ($state) { [string]$state.GetValue('CompressedFolderMenuPath') } else { '' }
+$legacyContextMenuPath = if ($state) { [string]$state.GetValue('LegacyContextMenuPath') } else { '' }
+$legacyContextMenuClsid = if ($state) { [string]$state.GetValue('LegacyContextMenuClsid') } else { '' }
 if ($state) { $state.Dispose() }
 
 $packageUninstaller = Join-Path $PSScriptRoot 'tools\context-menu\Uninstall-ExplorerContextMenuPackage.ps1'
@@ -56,6 +58,15 @@ if ($DevelopmentCertificateThumbprint) {
 Remove-OurPreviewAssociation '.unitypackage' $unityPackageProgId
 Remove-OurPreviewAssociation '.prefab' $prefabProgId
 Remove-OurPreviewAssociation '.zip' $zipProgId
+
+if ($legacyContextMenuPath -and $legacyContextMenuClsid -eq '{1C490A47-4D85-4AA0-A2A3-4A7827B5DA79}') {
+    $legacyVerb = $reg.OpenSubKey($legacyContextMenuPath)
+    $registeredHandler = if ($legacyVerb) { [string]$legacyVerb.GetValue('ExplorerCommandHandler') } else { '' }
+    if ($legacyVerb) { $legacyVerb.Dispose() }
+    if ($registeredHandler -eq $legacyContextMenuClsid) {
+        $reg.DeleteSubKeyTree($legacyContextMenuPath, $false)
+    }
+}
 
 $previewList = $reg.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\PreviewHandlers', $true)
 if ($previewList) {

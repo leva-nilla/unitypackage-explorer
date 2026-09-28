@@ -11,7 +11,7 @@ Unity を起動せずに `.unitypackage`、それを含む `.zip`、Prefab の�
 - Prefab の GameObject 階層を表示し、参照 FBX を配置・回転・拡大して確認。同梱または同じ Unity プロジェクトにある画像を読み、基本テクスチャとして表示。
 - 3D 表示は Unity Scene View 風の操作に対応。右ボタンを押しながらマウスで見回し、W/A/S/D で移動、Q/E で上下移動、Shift で加速します。右ボタンを押したままホイールで移動速度を調整し、通常のホイールはズーム、F キーは表示中モデルの bounds 中心へ再フレームします。
 - エクスプローラーのプレビュー欄向けハンドラーをユーザー単位で登録。`.unitypackage` と `.zip` は画像と種類別件数、Prefab は階層と参照テクスチャを表示します。
-- Windows 11 の新しい右クリックメニュー向けに、.zip、.unitypackage、.prefab を対象とする sparse MSIX + IExplorerCommand を用意しています。パッケージには manifest とネイティブ COM DLL のみを入れ、WPF アプリ本体は外部配置します。
+- Windows 11 の右クリックメニュー向けに sparse MSIX + IExplorerCommand を用意しています。manifest は wildcard 項目を宣言し、COM側で通常ファイルの `.zip`、`.unitypackage`、`.prefab` だけを表示対象にします。パッケージには manifest とネイティブ COM DLL のみを入れ、WPF アプリ本体は外部配置します。
 - パッケージの展開は共通の .NET 読み取り処理を使い、指定した場所に新しい `<名前>_extracted` フォルダーを作成。既存名がある場合は番号を付けて、既存ファイルを上書きしない。閲覧だけでは隣にファイルを作りません。
 
 シェーダー、Unity 独自コンポーネント、Unity による描画結果は再現しません。3D 表示は簡易プレビューで、基本色テクスチャをFBX内のマテリアル名に基づいて対応付けます。マテリアル名が一致しない場合や対応しない画像形式、参照先がない場合は、テクスチャが未適用となる理由を画面に表示します。
@@ -24,13 +24,15 @@ Windows x64 と .NET 9 SDK が必要です。次を PowerShell で実行しま�
 pwsh -ExecutionPolicy Bypass -File .\Install-UnityPackageExplorerContextMenu.ps1
 ```
 
-スクリプトが Release ビルドを作成し、現在のユーザーの「送る」メニューに UnityPackage Explorer のショートカットを登録します。選択したファイルのパスをアプリへ渡します。管理者権限は使いません。
+スクリプトが Release ビルドを作成し、現在のユーザーの「送る」メニューに UnityPackage Explorer のショートカットを登録します。署名済み sparse package がCurrentUserに登録済みの場合は、「その他のオプションを確認」に対象ファイルを開く項目も登録します。選択したファイルのパスをアプリへ渡します。管理者権限は使いません。
 
 ファイルを右クリックし、「送る」→「UnityPackage Explorer」を選ぶと専用画面で開きます。複数ファイルを一度に送った場合はアプリ側で案内を表示します。
 
 ### Windows 11 の右クリック直下メニュー
 
-右クリック直下の項目には sparse MSIX と署名を使います。CurrentUserへのsparse package登録と、`IExplorerCommand`のCOMクラスactivationは実機で確認済みで、COMの`GetTitle`は「UnityPackage Explorer で開く」を返します。Windowsのmanifestには`.zip`、`.unitypackage`、`.prefab`を登録していますが、実際のExplorer右クリック画面で新メニュー項目が表示されるかはまだ目視確認できていません。既定のセットアップは直下メニューを登録せず、「送る」とドラッグ＆ドロップが使えます。
+右クリック直下の新メニューには sparse MSIX と署名を使います。manifestはWindows向けにwildcard項目を宣言し、IExplorerCommandの`GetState`が`.zip`、`.unitypackage`、`.prefab`以外を隠します。CurrentUserへのsparse package登録、COMクラスactivation、および `.zip` で有効・`.exe` で非表示になる `GetState` は実機で確認済みです。COMの`GetTitle`は「UnityPackage Explorer で開く」を返します。新メニュー上の表示とInvoke起動は、Explorer画面での確認が残っています。
+
+「その他のオプションを確認」（従来メニュー）には、sparse packageが同じCurrentUserに登録されている場合だけ、ユーザー単位のwildcard verbを追加します。こちらも同じCOMクラスが対応する3拡張子だけを有効にします。パッケージ未登録時は利用できず、「送る」とドラッグ＆ドロップを使えます。従来メニューでの表示・起動も実画面確認が残っています。
 
 開発用の自己署名証明書を使う場合、署名用秘密鍵は `Cert:\CurrentUser\My` にエクスポート不可で作成し、sparse packageはCurrentUserに登録します。ただし、この環境では署名証明書を `Cert:\LocalMachine\TrustedPeople` に信頼登録する必要があり、管理者権限とPC全ユーザーへの影響があります。証明書はCode Signing EKUと明示的なCA:false Basic Constraintsを持ち、公開 `.cer` のみ `%LOCALAPPDATA%\UnityPackageExplorer\Signing` に保存します。生成スクリプトは証明書ストアとファイルへの変更前に確認し、`-WhatIf` で変更内容だけ確認できます。
 

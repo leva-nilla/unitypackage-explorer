@@ -2,7 +2,8 @@
 param(
     [string]$Root = $PSScriptRoot,
     [string]$ContextMenuCertificateThumbprint,
-    [string]$TrustCertificatePath
+    [string]$TrustCertificatePath,
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,8 +16,12 @@ $comHost = Join-Path $rootPath 'src\UnityPackageExplorer.PreviewHandler\bin\Rele
 $appCommandLine = '"{0}" "%1"' -f $appPath
 $sendToShortcutPath = Join-Path ([Environment]::GetFolderPath('SendTo')) 'UnityPackage Explorer.lnk'
 $solutionPath = Join-Path $rootPath 'UnityPackageExplorer.sln'
-& dotnet build $solutionPath -c Release
-if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
+if (-not $SkipBuild) {
+    & dotnet build $solutionPath -c Release
+    if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
+} else {
+    Write-Host 'Skipping Release build; using existing outputs.'
+}
 if (-not (Test-Path -LiteralPath $appPath)) { throw "App executable was not produced: $appPath" }
 if (-not (Test-Path -LiteralPath $extractorPath)) { throw "Safe extractor was not produced: $extractorPath" }
 if (-not (Test-Path -LiteralPath $comHost)) { throw "Preview handler COM host was not produced: $comHost" }
@@ -29,6 +34,8 @@ $reg = [Microsoft.Win32.Registry]::CurrentUser
 $classesRoot = [Microsoft.Win32.Registry]::ClassesRoot
 $classes = 'Software\Classes'
 $statePath = 'Software\UnityPackageExplorer\Install'
+$contextMenuClsid = '1C490A47-4D85-4AA0-A2A3-4A7827B5DA79'
+$contextMenuVerbPath = "$classes\*\shell\UnityPackageExplorerOpen"
 
 function Set-DefaultValue([string]$keyPath, [string]$value) {
     $key = $reg.CreateSubKey($keyPath)
@@ -60,6 +67,13 @@ function Get-RegisteredPreviewHandler([string]$keyPath) {
     if (-not $key) { return '' }
     try { return [string]$key.GetValue('') }
     finally { $key.Dispose() }
+}
+
+$existingContextVerb = $reg.OpenSubKey($contextMenuVerbPath)
+$existingContextHandler = if ($existingContextVerb) { [string]$existingContextVerb.GetValue('ExplorerCommandHandler') } else { '' }
+if ($existingContextVerb) { $existingContextVerb.Dispose() }
+if ($existingContextHandler -and $existingContextHandler -ne "{$contextMenuClsid}") {
+    throw "既存のコンテキストメニューコマンドを上書きしません: $contextMenuVerbPath ($existingContextHandler)"
 }
 
 $associationInfo = @{}
@@ -186,9 +200,36 @@ if ($ContextMenuCertificateThumbprint) {
     & $modernMenuInstaller @installParameters
 } elseif ($TrustCertificatePath) {
     throw 'Supply -ContextMenuCertificateThumbprint together with -TrustCertificatePath.'
-} else {
-    Write-Warning 'The direct Windows 11 context-menu command was not installed. Supply a trusted -ContextMenuCertificateThumbprint to use the sparse package flow; Send To remains available.'
 }
+
+# The classic "Show more options" menu uses a per-user wildcard verb whose
+# packaged COM command filters the selected item to the three supported types.
+# Register it only when this exact sparse package identity is already available.
+$packageState = $reg.OpenSubKey($statePath)
+$packageName = if ($packageState) { [string]$packageState.GetValue('SparsePackageName') } else { '' }
+$packagePublisher = if ($packageState) { [string]$packageState.GetValue('SparsePackagePublisher') } else { '' }
+$packageFullName = if ($packageState) { [string]$packageState.GetValue('SparsePackageFullName') } else { '' }
+if ($packageState) { $packageState.Dispose() }
+$matchingPackage = if ($packageName -and $packagePublisher -and $packageFullName) {
+    Get-AppxPackage -Name $packageName -ErrorAction SilentlyContinue |
+        Where-Object { $_.Publisher -eq $packagePublisher -and $_.PackageFullName -eq $packageFullName } |
+        Select-Object -First 1
+} else { $null }
+if ($matchingPackage) {
+    $verb = $reg.CreateSubKey($contextMenuVerbPath)
+    $verb.SetValue('', 'UnityPackage Explorer で開く', [Microsoft.Win32.RegistryValueKind]::String)
+    $verb.SetValue('ExplorerCommandHandler', "{$contextMenuClsid}", [Microsoft.Win32.RegistryValueKind]::String)
+    $verb.Dispose()
+    $installedState = $reg.CreateSubKey($statePath)
+    $installedState.SetValue('LegacyContextMenuPath', $contextMenuVerbPath, [Microsoft.Win32.RegistryValueKind]::String)
+    $installedState.SetValue('LegacyContextMenuClsid', "{$contextMenuClsid}", [Microsoft.Win32.RegistryValueKind]::String)
+    $installedState.Dispose()
+    Write-Host '[OK] 「その他のオプションを確認」メニューに対応コマンドを登録しました。'
+} else {
+    Write-Warning 'sparse packageがCurrentUserに登録されていないため、「その他のオプション」項目は登録しません。Send To とドラッグ＆ドロップは利用できます。'
+}
+
+[UnityPackageExplorerShellNotifications]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
 
 Write-Host '[OK] .unitypackage、.zip、.prefab の Explorer プレビューハンドラー関連付けを登録しました。'
 Write-Host '[OK] Send To に UnityPackage Explorer を登録しました。'

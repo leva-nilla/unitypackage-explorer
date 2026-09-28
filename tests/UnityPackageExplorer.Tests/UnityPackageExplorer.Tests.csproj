@@ -20,6 +20,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="..\..\tools\context-menu\AppxManifest.xml" Link="TestData\AppxManifest.xml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\UnityPackageExplorer.ShellExtension\UnityPackageExplorerShellCommand.cpp" Link="TestData\UnityPackageExplorerShellCommand.cpp" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\Install-UnityPackageExplorerContextMenu.ps1" Link="TestData\Install-UnityPackageExplorerContextMenu.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\Uninstall-UnityPackageExplorerContextMenu.ps1" Link="TestData\Uninstall-UnityPackageExplorerContextMenu.ps1" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\UnityPackageExplorer.Core\UnityPackageExplorer.Core.csproj" />
     <ProjectReference Include="..\..\src\UnityPackageExplorer.App\UnityPackageExplorer.App.csproj" />
   </ItemGroup>

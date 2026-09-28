@@ -27,6 +27,12 @@ namespace
             return false;
         }
 
+        const DWORD attributes = GetFileAttributesW(path);
+        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+        {
+            return false;
+        }
+
         const wchar_t* extension = PathFindExtensionW(path);
         return extension != nullptr &&
             (_wcsicmp(extension, L".zip") == 0 ||
@@ -72,50 +78,96 @@ namespace
         return IsSupportedPath(path.c_str()) ? S_OK : E_INVALIDARG;
     }
 
-    HRESULT GetApplicationPath(std::wstring& path)
+    HRESULT GetSiblingApplicationPath(std::wstring& path)
     {
-        constexpr PCWSTR keyPath = L"Software\\UnityPackageExplorer\\Install";
-        constexpr PCWSTR valueName = L"AppPath";
-        DWORD size = 0;
-        LSTATUS status = RegGetValueW(HKEY_CURRENT_USER, keyPath, valueName, RRF_RT_REG_SZ, nullptr, nullptr, &size);
-        if (status != ERROR_SUCCESS || size < sizeof(wchar_t))
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<PCWSTR>(&GetSiblingApplicationPath),
+            &module))
         {
-            return HRESULT_FROM_WIN32(status == ERROR_SUCCESS ? ERROR_FILE_NOT_FOUND : status);
+            const DWORD error = GetLastError();
+            wchar_t message[160]{};
+            StringCchPrintfW(message, ARRAYSIZE(message), L"UnityPackage Explorer: could not locate shell DLL module (Win32 error %lu).\n", error);
+            OutputDebugStringW(message);
+            return HRESULT_FROM_WIN32(error == ERROR_SUCCESS ? ERROR_MOD_NOT_FOUND : error);
         }
 
-        std::vector<wchar_t> buffer(size / sizeof(wchar_t));
-        status = RegGetValueW(HKEY_CURRENT_USER, keyPath, valueName, RRF_RT_REG_SZ, nullptr, buffer.data(), &size);
-        if (status != ERROR_SUCCESS)
+        std::vector<wchar_t> buffer(32768);
+        const DWORD length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length == 0 || length >= buffer.size())
         {
-            return HRESULT_FROM_WIN32(status);
+            const DWORD error = length == 0 ? GetLastError() : ERROR_INSUFFICIENT_BUFFER;
+            wchar_t message[160]{};
+            StringCchPrintfW(message, ARRAYSIZE(message), L"UnityPackage Explorer: could not read shell DLL path (Win32 error %lu).\n", error);
+            OutputDebugStringW(message);
+            return HRESULT_FROM_WIN32(error == ERROR_SUCCESS ? ERROR_MOD_NOT_FOUND : error);
         }
 
-        path.assign(buffer.data());
-        return PathFileExistsW(path.c_str()) ? S_OK : HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+        std::wstring modulePath(buffer.data(), length);
+        const size_t separator = modulePath.find_last_of(L"\\/");
+        if (separator == std::wstring::npos)
+        {
+            OutputDebugStringW(L"UnityPackage Explorer: shell DLL path has no parent directory.\n");
+            return HRESULT_FROM_WIN32(ERROR_INVALID_NAME);
+        }
+
+        path.assign(modulePath, 0, separator + 1);
+        path.append(L"UnityPackageExplorer.App.exe");
+        if (!PathFileExistsW(path.c_str()))
+        {
+            OutputDebugStringW(L"UnityPackage Explorer: sibling UnityPackageExplorer.App.exe does not exist beside the shell DLL.\n");
+            return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+        }
+        return S_OK;
     }
 
     HRESULT LaunchPreview(PCWSTR filePath)
     {
         std::wstring appPath;
-        HRESULT result = GetApplicationPath(appPath);
+        HRESULT result = GetSiblingApplicationPath(appPath);
         if (FAILED(result))
         {
             return result;
         }
 
-        std::wstring arguments;
-        arguments.reserve(wcslen(filePath) + 3);
-        arguments.push_back(L'"');
-        arguments.append(filePath);
-        arguments.push_back(L'"');
+        // Launch the registered executable directly. ShellExecute's legacy
+        // return values can collapse distinct activation failures to SE_ERR_FNF,
+        // which made a valid app path look like a missing selected file.
+        std::wstring commandLine;
+        commandLine.reserve(appPath.size() + wcslen(filePath) + 6);
+        commandLine.push_back(L'"');
+        commandLine.append(appPath);
+        commandLine.append(L"\" \"");
+        commandLine.append(filePath);
+        commandLine.append(L"\"");
 
-        HINSTANCE launchResult = ShellExecuteW(nullptr, L"open", appPath.c_str(), arguments.c_str(), nullptr, SW_SHOWNORMAL);
-        if (reinterpret_cast<INT_PTR>(launchResult) > 32)
+        const size_t separator = appPath.find_last_of(L"\\/");
+        const std::wstring workingDirectory = separator == std::wstring::npos ? L"" : appPath.substr(0, separator);
+        STARTUPINFOW startupInfo{};
+        startupInfo.cb = sizeof(startupInfo);
+        PROCESS_INFORMATION processInfo{};
+        if (CreateProcessW(
+            appPath.c_str(),
+            commandLine.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            0,
+            nullptr,
+            workingDirectory.empty() ? nullptr : workingDirectory.c_str(),
+            &startupInfo,
+            &processInfo))
         {
+            CloseHandle(processInfo.hThread);
+            CloseHandle(processInfo.hProcess);
             return S_OK;
         }
 
         const DWORD error = GetLastError();
+        wchar_t message[192]{};
+        StringCchPrintfW(message, ARRAYSIZE(message), L"UnityPackage Explorer: CreateProcessW failed (Win32 error %lu).\n", error);
+        OutputDebugStringW(message);
         return HRESULT_FROM_WIN32(error == ERROR_SUCCESS ? ERROR_GEN_FAILURE : error);
     }
 
@@ -166,7 +218,7 @@ namespace
             *icon = nullptr;
 
             std::wstring appPath;
-            HRESULT result = GetApplicationPath(appPath);
+            HRESULT result = GetSiblingApplicationPath(appPath);
             if (FAILED(result))
             {
                 return result;

@@ -100,3 +100,27 @@ Remove-Item -LiteralPath 'Cert:\LocalMachine\TrustedPeople\<thumbprint>' -Force
 証明書信頼、CurrentUser package登録、COM起動までは実機確認済み。Explorerの実際の右クリック画面で3拡張子向けメニュー項目が見えるか、選択後にアプリが起動するかは未確認。LocalMachine信頼は同じPCの他ユーザーにも及ぶため、アプリ解除時も自動削除しない。
 
 その後、COM probeで`GetTitle`を呼び出したところ、日本語のwide literalがMSVC側で文字化けしていた。タイトルをUniversal Character Name（`\u3067\u958B\u304F`）で表記し、manifest versionを`1.0.0.1`へ上げて署名packageを更新した。同一versionの異なるpayloadは`0x80073CFB`で拒否されたため、version bump後に`UnityPackageExplorer.SparseContextMenu_1.0.0.1_neutral__k490yjxqyg3te`のCurrentUser更新が成功。再度のCOM probeでHRESULT `S_OK`、タイトル「UnityPackage Explorer で開く」を確認した。machine trust証明書は変更していない。Explorer右クリック画面での表示・Invoke起動は引き続き未確認。
+
+## Wildcard context menu registration and legacy menu route (2026-09-28)
+
+Windows 11の実画面で確認していたのは右クリックの「その他のオプションを確認」側であり、新しいメニューのtoolbar項目とは別の経路だった。既存sparse packageのCOM probeでは `.zip` の`GetState`が`S_OK/ECS_ENABLED`、`notepad.exe`が`S_OK/ECS_HIDDEN`を返した。従って項目宣言はmanifestの `desktop5:ItemType Type="*"` に合わせ、ネイティブcommand側で通常ファイルかつ `.zip`、`.unitypackage`、`.prefab` だけを許可する。対応外のファイルやディレクトリは非表示とする。
+
+インストーラーは、CurrentUserに記録済みの完全一致sparse package identityが存在する場合のみ、`HKCU\Software\Classes\*\shell\UnityPackageExplorerOpen` にユーザー単位の `ExplorerCommandHandler` verbを登録する。解除は保存済みのverb pathとCLSID、実際の`ExplorerCommandHandler`が全て一致した場合に限り、そのverbを削除する。wildcard registry scopeはCOMの`GetState`フィルターと組み合わせて使う。従来メニューおよび新メニューの実Explorer表示・Invoke起動はこの変更時点では未確認。manifest/package更新を要するversion `1.0.0.2` はソース上で準備しただけで、CurrentUser package登録やExplorer registryは更新していない。
+
+## Version 1.0.0.2 packageとCurrentUser verbの実機登録（2026-09-28）
+
+その後、署名済みversion `1.0.0.2` のsparse packageをCurrentUserへ更新登録し、COM activationと選択ファイル判定を再確認した。`.zip` は `GetState` が `S_OK / ECS_ENABLED`、`.exe` は `S_OK / ECS_HIDDEN` を返した。root installer経由で `HKCU\Software\Classes\*\shell\UnityPackageExplorerOpen` に `ExplorerCommandHandler={1C490A47-4D85-4AA0-A2A3-4A7827B5DA79}` を登録し、verb labelは「UnityPackage Explorer で開く」。登録はユーザー単位で、同じCLSIDを持つpackage registrationと併用する。
+
+この記録時点で確認済みなのはpackage登録、COM activation、GetStateの対応/非対応判定、およびHKCU verbの登録内容まで。Explorerの新メニューまたは「その他のオプションを確認」画面での項目表示と、項目実行後のアプリ起動はまだ目視確認していない。
+
+## Invokeの起動先修正とversion 1.0.0.3準備（2026-09-28）
+
+version `1.0.0.2` の登録後、Explorerからverbを実行すると `0x80070002` で失敗した。COM側のGetStateは有効だった。Invoke起動先をHKCU `AppPath`値ではなく、ロード済みnative shell DLLと同じディレクトリにある `UnityPackageExplorer.App.exe` から解決するよう変更し、`CreateProcessW`で起動する。DLL位置からアプリを解決できない場合と、プロセス起動時のWin32 errorはOutputDebugStringへ記録する。
+
+直接Invokeプローブは、ソースからbuildしたDLLを一時フォルダーのアプリ出力一式のコピーと同じ場所に置いて行った（`%TEMP%\upe-launch-validation-20260928\app`）。そのDLLの`DllGetClassObject`からIExplorerCommandを生成し、実在する`Shinano_Ver01.zip`を渡して`Invoke`が`S_OK`を返し、一時コピーのアプリプロセスが起動したことを確認した。これはインストール済みpackage DLLを更新または試験した結果ではない。DLL payload変更に伴いmanifest versionを`1.0.0.3`へ上げた。この時点ではversion `1.0.0.3`の登録済みCOMからの起動は未確認だった。
+
+## Version 1.0.0.3登録済みCOMからのInvoke確認（2026-09-28）
+
+version `1.0.0.3`をCurrentUserへ登録後、インストール済みCLSIDの直接probeで実ファイル `Shinano Outfit.unitypackage` のstateが`ECS_ENABLED`、`Invoke`が`S_OK`を返すことを確認した。起動したアプリのprocess command lineには同ファイルの日本語を含む完全パスが渡っていた。従って登録済みCOMからのプロセス起動と引数受け渡しは確認済み。
+
+Explorerの右クリック画面上で項目が表示されること、および画面から選んで起動する操作は引き続き目視未確認。
