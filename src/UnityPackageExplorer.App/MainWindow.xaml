@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:hx="http://helix-toolkit.org/wpf/SharpDX"
         xmlns:local="clr-namespace:UnityPackageExplorer.App"
-        Title="UnityPackage Explorer" Height="780" Width="1280" MinHeight="560" MinWidth="860" Deactivated="Window_Deactivated"
+        Title="UnityPackage Explorer" Icon="Assets/UnityPackageExplorer.ico" Height="780" Width="1280" MinHeight="560" MinWidth="860" Deactivated="Window_Deactivated"
         Background="#15191F" Foreground="#E5E9EF" WindowStartupLocation="CenterScreen" AllowDrop="True" DragEnter="Window_DragEnter" DragOver="Window_DragOver" Drop="Window_Drop">
     <Window.Resources>
         <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#315B66" />

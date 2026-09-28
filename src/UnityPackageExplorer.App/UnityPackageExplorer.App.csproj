@@ -9,12 +9,17 @@
     <PackageReference Include="HelixToolkit.Wpf.SharpDX" Version="3.1.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Resource Include="Assets\UnityPackageExplorer.ico" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <ApplicationIcon>Assets\UnityPackageExplorer.ico</ApplicationIcon>
   </PropertyGroup>
 
 </Project>

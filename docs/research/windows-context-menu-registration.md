@@ -125,8 +125,12 @@ version `1.0.0.3`をCurrentUserへ登録後、インストール済みCLSIDの�
 
 ## per-user EXE install path（2026-09-28）
 
-root installerは自己完結型win-x64 publishを既定の `%LOCALAPPDATA%\Programs\UnityPackageExplorer` に配置し、Start Menu / Send To shortcut と shell command の起動先をインストール済み `UnityPackageExplorer.App.exe` に統一する。Preview HandlerのCOM hostは `PreviewHandler` サブフォルダーに配置するが、self-contained publishの外なので.NET 9 Desktop Runtimeが必要。sparse packageのExternalLocationもアプリのインストール先にするため、manifest package versionは`1.0.0.4`へ更新した。
+2026-09-28の初回セットアップでは、root installerが自己完結型win-x64 publishを `%LOCALAPPDATA%\Programs\UnityPackageExplorer` に配置し、Start Menu / Send To shortcut と shell command の起動先をインストール済み `UnityPackageExplorer.App.exe` に統一した。Preview HandlerのCOM hostは `PreviewHandler` サブフォルダーに配置するが、self-contained publishの外なので.NET 9 Desktop Runtimeが必要。sparse packageのExternalLocationもアプリのインストール先にするため、manifest package versionを`1.0.0.4`へ更新した。
 
 インストール先は所有マーカーとCurrentUserのInstallDirectory記録を照合し、別用途または所有を確認できない非空フォルダーを拒否する。マーカーの一時ファイルはbuild stagingに作成し、所有記録の書き込み後に同一ボリューム内で配置する。コピー失敗後は所有マーカーにより同じディレクトリを再実行可能とし、uninstallerはファイルを削除せず、shortcuts/登録だけを解除する。2026-09-28にユーザー専用インストールを実行し、Start Menu/Send Toのショートカット、sparse package 1.0.0.4のExternalLocation、プレビューハンドラー登録がインストール先を指すこと、およびインストール済みEXEの起動を確認した。Explorer右クリックUIからの表示・起動は目視未確認。
+
+## アプリアイコン更新（2026-09-28）
+
+`.ico`をEXEのApplicationIconおよびWPF MainWindowのIconへ設定し、同じ意匠からMSIXの150px/44pxロゴを生成する。アイコン差し替え版のsparse packageはExternalLocation更新に合わせてversion `1.0.0.5`へ上げる。14:21に確認目的で起動した旧EXEがインストールフォルダーを使用中だったため、既定インストール先を安定パス`Current`サブフォルダーにした。旧インスタンスとそのファイルは終了・削除せず残す。更新版のApplicationIconをEXEから抽出して確認し、Start Menu / Send To / sparse packageのExternalLocationが`Current`を参照することを確認した。Explorer右クリック画面での目視確認は未実施。
 
 Explorerの右クリック画面上で項目が表示されること、および画面から選んで起動する操作は引き続き目視未確認。

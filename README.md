@@ -25,7 +25,7 @@ Windows x64、.NET 9 SDK、Visual Studio C++ x64 build tools が必要です。�
 pwsh -ExecutionPolicy Bypass -File .\Install-UnityPackageExplorerContextMenu.ps1
 ```
 
-スクリプトは自己完結型 win-x64 アプリを `%LOCALAPPDATA%\Programs\UnityPackageExplorer` に配置し、Start Menu と現在のユーザーの「送る」にショートカットを作成します。ドラッグ＆ドロップと「送る」から開くアプリは、このインストール先の `UnityPackageExplorer.App.exe` です。署名済み sparse package が同じインストール先で CurrentUser に登録済みの場合は、対象ファイル用の右クリックコマンドも登録します。既存の空でないフォルダーは、製品の所有マーカーとユーザー単位のインストール記録が一致しない限り更新しません。
+スクリプトは自己完結型 win-x64 アプリを `%LOCALAPPDATA%\Programs\UnityPackageExplorer\Current` に配置し、Start Menu と現在のユーザーの「送る」にショートカットを作成します。ドラッグ＆ドロップと「送る」から開くアプリは、このインストール先の `UnityPackageExplorer.App.exe` です。署名済み sparse package が同じインストール先で CurrentUser に登録済みの場合は、対象ファイル用の右クリックコマンドも登録します。既存の空でないフォルダーは、製品の所有マーカーとユーザー単位のインストール記録が一致しない限り更新しません。
 
 Preview Handler COM host は `PreviewHandler` サブフォルダーに配置します。これは自己完結型publishには含まれず、Explorerで使うには .NET 9 Desktop Runtime が必要です。インストール解除時は関連付けとショートカットだけを外し、アプリ本体と所有マーカーは保持します。安全に再インストールできるよう、ファイルの削除は行いません。
 
@@ -79,7 +79,7 @@ dotnet test .\tests\UnityPackageExplorer.Tests\UnityPackageExplorer.Tests.csproj
 インストール後にアプリを直接起動する場合:
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\UnityPackageExplorer\UnityPackageExplorer.App.exe" "C:\Assets\sample.unitypackage"
+& "$env:LOCALAPPDATA\Programs\UnityPackageExplorer\Current\UnityPackageExplorer.App.exe" "C:\Assets\sample.unitypackage"
 ```
 
 ## 解除

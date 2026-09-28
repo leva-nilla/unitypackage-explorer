@@ -15,7 +15,7 @@ public sealed class ExplorerCommandRegistrationTests
 
         XNamespace foundation = "http://schemas.microsoft.com/appx/manifest/foundation/windows10";
         var identity = Assert.Single(manifest.Descendants(foundation + "Identity"));
-        Assert.Equal("1.0.0.4", (string?)identity.Attribute("Version"));
+        Assert.Equal("1.0.0.5", (string?)identity.Attribute("Version"));
         var itemType = Assert.Single(itemTypes);
         Assert.Equal("*", (string?)itemType.Attribute("Type"));
         Assert.Single(itemType.Elements(desktop5 + "Verb"));
