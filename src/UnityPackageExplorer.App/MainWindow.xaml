@@ -22,6 +22,7 @@
         <Style TargetType="TreeViewItem">
             <Setter Property="Foreground" Value="#F0F4F8" />
             <Setter Property="Padding" Value="4,3" />
+            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TreeViewItem">
