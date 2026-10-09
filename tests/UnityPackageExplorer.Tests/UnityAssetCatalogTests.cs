@@ -39,6 +39,20 @@ public sealed class UnityAssetCatalogTests
     }
 
     [Fact]
+    public void BuildTreeStopsWhenCancellationIsRequested()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var exception = Assert.Throws<OperationCanceledException>(() =>
+            UnityAssetCatalog.BuildTree(
+                [new UnityPackageEntry("a".PadLeft(32, '0'), "Assets/Models/Avatar.fbx", true, true)],
+                cancellationToken: cancellation.Token));
+
+        Assert.Equal(cancellation.Token, exception.CancellationToken);
+    }
+
+    [Fact]
     public void ResolvesPrefabDependenciesInsidePackagesFolder()
     {
         var root = Path.Combine(Path.GetTempPath(), $"unitypackage-project-test-{Guid.NewGuid():N}");
@@ -92,6 +106,12 @@ public sealed class UnityAssetCatalogTests
 
             var catalog = UnityAssetCatalog.OpenProjectPrefab(prefabPath);
 
+            var preview = catalog.ReadMaterialInfo(materialGuid);
+
+            Assert.NotNull(preview);
+            Assert.Equal("Leather", preview.Name);
+            Assert.Equal(textureGuid, Assert.Single(preview.TextureGuids));
+            Assert.Equal("33333333333333333333333333333333", Assert.Single(preview.UnsupportedTextureGuids));
             Assert.Equal("Leather", catalog.ReadMaterialName(materialGuid));
             Assert.Equal(textureGuid, Assert.Single(catalog.ReadMaterialTextureGuids(materialGuid)));
             Assert.Equal("33333333333333333333333333333333", Assert.Single(catalog.ReadUnsupportedMaterialTextureGuids(materialGuid)));

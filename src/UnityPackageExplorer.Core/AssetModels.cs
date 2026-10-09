@@ -32,6 +32,11 @@ public sealed record UnityPackageEntry(
 
 public sealed record UnityAssetReference(long FileId, string? Guid);
 
+public sealed record UnityMaterialInfo(
+    string? Name,
+    IReadOnlyList<string> TextureGuids,
+    IReadOnlyList<string> UnsupportedTextureGuids);
+
 public sealed class PrefabNode
 {
     public required long FileId { get; init; }

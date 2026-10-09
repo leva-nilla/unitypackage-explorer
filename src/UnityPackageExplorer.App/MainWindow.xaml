@@ -18,11 +18,22 @@
             <Setter Property="Background" Value="#1C222B" />
             <Setter Property="Foreground" Value="#F0F4F8" />
             <Setter Property="BorderBrush" Value="#303946" />
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
+            <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True" />
+            <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling" />
+            <Setter Property="ItemsPanel">
+                <Setter.Value><ItemsPanelTemplate><VirtualizingStackPanel /></ItemsPanelTemplate></Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="TreeViewItem">
             <Setter Property="Foreground" Value="#F0F4F8" />
             <Setter Property="Padding" Value="4,3" />
             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+            <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True" />
+            <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling" />
+            <Setter Property="ItemsPanel">
+                <Setter.Value><ItemsPanelTemplate><VirtualizingStackPanel /></ItemsPanelTemplate></Setter.Value>
+            </Setter>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TreeViewItem">
@@ -93,7 +104,7 @@
                 <Grid>
                     <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="190"/></Grid.RowDefinitions>
                     <Grid Grid.Row="0">
-                        <hx:Viewport3DX x:Name="Viewport" BackgroundColor="#14191F" ShowCoordinateSystem="True" ShowViewCube="True" ZoomExtentsWhenLoaded="True" Focusable="True" PreviewKeyDown="Viewport_PreviewKeyDown" PreviewKeyUp="Viewport_PreviewKeyUp" PreviewMouseRightButtonDown="Viewport_PreviewMouseRightButtonDown" PreviewMouseRightButtonUp="Viewport_PreviewMouseRightButtonUp" PreviewMouseMove="Viewport_PreviewMouseMove" PreviewMouseWheel="Viewport_PreviewMouseWheel" LostKeyboardFocus="Viewport_LostKeyboardFocus" LostMouseCapture="Viewport_LostMouseCapture">
+                        <hx:Viewport3DX x:Name="Viewport" Visibility="Collapsed" BackgroundColor="#14191F" ShowCoordinateSystem="True" ShowViewCube="True" ZoomExtentsWhenLoaded="True" Focusable="True" PreviewKeyDown="Viewport_PreviewKeyDown" PreviewKeyUp="Viewport_PreviewKeyUp" PreviewMouseRightButtonDown="Viewport_PreviewMouseRightButtonDown" PreviewMouseRightButtonUp="Viewport_PreviewMouseRightButtonUp" PreviewMouseMove="Viewport_PreviewMouseMove" PreviewMouseWheel="Viewport_PreviewMouseWheel" LostKeyboardFocus="Viewport_LostKeyboardFocus" LostMouseCapture="Viewport_LostMouseCapture">
                             <hx:Viewport3DX.Camera>
                                 <hx:PerspectiveCamera Position="3,60,105" LookDirection="-3,-3,-105" UpDirection="0,1,0" FieldOfView="42" />
                             </hx:Viewport3DX.Camera>
@@ -105,7 +116,7 @@
                             <Image x:Name="AssetImage" Stretch="Uniform" Margin="8" />
                         </Border>
                         <TextBlock x:Name="ViewerEmpty" Text="FBX・Prefab・画像を選択すると、ここに表示される" Foreground="#718092" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
-                        <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" Padding="8,5" CornerRadius="4" Background="#B814191F" IsHitTestVisible="False">
+                        <Border x:Name="CameraHelp" Visibility="Collapsed" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" Padding="8,5" CornerRadius="4" Background="#B814191F" IsHitTestVisible="False">
                             <TextBlock Text="右ドラッグ 見回し　·　WASD 移動　·　Q/E 上下　·　Shift 加速　·　ホイール ズーム（右ドラッグ中は速度）" FontSize="11" Foreground="#D5DCE5" />
                         </Border>
                     </Grid>

@@ -6,6 +6,10 @@ namespace UnityPackageExplorer.Core;
 public sealed class UnityAssetCatalog
 {
     private const long MaximumMetaBytes = 1024 * 1024;
+    private static readonly Regex MaterialNamePattern = new("(?m)^m_Name:\\s*(?<name>[^\\r\\n]*)", RegexOptions.Compiled);
+    private static readonly Regex MaterialTextureBlockPattern = new("(?ms)^\\s*-\\s*(?<name>_[A-Za-z0-9]+):\\s*(?<body>.*?)(?=^\\s*-\\s*_[A-Za-z0-9]+:|^\\S|\\z)", RegexOptions.Compiled);
+    private static readonly Regex MaterialTextureReferencePattern = new("(?m)^\\s*m_Texture:\\s*\\{\\s*fileID:\\s*-?\\d+\\s*,\\s*guid:\\s*([0-9a-fA-F]{32})", RegexOptions.Compiled);
+    private static readonly HashSet<string> SupportedMaterialTextureSlots = new(["_MainTex", "_BaseMap", "_BaseColorMap", "_BaseColorTexture"], StringComparer.OrdinalIgnoreCase);
     private readonly UnityPackageReader? _package;
     private readonly Dictionary<string, List<UnityPackageEntry>> _byGuid;
     private readonly Dictionary<string, UnityPackageEntry> _byPath;
@@ -218,39 +222,44 @@ public sealed class UnityAssetCatalog
 
     public IReadOnlyList<string> ReadMaterialTextureGuids(string materialGuid, CancellationToken cancellationToken = default, string? packageMemberPath = null, UnityPackageEntry? referenceEntry = null)
     {
-        var bytes = ReadAssetByGuid(materialGuid, cancellationToken: cancellationToken, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry);
-        if (bytes is null) return [];
-        var text = Encoding.UTF8.GetString(bytes);
-        var blocks = Regex.Matches(text, "(?ms)^\\s*-\\s*(?<name>_[A-Za-z0-9]+):\\s*(?<body>.*?)(?=^\\s*-\\s*_[A-Za-z0-9]+:|^\\S|\\z)");
-        var acceptedNames = new HashSet<string>(["_MainTex", "_BaseMap", "_BaseColorMap", "_BaseColorTexture"], StringComparer.OrdinalIgnoreCase);
-        return blocks.Cast<Match>()
-            .Where(x => acceptedNames.Contains(x.Groups["name"].Value))
-            .SelectMany(x => Regex.Matches(x.Groups["body"].Value, "(?m)^\\s*m_Texture:\\s*\\{\\s*fileID:\\s*-?\\d+\\s*,\\s*guid:\\s*([0-9a-fA-F]{32})").Cast<Match>())
-            .Select(x => x.Groups[1].Value.ToLowerInvariant()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        return ReadMaterialInfo(materialGuid, cancellationToken, packageMemberPath, referenceEntry)?.TextureGuids ?? [];
     }
 
     public IReadOnlyList<string> ReadUnsupportedMaterialTextureGuids(string materialGuid, CancellationToken cancellationToken = default, string? packageMemberPath = null, UnityPackageEntry? referenceEntry = null)
     {
-        var bytes = ReadAssetByGuid(materialGuid, cancellationToken: cancellationToken, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry);
-        if (bytes is null) return [];
-        var text = Encoding.UTF8.GetString(bytes);
-        var supported = ReadMaterialTextureGuids(materialGuid, cancellationToken, packageMemberPath, referenceEntry).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return Regex.Matches(text, "(?m)^\\s*m_Texture:\\s*\\{\\s*fileID:\\s*-?\\d+\\s*,\\s*guid:\\s*([0-9a-fA-F]{32})")
-            .Cast<Match>()
-            .Select(x => x.Groups[1].Value.ToLowerInvariant())
-            .Where(guid => !supported.Contains(guid))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        return ReadMaterialInfo(materialGuid, cancellationToken, packageMemberPath, referenceEntry)?.UnsupportedTextureGuids ?? [];
     }
 
     public string? ReadMaterialName(string materialGuid, CancellationToken cancellationToken = default, string? packageMemberPath = null, UnityPackageEntry? referenceEntry = null)
     {
+        return ReadMaterialInfo(materialGuid, cancellationToken, packageMemberPath, referenceEntry)?.Name;
+    }
+
+    public UnityMaterialInfo? ReadMaterialInfo(string materialGuid, CancellationToken cancellationToken = default, string? packageMemberPath = null, UnityPackageEntry? referenceEntry = null)
+    {
         var bytes = ReadAssetByGuid(materialGuid, cancellationToken: cancellationToken, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry);
         if (bytes is null) return null;
-        var match = Regex.Match(Encoding.UTF8.GetString(bytes), "(?m)^m_Name:\\s*(?<name>[^\\r\\n]*)");
-        if (!match.Success) return null;
-        var name = match.Groups["name"].Value.Trim().Trim('"', '\'');
-        return string.IsNullOrWhiteSpace(name) ? null : name;
+        cancellationToken.ThrowIfCancellationRequested();
+        var text = Encoding.UTF8.GetString(bytes);
+        var nameMatch = MaterialNamePattern.Match(text);
+        var name = nameMatch.Success ? nameMatch.Groups["name"].Value.Trim().Trim('"', '\'') : null;
+        if (string.IsNullOrWhiteSpace(name)) name = null;
+
+        var supported = MaterialTextureBlockPattern.Matches(text)
+            .Cast<Match>()
+            .Where(block => SupportedMaterialTextureSlots.Contains(block.Groups["name"].Value))
+            .SelectMany(block => MaterialTextureReferencePattern.Matches(block.Groups["body"].Value).Cast<Match>())
+            .Select(match => match.Groups[1].Value.ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var supportedSet = supported.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unsupported = MaterialTextureReferencePattern.Matches(text)
+            .Cast<Match>()
+            .Select(match => match.Groups[1].Value.ToLowerInvariant())
+            .Where(guid => !supportedSet.Contains(guid))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return new UnityMaterialInfo(name, supported, unsupported);
     }
 
     public string StageAsset(string guid, string temporaryRoot, string? fallbackName = null, CancellationToken cancellationToken = default, string? packageMemberPath = null, UnityPackageEntry? referenceEntry = null)
@@ -316,11 +325,12 @@ public sealed class UnityAssetCatalog
         return target;
     }
 
-    public static IReadOnlyList<AssetTreeItem> BuildTree(IEnumerable<UnityPackageEntry> entries, Func<UnityPackageEntry, bool>? predicate = null)
+    public static IReadOnlyList<AssetTreeItem> BuildTree(IEnumerable<UnityPackageEntry> entries, Func<UnityPackageEntry, bool>? predicate = null, CancellationToken cancellationToken = default)
     {
         var root = new MutableTreeItem(string.Empty, string.Empty);
         foreach (var entry in entries.Where(x => predicate?.Invoke(x) ?? true))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var parts = entry.PathName.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
             var current = root;
             var path = new StringBuilder();
@@ -337,14 +347,15 @@ public sealed class UnityAssetCatalog
                 if (i == parts.Length - 1) current.Entry = entry;
             }
         }
-        return root.Children.Values.Select(x => x.ToImmutable()).ToArray();
+        return root.Children.Values.Select(x => x.ToImmutable(cancellationToken)).ToArray();
     }
 
-    public static IEnumerable<AssetTreeItem> FilterTree(IEnumerable<AssetTreeItem> nodes, string search, string kind)
+    public static IEnumerable<AssetTreeItem> FilterTree(IEnumerable<AssetTreeItem> nodes, string search, string kind, CancellationToken cancellationToken = default)
     {
         foreach (var node in nodes)
         {
-            var children = FilterTree(node.Children, search, kind).ToArray();
+            cancellationToken.ThrowIfCancellationRequested();
+            var children = FilterTree(node.Children, search, kind, cancellationToken).ToArray();
             var selfMatches = node.Entry is not null
                 && (string.IsNullOrWhiteSpace(search) || node.PathName.Contains(search, StringComparison.OrdinalIgnoreCase))
                 && (kind == "すべて" || node.Entry.Kind == kind);
@@ -373,6 +384,10 @@ public sealed class UnityAssetCatalog
         public string PathName { get; } = pathName;
         public UnityPackageEntry? Entry { get; set; }
         public SortedDictionary<string, MutableTreeItem> Children { get; } = new(StringComparer.OrdinalIgnoreCase);
-        public AssetTreeItem ToImmutable() => new(Name, PathName, Entry, Children.Values.Select(x => x.ToImmutable()).ToArray());
+        public AssetTreeItem ToImmutable(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return new AssetTreeItem(Name, PathName, Entry, Children.Values.Select(x => x.ToImmutable(cancellationToken)).ToArray());
+        }
     }
 }
