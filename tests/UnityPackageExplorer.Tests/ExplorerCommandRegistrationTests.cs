@@ -107,7 +107,11 @@ public sealed class ExplorerCommandRegistrationTests
     {
         var testData = Path.Combine(AppContext.BaseDirectory, "TestData");
         var installer = File.ReadAllText(Path.Combine(testData, "UnityPackageExplorer.iss"));
-        var cleanup = File.ReadAllText(Path.Combine(testData, "Cleanup-LegacyExplorerRegistration.ps1"));
+        var cleanupPath = Path.Combine(testData, "Cleanup-LegacyExplorerRegistration.ps1");
+        var cleanupBytes = File.ReadAllBytes(cleanupPath);
+        Assert.True(cleanupBytes.Length >= 3 && cleanupBytes[0] == 0xEF && cleanupBytes[1] == 0xBB && cleanupBytes[2] == 0xBF,
+            "Windows PowerShell 5.1 needs a UTF-8 BOM to read localized ownership labels correctly.");
+        var cleanup = File.ReadAllText(cleanupPath);
 
         var associationLookup = installer[installer.IndexOf("function GetAssociationProgId", StringComparison.Ordinal)..
             installer.IndexOf("procedure RegisterAssociationProgIdVerb", StringComparison.Ordinal)];
