@@ -35,6 +35,7 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 Uninstallable=yes
+ChangesAssociations=yes
 OutputDir={#SourceRoot}\.artifacts\release
 VersionInfoVersion={#AppVersion}.0
 VersionInfoProductName={#ProductName}
