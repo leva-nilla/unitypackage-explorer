@@ -221,9 +221,76 @@ public sealed class UnityPrefabParserTests
         Assert.Equal(3, placements.Count);
         var repeated = Assert.Single(placements, x => x.Node.Name == "Foot");
         Assert.Equal(2, repeated.Materials.Count);
+        Assert.Equal([101L, 102L], repeated.MeshFileIds);
         Assert.Equal(Matrix4x4.Identity, repeated.Transform);
         Assert.Contains(placements, x => x.Node.Name == "Translated" && x.Transform != Matrix4x4.Identity);
         Assert.Contains(placements, x => x.Node.Name == "Another");
+    }
+
+    [Fact]
+    public void BreaksCyclicParentLinksAndKeepsThePrefabHierarchyReadable()
+    {
+        const string yaml = """
+            --- !u!1 &100
+            GameObject:
+              m_Component:
+              - component: {fileID: 101}
+              m_Name: First
+            --- !u!4 &101
+            Transform:
+              m_GameObject: {fileID: 100}
+              m_Father: {fileID: 201}
+            --- !u!1 &200
+            GameObject:
+              m_Component:
+              - component: {fileID: 201}
+              m_Name: Second
+            --- !u!4 &201
+            Transform:
+              m_GameObject: {fileID: 200}
+              m_Father: {fileID: 101}
+            """;
+
+        var result = UnityPrefabParser.Parse(yaml);
+
+        Assert.Single(result.Roots);
+        Assert.Contains(result.Warnings, warning => warning.Contains("cycle detected", StringComparison.OrdinalIgnoreCase));
+        var first = Assert.Single(result.Roots);
+        Assert.Single(first.Children);
+    }
+
+    [Fact]
+    public void CutsPrefabHierarchiesDeeperThanTheSupportedLimit()
+    {
+        const int count = 300;
+        var documents = Enumerable.Range(1, count).Select(index => $$"""
+            --- !u!1 &{{index * 2}}
+            GameObject:
+              m_Component:
+              - component: {fileID: {{index * 2 + 1}}}
+              m_Name: Node{{index}}
+            --- !u!4 &{{index * 2 + 1}}
+            Transform:
+              m_GameObject: {fileID: {{index * 2}}}
+              m_Father: {fileID: {{(index == 1 ? 0 : (index - 1) * 2 + 1)}}}
+            """).ToArray();
+
+        var result = UnityPrefabParser.Parse(string.Join(Environment.NewLine, documents));
+
+        Assert.Equal(2, result.Roots.Count);
+        Assert.Contains(result.Warnings, warning => warning.Contains("exceeded 256", StringComparison.Ordinal));
+        foreach (var root in result.Roots)
+        {
+            var nodeCount = 0;
+            var pending = new Stack<PrefabNode>();
+            pending.Push(root);
+            while (pending.TryPop(out var current))
+            {
+                nodeCount++;
+                foreach (var child in current.Children) pending.Push(child);
+            }
+            Assert.InRange(nodeCount, 1, 256);
+        }
     }
 
     [Fact]

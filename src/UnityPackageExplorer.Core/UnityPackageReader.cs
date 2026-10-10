@@ -52,7 +52,7 @@ public sealed class UnityPackageReader
                     case "pathname":
                         if (entry.DataStream is not null)
                         {
-                            var data = ReadLimited(entry.DataStream, MaximumPathNameBytes);
+                            var data = ReadLimited(entry.DataStream, MaximumPathNameBytes, cancellationToken);
                             record.PathName = Encoding.UTF8.GetString(data).Trim('\r', '\n', '\0');
                         }
                         break;
@@ -65,7 +65,7 @@ public sealed class UnityPackageReader
                 }
             }
 
-            Drain(entry.DataStream);
+            Drain(entry.DataStream, cancellationToken);
         }
 
         return records.Values
@@ -92,9 +92,9 @@ public sealed class UnityPackageReader
             {
                 if (entry.DataStream is null) return [];
                 if (entry.Length > maximumBytes) throw new InvalidDataException($"Asset exceeds the {maximumBytes:N0} byte safety limit.");
-                return ReadLimited(entry.DataStream, maximumBytes);
+                return ReadLimited(entry.DataStream, maximumBytes, cancellationToken);
             }
-            Drain(entry.DataStream);
+            Drain(entry.DataStream, cancellationToken);
         }
 
         return null;
@@ -121,12 +121,27 @@ public sealed class UnityPackageReader
         }
 
         var basePath = Path.GetFullPath(destination);
-        var root = basePath;
-        var suffix = 2;
-        while (Directory.Exists(root) || File.Exists(root)) root = $"{basePath}-{suffix++}";
-        Directory.CreateDirectory(root);
+        var parentPath = Path.GetDirectoryName(basePath) ?? throw new InvalidDataException("Extraction destination must have a parent directory.");
+        Directory.CreateDirectory(parentPath);
+        var destinationName = Path.GetFileName(basePath);
+        if (string.IsNullOrWhiteSpace(destinationName)) throw new InvalidDataException("Extraction destination must name a directory.");
+
+        // Build beside the final path so the final directory move stays on one volume. A fresh
+        // random staging name belongs only to this extraction request; never clean up a path that
+        // was already present before we created and marked it.
+        var token = Guid.NewGuid().ToString("N");
+        var stagingPath = Path.Combine(parentPath, $".{destinationName}.upx-{token}.tmp");
+        var markerName = $".unitypackage-explorer-owner-{token}";
+        var markerPath = Path.Combine(stagingPath, markerName);
+        var stagingOwned = false;
         try
         {
+            if (Directory.Exists(stagingPath) || File.Exists(stagingPath))
+                throw new IOException("Could not reserve a unique extraction staging directory.");
+            Directory.CreateDirectory(stagingPath);
+            using (new FileStream(markerPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+            stagingOwned = true;
+
             using var archive = OpenArchive();
             using var reader = new TarReader(archive, leaveOpen: false);
             TarEntry? entry;
@@ -145,21 +160,53 @@ public sealed class UnityPackageReader
                     if (outputRelative is not null && entry.DataStream is not null)
                     {
                         if (entry.Length > MaximumAssetBytes) throw new InvalidDataException("Archive asset exceeds the extraction size limit.");
-                        var target = Path.GetFullPath(Path.Combine(root, outputRelative));
-                        var rootPrefix = Path.GetFullPath(root) + Path.DirectorySeparatorChar;
+                        var target = Path.GetFullPath(Path.Combine(stagingPath, outputRelative));
+                        var rootPrefix = Path.GetFullPath(stagingPath) + Path.DirectorySeparatorChar;
                         if (!target.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Asset path escaped the destination root.");
                         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                         using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                        CopyLimited(entry.DataStream, output, MaximumAssetBytes);
+                        CopyLimited(entry.DataStream, output, MaximumAssetBytes, cancellationToken);
                     }
                 }
-                Drain(entry.DataStream);
+                Drain(entry.DataStream, cancellationToken);
             }
-            return root;
+
+            var suffix = 1;
+            while (true)
+            {
+                var finalPath = suffix == 1 ? basePath : $"{basePath}-{suffix}";
+                if (Directory.Exists(finalPath) || File.Exists(finalPath))
+                {
+                    suffix++;
+                    continue;
+                }
+
+                try
+                {
+                    Directory.Move(stagingPath, finalPath);
+                    var finalMarker = Path.Combine(finalPath, markerName);
+                    try { File.Delete(finalMarker); }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                    stagingOwned = false;
+                    return finalPath;
+                }
+                catch (IOException) when (Directory.Exists(finalPath) || File.Exists(finalPath))
+                {
+                    // Another extraction or user created this destination after the check. Keep
+                    // our staging directory and try the next suffix without replacing anything.
+                    suffix++;
+                }
+            }
         }
         catch
         {
-            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+            if (stagingOwned && Directory.Exists(stagingPath))
+            {
+                try { Directory.Delete(stagingPath, recursive: true); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
             throw;
         }
     }
@@ -177,12 +224,16 @@ public sealed class UnityPackageReader
 
         foreach (var part in parts)
         {
-            var stem = Path.GetFileNameWithoutExtension(part).TrimEnd(' ', '.');
+            var fileName = Path.GetFileName(part).TrimEnd(' ', '.');
+            var firstDot = fileName.IndexOf('.');
+            var stem = (firstDot >= 0 ? fileName[..firstDot] : fileName).TrimEnd(' ', '.');
             if (stem.Equals("CON", StringComparison.OrdinalIgnoreCase)
+                || stem.Equals("CONIN$", StringComparison.OrdinalIgnoreCase)
+                || stem.Equals("CONOUT$", StringComparison.OrdinalIgnoreCase)
                 || stem.Equals("PRN", StringComparison.OrdinalIgnoreCase)
                 || stem.Equals("AUX", StringComparison.OrdinalIgnoreCase)
                 || stem.Equals("NUL", StringComparison.OrdinalIgnoreCase)
-                || (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) && stem[3] is >= '1' and <= '9'))
+                || (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) && stem[3] is >= '1' and <= '9' or '¹' or '²' or '³'))
                 throw new InvalidDataException($"Reserved Windows path segment: {part}");
         }
 
@@ -329,37 +380,50 @@ public sealed class UnityPackageReader
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
-    private static byte[] ReadLimited(Stream stream, long limit)
+    private static byte[] ReadLimited(Stream stream, long limit, CancellationToken cancellationToken)
     {
         using var output = new MemoryStream();
         var buffer = new byte[64 * 1024];
         int read;
-        while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+        while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            read = stream.Read(buffer, 0, buffer.Length);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (read == 0) break;
             if (output.Length + read > limit) throw new InvalidDataException("Archive entry exceeds the safety limit.");
             output.Write(buffer, 0, read);
         }
         return output.ToArray();
     }
 
-    private static void CopyLimited(Stream source, Stream destination, long limit)
+    private static void CopyLimited(Stream source, Stream destination, long limit, CancellationToken cancellationToken)
     {
         var buffer = new byte[64 * 1024];
         long total = 0;
-        int read;
-        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+        while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            var read = source.Read(buffer, 0, buffer.Length);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (read == 0) break;
             total += read;
             if (total > limit) throw new InvalidDataException("Archive entry exceeds the safety limit.");
             destination.Write(buffer, 0, read);
         }
     }
 
-    private static void Drain(Stream? stream)
+    private static void Drain(Stream? stream, CancellationToken cancellationToken)
     {
         if (stream is null) return;
         var buffer = new byte[64 * 1024];
-        while (stream.Read(buffer, 0, buffer.Length) > 0) { }
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var read = stream.Read(buffer, 0, buffer.Length);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (read == 0) break;
+        }
     }
 
     private static bool IsGuid(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);

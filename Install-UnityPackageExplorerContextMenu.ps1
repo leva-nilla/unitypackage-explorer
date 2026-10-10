@@ -21,7 +21,7 @@ $classes = 'Software\Classes'
 $classesRoot = [Microsoft.Win32.Registry]::ClassesRoot
 $installMarkerPath = Join-Path $installDirectory '.unitypackage-explorer-install.json'
 $appPath = Join-Path $installDirectory 'UnityPackageExplorer.App.exe'
-$previousRepoAppPath = Join-Path $rootPath 'src\UnityPackageExplorer.App\bin\Release\net9.0-windows\UnityPackageExplorer.App.exe'
+    $previousRepoAppPath = Join-Path $rootPath 'src\UnityPackageExplorer.App\bin\Release\net10.0-windows\UnityPackageExplorer.App.exe'
 $shellDll = Join-Path $installDirectory 'UnityPackageExplorer.ShellExtension.dll'
 $comHost = Join-Path $installDirectory 'PreviewHandler\UnityPackageExplorer.PreviewHandler.comhost.dll'
 $sendToShortcutPath = Join-Path ([Environment]::GetFolderPath('SendTo')) 'UnityPackage Explorer.lnk'
@@ -32,7 +32,7 @@ $publishRoot = Join-Path $buildRoot 'publish'
 $baseOutputPath = (Join-Path $buildRoot 'bin') + [IO.Path]::DirectorySeparatorChar
 $nativeIntermediatePath = (Join-Path $buildRoot 'native-obj') + [IO.Path]::DirectorySeparatorChar
 $previewBaseOutputPath = (Join-Path $buildRoot 'preview-bin') + [IO.Path]::DirectorySeparatorChar
-$previewBuildOutput = Join-Path $buildRoot 'preview-bin\Release\net9.0-windows'
+$previewBuildOutput = Join-Path $buildRoot 'preview-bin\Release\net10.0-windows'
 $contextMenuClsid = '1C490A47-4D85-4AA0-A2A3-4A7827B5DA79'
 $contextMenuVerbPath = "$classes\*\shell\UnityPackageExplorerOpen"
 

@@ -9,7 +9,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $rootPath = [IO.Path]::GetFullPath($Root)
-$appOutput = if ($ExternalLocation) { [IO.Path]::GetFullPath($ExternalLocation) } else { Join-Path $rootPath 'src\UnityPackageExplorer.App\bin\Release\net9.0-windows' }
+$appOutput = if ($ExternalLocation) { [IO.Path]::GetFullPath($ExternalLocation) } else { Join-Path $rootPath 'src\UnityPackageExplorer.App\bin\Release\net10.0-windows' }
 $packagePath = Join-Path $PSScriptRoot 'obj\UnityPackageExplorer.SparseContextMenu.msix'
 $packageName = 'UnityPackageExplorer.SparseContextMenu'
 $thumbprint = $CertificateThumbprint.Replace(' ', '').ToUpperInvariant()

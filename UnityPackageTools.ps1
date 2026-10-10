@@ -29,7 +29,7 @@ function Test-UnityAssetPath {
 function Invoke-UnityPackageInspect {
     param([Parameter(Mandatory = $true)][string]$PackagePath)
 
-    $app = Join-Path $PSScriptRoot 'src\UnityPackageExplorer.App\bin\Release\net9.0-windows\UnityPackageExplorer.App.exe'
+    $app = Join-Path $PSScriptRoot 'src\UnityPackageExplorer.App\bin\Release\net10.0-windows\UnityPackageExplorer.App.exe'
     if (-not (Test-Path -LiteralPath $app -PathType Leaf)) {
         throw 'Viewer app is not built. Run Install-UnityPackageExplorerContextMenu.ps1 first.'
     }
@@ -43,7 +43,7 @@ function Invoke-UnityPackageExtract {
         [string]$Destination
     )
 
-    $cli = Join-Path $PSScriptRoot 'src\UnityPackageExplorer.Cli\bin\Release\net9.0\UnityPackageExplorer.Cli.exe'
+    $cli = Join-Path $PSScriptRoot 'src\UnityPackageExplorer.Cli\bin\Release\net10.0\UnityPackageExplorer.Cli.exe'
     if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) {
         throw 'Safe extractor is not built. Run Install-UnityPackageExplorerContextMenu.ps1 first.'
     }

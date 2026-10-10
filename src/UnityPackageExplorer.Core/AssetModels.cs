@@ -35,7 +35,10 @@ public sealed record UnityAssetReference(long FileId, string? Guid);
 public sealed record UnityMaterialInfo(
     string? Name,
     IReadOnlyList<string> TextureGuids,
-    IReadOnlyList<string> UnsupportedTextureGuids);
+    IReadOnlyList<string> UnsupportedTextureGuids,
+    IReadOnlyList<UnityMaterialTextureReference> SupportedTextures);
+
+public sealed record UnityMaterialTextureReference(string Slot, string Guid);
 
 public sealed class PrefabNode
 {
@@ -56,7 +59,8 @@ public sealed record PrefabModelPlacement(
     string Guid,
     Matrix4x4 Transform,
     PrefabNode Node,
-    IReadOnlyList<UnityAssetReference> Materials);
+    IReadOnlyList<UnityAssetReference> Materials,
+    IReadOnlyList<long> MeshFileIds);
 
 public readonly record struct Vector3Value(float X, float Y, float Z)
 {

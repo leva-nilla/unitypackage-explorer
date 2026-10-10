@@ -245,13 +245,14 @@ public sealed class UnityAssetCatalog
         var name = nameMatch.Success ? nameMatch.Groups["name"].Value.Trim().Trim('"', '\'') : null;
         if (string.IsNullOrWhiteSpace(name)) name = null;
 
-        var supported = MaterialTextureBlockPattern.Matches(text)
+        var supportedBlocks = MaterialTextureBlockPattern.Matches(text)
             .Cast<Match>()
             .Where(block => SupportedMaterialTextureSlots.Contains(block.Groups["name"].Value))
-            .SelectMany(block => MaterialTextureReferencePattern.Matches(block.Groups["body"].Value).Cast<Match>())
-            .Select(match => match.Groups[1].Value.ToLowerInvariant())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .SelectMany(block => MaterialTextureReferencePattern.Matches(block.Groups["body"].Value).Cast<Match>()
+                .Select(match => new UnityMaterialTextureReference(block.Groups["name"].Value, match.Groups[1].Value.ToLowerInvariant())))
+            .DistinctBy(reference => (reference.Slot, reference.Guid))
             .ToArray();
+        var supported = supportedBlocks.Select(reference => reference.Guid).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var supportedSet = supported.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var unsupported = MaterialTextureReferencePattern.Matches(text)
             .Cast<Match>()
@@ -259,7 +260,7 @@ public sealed class UnityAssetCatalog
             .Where(guid => !supportedSet.Contains(guid))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        return new UnityMaterialInfo(name, supported, unsupported);
+        return new UnityMaterialInfo(name, supported, unsupported, supportedBlocks);
     }
 
     public string StageAsset(string guid, string temporaryRoot, string? fallbackName = null, CancellationToken cancellationToken = default, string? packageMemberPath = null, UnityPackageEntry? referenceEntry = null)

@@ -28,21 +28,27 @@ public partial class MainWindow : Window
     private string? _packagePath;
     private string? _directPrefabPath;
     private string? _sourcePath;
-    private string? _temporaryRoot;
     private string _selectedKind = "すべて";
     private bool _updatingFilter;
     private bool _isBusy;
     private bool _isOpeningSource;
     private readonly HashSet<Key> _flightKeys = [];
     private readonly List<HelixToolkitScene> _currentScenes = [];
+    private readonly Dictionary<long, PreviewTemporaryState> _requestTemporaryRoots = [];
+    private long? _activeSceneRequestId;
     private Point _lastLookPoint;
     private bool _looking;
     private double _flightSpeed = 12;
     private long _lastMovementTimestamp;
 
-    private sealed record TextureBinding(string MaterialName, string AssetPath);
+    private sealed record TextureBinding(string MaterialName, string Slot, string AssetPath);
     private sealed record ModelLoadResult(HelixToolkitScene Scene, IReadOnlyList<string> Warnings);
     private sealed record PrefabPreviewData(PrefabParseResult Parse, IReadOnlyList<PrefabNodeView> Tree, IReadOnlyList<PrefabModelPlacement> Models);
+    private sealed class PreviewTemporaryState(string path)
+    {
+        public string Path { get; } = path;
+        public bool InFlight { get; set; } = true;
+    }
     private static readonly string[] Categories = ["アクセサリー", "アバター", "その他", "ツール", "テクスチャ", "ワールド", "衣装", "小物", "髪型"];
 
     public MainWindow(string? initialPath = null)
@@ -78,6 +84,8 @@ public partial class MainWindow : Window
         _previewRequests.BeginRequest();
         var cancellation = Interlocked.Exchange(ref _previewCancellation, null);
         cancellation?.Cancel();
+        ClearDisplay();
+        SetBusy(false);
     }
 
     private void CancelPendingOperations()
@@ -236,6 +244,7 @@ public partial class MainWindow : Window
             Interlocked.CompareExchange(ref _previewCancellation, null, cancellation);
             cancellation.Dispose();
             _isOpeningSource = false;
+            CompletePreviewRequest(requestId);
             if (_previewRequests.IsCurrent(requestId)) SetBusy(false);
         }
     }
@@ -381,6 +390,7 @@ public partial class MainWindow : Window
         {
             Interlocked.CompareExchange(ref _previewCancellation, null, cancellation);
             cancellation.Dispose();
+            CompletePreviewRequest(requestId);
             if (_previewRequests.IsCurrent(requestId)) SetBusy(false);
         }
     }
@@ -432,6 +442,7 @@ public partial class MainWindow : Window
 
         var models = new List<HelixToolkitScene>();
         var materialInfoCache = new Dictionary<string, UnityMaterialInfo?>(StringComparer.OrdinalIgnoreCase);
+        var displayedModelGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var index = 0; index < modelsToLoad.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -439,6 +450,17 @@ public partial class MainWindow : Window
             var placement = modelsToLoad[index];
             var node = placement.Node;
             var guid = placement.Guid;
+            if (node.Mesh is null && node.SourcePrefab is not null)
+            {
+                warnings.Add($"{node.Name}: nested Prefab reference {guid} is not expanded by this viewer.");
+                continue;
+            }
+            if (displayedModelGuids.Contains(guid))
+            {
+                var fileIds = placement.MeshFileIds.Count == 0 ? "unknown" : string.Join(", ", placement.MeshFileIds);
+                warnings.Add($"{node.Name}: FBX {guid} is already shown once; Mesh fileID(s) {fileIds} could not be isolated, so this repeated whole-scene instance was skipped.");
+                continue;
+            }
             SetStatus($"{entry?.PathName ?? Path.GetFileName(externalPath)} の FBX を読み込み中… ({index + 1}/{modelsToLoad.Count})");
             var packageMemberPath = entry?.PackageMemberPath;
             var modelPath = catalog.ResolvePath(guid, packageMemberPath, entry);
@@ -455,13 +477,17 @@ public partial class MainWindow : Window
             try
             {
                 var modelEntry = catalog.FindByGuid(guid, packageMemberPath, entry);
-                var loaded = await LoadPackageModelAsyncCore(guid, placement.Transform, placement.Materials, packageMemberPath, entry, modelEntry, cancellationToken, materialInfoCache);
+                var loaded = await LoadPackageModelAsyncCore(guid, placement.Transform, placement.Materials, packageMemberPath, entry, modelEntry, cancellationToken, materialInfoCache, requestId);
                 if (!_previewRequests.IsCurrent(requestId)) return;
+                displayedModelGuids.Add(guid);
                 models.Add(loaded.Scene);
                 HideSkeletonHelpers(loaded.Scene.Root);
                 _currentScenes.Add(loaded.Scene);
                 SceneModels.AddNode(loaded.Scene.Root);
+                _activeSceneRequestId = requestId;
                 warnings.AddRange(loaded.Warnings.Select(x => $"{node.Name}: {x}"));
+                if (placement.MeshFileIds.Count > 0)
+                    warnings.Add($"{node.Name}: Unity Mesh fileID(s) {string.Join(", ", placement.MeshFileIds)} could not be mapped to individual FBX meshes; the complete FBX scene is shown as an approximation.");
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { warnings.Add($"{node.Name}: {ex.Message}"); }
@@ -491,12 +517,13 @@ public partial class MainWindow : Window
     private async Task LoadPackageModelAsync(UnityPackageEntry entry, Matrix4x4 transform, IReadOnlyList<UnityAssetReference> materials, long requestId, CancellationToken cancellationToken)
     {
         if (!_previewRequests.IsCurrent(requestId)) return;
-        var loaded = await LoadPackageModelAsyncCore(entry.Guid, transform, materials, entry.PackageMemberPath, entry, entry, cancellationToken);
+        var loaded = await LoadPackageModelAsyncCore(entry.Guid, transform, materials, entry.PackageMemberPath, entry, entry, cancellationToken, requestId: requestId);
         if (!_previewRequests.IsCurrent(requestId)) return;
         ClearSceneModels();
         HideSkeletonHelpers(loaded.Scene.Root);
         _currentScenes.Add(loaded.Scene);
         SceneModels.AddNode(loaded.Scene.Root);
+        _activeSceneRequestId = requestId;
         Viewport.Visibility = Visibility.Visible;
         CameraHelp.Visibility = Visibility.Visible;
         ViewerEmpty.Visibility = Visibility.Collapsed;
@@ -515,10 +542,11 @@ public partial class MainWindow : Window
         UnityPackageEntry? referenceEntry = null,
         UnityPackageEntry? modelEntry = null,
         CancellationToken cancellationToken = default,
-        IDictionary<string, UnityMaterialInfo?>? materialInfoCache = null)
+        IDictionary<string, UnityMaterialInfo?>? materialInfoCache = null,
+        long requestId = 0)
     {
         var catalog = _catalog ?? throw new InvalidOperationException("Asset catalog is not open.");
-        var temp = EnsureTemporaryRoot();
+        var temp = EnsureTemporaryRoot(requestId);
         return await Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -567,8 +595,9 @@ public partial class MainWindow : Window
                         ? $"Texture GUID {textureGuid} referenced by material '{materialName}' was not found."
                         : $"Texture {unsupportedPath} is referenced by a material slot that this simplified viewer does not render.");
                 }
-                foreach (var textureGuid in materialInfo.TextureGuids)
+                foreach (var textureReference in materialInfo.SupportedTextures)
                 {
+                    var textureGuid = textureReference.Guid;
                     var textureSourcePath = catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
                     if (textureSourcePath is null)
                     {
@@ -592,7 +621,7 @@ public partial class MainWindow : Window
                     }
                     if (textureExtension.Equals(".tga", StringComparison.OrdinalIgnoreCase))
                         texturePath = ConvertTgaToPng(texturePath);
-                    textureBindings.Add(new TextureBinding(materialName, texturePath));
+                    textureBindings.Add(new TextureBinding(materialName, textureReference.Slot, texturePath));
                 }
             }
 
@@ -633,8 +662,15 @@ public partial class MainWindow : Window
         var applied = new HashSet<TextureBinding>();
         foreach (var mesh in meshNodes)
         {
-            var matching = textureBindings.Where(x => string.Equals(x.MaterialName, mesh.Name, StringComparison.OrdinalIgnoreCase)).ToArray();
-            var paths = matching.Select(x => x.AssetPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var materialName = mesh.Material?.Name;
+            var matching = textureBindings.Where(x =>
+                string.Equals(x.MaterialName, materialName, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(x.MaterialName, mesh.Name, StringComparison.OrdinalIgnoreCase)).ToArray();
+            var paths = matching
+                .OrderBy(x => TextureSlotPriority(x.Slot))
+                .Select(x => x.AssetPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
             if (paths.Length == 1)
             {
                 SetDiffuseTexture(mesh, paths[0]);
@@ -657,6 +693,13 @@ public partial class MainWindow : Window
             warnings.Add($"Texture for material '{binding.MaterialName}' could not be matched to an FBX mesh and was left unused.");
         return warnings;
     }
+
+    private static int TextureSlotPriority(string slot) => slot switch
+    {
+        "_BaseMap" or "_BaseColorMap" or "_BaseColorTexture" => 0,
+        "_MainTex" => 1,
+        _ => 2
+    };
 
     private static void SetDiffuseTexture(HelixToolkit.SharpDX.Model.Scene.MeshNode mesh, string path) =>
         mesh.Material = new HelixToolkit.SharpDX.Model.PhongMaterialCore
@@ -893,6 +936,8 @@ public partial class MainWindow : Window
 
     private void ClearSceneModels()
     {
+        var previousRequestId = _activeSceneRequestId;
+        _activeSceneRequestId = null;
         SceneModels.Clear();
         _currentScenes.Clear();
         StopCameraInput();
@@ -900,14 +945,23 @@ public partial class MainWindow : Window
         CameraHelp.Visibility = Visibility.Collapsed;
         ImagePanel.Visibility = Visibility.Collapsed;
         ViewerEmpty.Visibility = Visibility.Visible;
+        if (previousRequestId is long requestId
+            && _requestTemporaryRoots.TryGetValue(requestId, out var state)
+            && !state.InFlight)
+            CleanupRequestTemporaryFiles(requestId, state);
     }
 
-    private string EnsureTemporaryRoot()
+    private string EnsureTemporaryRoot(long requestId)
     {
-        if (_temporaryRoot is not null && Directory.Exists(_temporaryRoot)) return _temporaryRoot;
-        _temporaryRoot = Path.Combine(Path.GetTempPath(), "UnityPackageExplorer", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_temporaryRoot);
-        return _temporaryRoot;
+        if (requestId == 0) throw new ArgumentOutOfRangeException(nameof(requestId));
+        if (!_requestTemporaryRoots.TryGetValue(requestId, out var state))
+        {
+            var root = Path.Combine(Path.GetTempPath(), "UnityPackageExplorer", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            state = new PreviewTemporaryState(root);
+            _requestTemporaryRoots.Add(requestId, state);
+        }
+        return state.Path;
     }
 
     private string ConvertTgaToPng(string tgaPath)
@@ -925,9 +979,23 @@ public partial class MainWindow : Window
 
     private void CleanupTemporaryFiles()
     {
-        if (_temporaryRoot is not null && Directory.Exists(_temporaryRoot))
+        foreach (var (requestId, state) in _requestTemporaryRoots.ToArray())
+            CleanupRequestTemporaryFiles(requestId, state);
+    }
+
+    private void CompletePreviewRequest(long requestId)
+    {
+        if (!_requestTemporaryRoots.TryGetValue(requestId, out var state)) return;
+        state.InFlight = false;
+        if (_activeSceneRequestId != requestId) CleanupRequestTemporaryFiles(requestId, state);
+    }
+
+    private void CleanupRequestTemporaryFiles(long requestId, PreviewTemporaryState state)
+    {
+        if (!_requestTemporaryRoots.Remove(requestId)) return;
+        if (Directory.Exists(state.Path))
         {
-            try { Directory.Delete(_temporaryRoot, recursive: true); }
+            try { Directory.Delete(state.Path, recursive: true); }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
         }

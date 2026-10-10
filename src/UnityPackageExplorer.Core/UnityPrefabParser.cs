@@ -7,6 +7,7 @@ namespace UnityPackageExplorer.Core;
 /// <summary>Reads the Unity text-serialized Prefab subset used for hierarchy and model references.</summary>
 public static partial class UnityPrefabParser
 {
+    private const int MaximumHierarchyDepth = 256;
     private static readonly Regex DocumentHeader = new("(?m)^--- !u!(?<class>\\d+) &(?<id>-?\\d+)[^\\r\\n]*", RegexOptions.Compiled);
     private static readonly Regex FileReference = new("\\{\\s*fileID:\\s*(-?\\d+)(?:\\s*,\\s*guid:\\s*([0-9a-fA-F]{32}))?", RegexOptions.Compiled);
 
@@ -136,6 +137,8 @@ public static partial class UnityPrefabParser
             };
         }
 
+        BreakParentCyclesAndExcessiveDepth(nodes, warnings);
+
         foreach (var node in nodes.Values)
         {
             if (node.ParentFileId == 0) continue;
@@ -149,11 +152,6 @@ public static partial class UnityPrefabParser
         }
 
         var roots = nodes.Values.Where(x => x.ParentFileId == 0).OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToArray();
-        if (roots.Length == 0 && nodes.Count > 0)
-        {
-            warnings.Add("Prefab hierarchy contains a cycle or unresolved parent chain.");
-            roots = nodes.Values.Take(1).ToArray();
-        }
         if (docs.Count == 0) warnings.Add("No Unity text-serialized Prefab documents were found.");
         return new PrefabParseResult(roots, warnings);
     }
@@ -179,7 +177,7 @@ public static partial class UnityPrefabParser
     public static IReadOnlyList<PrefabModelPlacement> GetModelPlacements(IEnumerable<PrefabNode> roots)
     {
         ArgumentNullException.ThrowIfNull(roots);
-        var references = new List<(PrefabNode Node, string Guid, Matrix4x4 Transform)>();
+        var references = new List<(PrefabNode Node, string Guid, Matrix4x4 Transform, long MeshFileId)>();
         foreach (var root in roots) CollectModelPlacements(root, Matrix4x4.Identity, references);
 
         return references
@@ -188,7 +186,8 @@ public static partial class UnityPrefabParser
             {
                 var first = group.First();
                 var materials = group.SelectMany(x => x.Node.Materials).DistinctBy(x => (x.FileId, x.Guid)).ToArray();
-                return new PrefabModelPlacement(first.Guid, first.Transform, first.Node, materials);
+                var meshFileIds = group.Select(x => x.MeshFileId).Where(x => x != 0).Distinct().ToArray();
+                return new PrefabModelPlacement(first.Guid, first.Transform, first.Node, materials, meshFileIds);
             })
             .ToArray();
     }
@@ -196,15 +195,82 @@ public static partial class UnityPrefabParser
     private static void CollectModelPlacements(
         PrefabNode node,
         Matrix4x4 parent,
-        ICollection<(PrefabNode Node, string Guid, Matrix4x4 Transform)> placements)
+        ICollection<(PrefabNode Node, string Guid, Matrix4x4 Transform, long MeshFileId)> placements)
     {
         var local = Matrix4x4.CreateScale(node.Scale.X, node.Scale.Y, node.Scale.Z)
             * Matrix4x4.CreateFromQuaternion(new Quaternion(node.Rotation.X, node.Rotation.Y, node.Rotation.Z, node.Rotation.W))
             * Matrix4x4.CreateTranslation(node.Position.X, node.Position.Y, node.Position.Z);
         var world = local * parent;
         var guid = node.Mesh?.Guid ?? node.SourcePrefab?.Guid;
-        if (!string.IsNullOrWhiteSpace(guid)) placements.Add((node, guid, world));
+        if (!string.IsNullOrWhiteSpace(guid)) placements.Add((node, guid, world, node.Mesh?.FileId ?? 0));
         foreach (var child in node.Children) CollectModelPlacements(child, world, placements);
+    }
+
+    private static void BreakParentCyclesAndExcessiveDepth(IReadOnlyDictionary<long, PrefabNode> nodes, ICollection<string> warnings)
+    {
+        foreach (var node in nodes.Values)
+        {
+            if (node.ParentFileId == 0 || nodes.ContainsKey(node.ParentFileId)) continue;
+            warnings.Add($"Parent object {node.ParentFileId} was not found for '{node.Name}'.");
+            node.ParentFileId = 0;
+        }
+
+        var completed = new HashSet<long>();
+        foreach (var start in nodes.Values)
+        {
+            if (completed.Contains(start.FileId)) continue;
+            var chain = new List<PrefabNode>();
+            var indexById = new Dictionary<long, int>();
+            var current = start;
+            while (current.ParentFileId != 0 && nodes.TryGetValue(current.ParentFileId, out var parent))
+            {
+                if (indexById.TryGetValue(current.FileId, out var cycleStart))
+                {
+                    var cut = chain.Skip(cycleStart).MinBy(x => x.FileId)!;
+                    cut.ParentFileId = 0;
+                    warnings.Add($"Prefab hierarchy cycle detected; parent link for '{cut.Name}' was ignored.");
+                    break;
+                }
+
+                indexById[current.FileId] = chain.Count;
+                chain.Add(current);
+                current = parent;
+                if (completed.Contains(current.FileId)) break;
+            }
+
+            foreach (var node in chain) completed.Add(node.FileId);
+        }
+
+        var children = nodes.Values
+            .Where(node => node.ParentFileId != 0)
+            .GroupBy(node => node.ParentFileId)
+            .ToDictionary(group => group.Key, group => group.ToArray());
+        var pending = new Stack<(PrefabNode Node, int Depth)>(nodes.Values
+            .Where(node => node.ParentFileId == 0)
+            .Select(node => (node, 1)));
+        var visited = new HashSet<long>();
+        var reportedDepthCut = false;
+        while (pending.TryPop(out var item))
+        {
+            if (!visited.Add(item.Node.FileId) || !children.TryGetValue(item.Node.FileId, out var descendants)) continue;
+            foreach (var child in descendants)
+            {
+                if (item.Depth >= MaximumHierarchyDepth)
+                {
+                    child.ParentFileId = 0;
+                    if (!reportedDepthCut)
+                    {
+                        warnings.Add($"Prefab hierarchy exceeded {MaximumHierarchyDepth} levels; parent link for '{child.Name}' was ignored.");
+                        reportedDepthCut = true;
+                    }
+                    pending.Push((child, 1));
+                }
+                else
+                {
+                    pending.Push((child, item.Depth + 1));
+                }
+            }
+        }
     }
 
     public static long? FindRootTransformFileId(string yaml)
