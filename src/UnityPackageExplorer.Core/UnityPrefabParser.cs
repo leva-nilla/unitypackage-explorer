@@ -49,9 +49,10 @@ public static partial class UnityPrefabParser
                     {
                         var parent = ReadSingleReference(document.Body, "m_TransformParent")?.FileId ?? 0;
                         var modifications = ReadPrefabTransformOverrides(document.Body);
+                        var materialOverrides = ReadPrefabMaterialOverrides(document.Body);
                         var rootTransformFileId = source.Guid is null ? null : rootTransformLookup?.Invoke(source.Guid);
                         var transformOverrides = SelectRootTransformOverrides(modifications, source.Guid, rootTransformFileId, warnings);
-                        prefabInstances[document.FileId] = new PrefabInstanceData(document.FileId, source, parent, transformOverrides);
+                        prefabInstances[document.FileId] = new PrefabInstanceData(document.FileId, source, parent, transformOverrides, materialOverrides);
                     }
                     break;
                 default:
@@ -83,6 +84,7 @@ public static partial class UnityPrefabParser
             {
                 if (!components.TryGetValue(componentId, out var component))
                 {
+                    if (transforms.ContainsKey(componentId)) continue;
                     node.Components.Add("Unknown component");
                     continue;
                 }
@@ -106,6 +108,9 @@ public static partial class UnityPrefabParser
             if (gameObject.PrefabInstanceId != 0 && prefabInstances.TryGetValue(gameObject.PrefabInstanceId, out var instance))
             {
                 node.SourcePrefab = instance.SourcePrefab;
+                node.MaterialOverrides.AddRange(instance.MaterialOverrides);
+                if (instance.MaterialOverrides.Count > 0)
+                    warnings.Add($"'{node.Name}' has {instance.MaterialOverrides.Count} nested Prefab material override(s); target renderer and slot are retained for diagnostics but cannot be mapped safely to imported FBX submeshes.");
                 if (transform is not null && transform.FatherFileId == instance.ParentTransformFileId)
                 {
                     node.Position = ReadOverrideVector(instance.TransformOverrides, "m_LocalPosition", node.Position);
@@ -125,7 +130,7 @@ public static partial class UnityPrefabParser
                 && transform.FatherFileId == instance.ParentTransformFileId);
             if (hasRootObject) continue;
             var parentId = instance.ParentTransformFileId != 0 && transformIdToGameObject.TryGetValue(instance.ParentTransformFileId, out var parent) ? parent : 0;
-            nodes[instance.FileId] = new PrefabNode
+            var instanceNode = new PrefabNode
             {
                 FileId = instance.FileId,
                 Name = $"Prefab ({instance.SourcePrefab.Guid ?? instance.SourcePrefab.FileId.ToString(CultureInfo.InvariantCulture)})",
@@ -135,6 +140,10 @@ public static partial class UnityPrefabParser
                 Scale = ReadOverrideVector(instance.TransformOverrides, "m_LocalScale", Vector3Value.One),
                 SourcePrefab = instance.SourcePrefab
             };
+            instanceNode.MaterialOverrides.AddRange(instance.MaterialOverrides);
+            if (instance.MaterialOverrides.Count > 0)
+                warnings.Add($"'{instanceNode.Name}' has {instance.MaterialOverrides.Count} nested Prefab material override(s); target renderer and slot are retained for diagnostics but cannot be mapped safely to imported FBX submeshes.");
+            nodes[instance.FileId] = instanceNode;
         }
 
         BreakParentCyclesAndExcessiveDepth(nodes, warnings);
@@ -174,11 +183,13 @@ public static partial class UnityPrefabParser
         _ => $"Unity component {classId}"
     };
 
-    public static IReadOnlyList<PrefabModelPlacement> GetModelPlacements(IEnumerable<PrefabNode> roots)
+    public static IReadOnlyList<PrefabModelPlacement> GetModelPlacements(
+        IEnumerable<PrefabNode> roots,
+        bool useRootTransformForSkinnedMeshRenderers = false)
     {
         ArgumentNullException.ThrowIfNull(roots);
         var references = new List<(PrefabNode Node, string Guid, Matrix4x4 Transform, long MeshFileId)>();
-        foreach (var root in roots) CollectModelPlacements(root, Matrix4x4.Identity, references);
+        foreach (var root in roots) CollectModelPlacements(root, Matrix4x4.Identity, null, useRootTransformForSkinnedMeshRenderers, references);
 
         return references
             .GroupBy(x => (Guid: x.Guid.ToLowerInvariant(), x.Transform))
@@ -193,7 +204,12 @@ public static partial class UnityPrefabParser
                     .ToArray();
                 return new PrefabModelPlacement(first.Guid, first.Transform, first.Node, materials, meshFileIds)
                 {
-                    RendererAssignments = rendererAssignments
+                    RendererAssignments = rendererAssignments,
+                    UsesRootTransformApproximation = useRootTransformForSkinnedMeshRenderers
+                        && group.Any(x => x.Node.Components.Contains("SkinnedMeshRenderer", StringComparer.Ordinal)),
+                    MaterialOverrides = group.SelectMany(x => x.Node.MaterialOverrides)
+                        .DistinctBy(x => (x.TargetFileId, x.TargetGuid, x.MaterialSlot, x.Material.FileId, x.Material.Guid))
+                        .ToArray()
                 };
             })
             .ToArray();
@@ -202,15 +218,20 @@ public static partial class UnityPrefabParser
     private static void CollectModelPlacements(
         PrefabNode node,
         Matrix4x4 parent,
+        Matrix4x4? rootTransform,
+        bool useRootTransformForSkinnedMeshRenderers,
         ICollection<(PrefabNode Node, string Guid, Matrix4x4 Transform, long MeshFileId)> placements)
     {
         var local = Matrix4x4.CreateScale(node.Scale.X, node.Scale.Y, node.Scale.Z)
             * Matrix4x4.CreateFromQuaternion(new Quaternion(node.Rotation.X, node.Rotation.Y, node.Rotation.Z, node.Rotation.W))
             * Matrix4x4.CreateTranslation(node.Position.X, node.Position.Y, node.Position.Z);
         var world = local * parent;
+        rootTransform ??= world;
         var guid = node.Mesh?.Guid ?? node.SourcePrefab?.Guid;
-        if (!string.IsNullOrWhiteSpace(guid)) placements.Add((node, guid, world, node.Mesh?.FileId ?? 0));
-        foreach (var child in node.Children) CollectModelPlacements(child, world, placements);
+        var isSkinnedMeshRenderer = node.Components.Contains("SkinnedMeshRenderer", StringComparer.Ordinal);
+        var placementTransform = useRootTransformForSkinnedMeshRenderers && isSkinnedMeshRenderer ? rootTransform.Value : world;
+        if (!string.IsNullOrWhiteSpace(guid)) placements.Add((node, guid, placementTransform, node.Mesh?.FileId ?? 0));
+        foreach (var child in node.Children) CollectModelPlacements(child, world, rootTransform, useRootTransformForSkinnedMeshRenderers, placements);
     }
 
     private static void BreakParentCyclesAndExcessiveDepth(IReadOnlyDictionary<long, PrefabNode> nodes, ICollection<string> warnings)
@@ -381,6 +402,27 @@ public static partial class UnityPrefabParser
         return values;
     }
 
+    private static IReadOnlyList<PrefabMaterialOverride> ReadPrefabMaterialOverrides(string body)
+    {
+        var materials = new List<PrefabMaterialOverride>();
+        var modifications = Regex.Matches(body, "(?ms)^\\s*-\\s*target:\\s*\\{[^\\r\\n]*\\}(?<block>.*?)(?=^\\s*-\\s*target:|\\z)");
+        foreach (Match modification in modifications)
+        {
+            var propertyPath = Regex.Match(modification.Groups["block"].Value, "(?m)^\\s*propertyPath:\\s*m_Materials\\.Array\\.data\\[(?<slot>\\d+)\\]");
+            if (!propertyPath.Success) continue;
+            var target = Regex.Match(modification.Value, "target:\\s*\\{[^}]*fileID:\\s*(?<id>-?\\d+)(?:\\s*,\\s*guid:\\s*(?<guid>[0-9a-fA-F]{32}))?");
+            if (!target.Success) continue;
+            var reference = ReadSingleReference(modification.Groups["block"].Value, "objectReference");
+            if (reference is { Guid: not null, FileId: not 0 })
+                materials.Add(new PrefabMaterialOverride(
+                    long.Parse(target.Groups["id"].Value, CultureInfo.InvariantCulture),
+                    target.Groups["guid"].Success ? target.Groups["guid"].Value.ToLowerInvariant() : null,
+                    int.Parse(propertyPath.Groups["slot"].Value, CultureInfo.InvariantCulture),
+                    reference));
+        }
+        return materials.DistinctBy(x => (x.TargetFileId, x.TargetGuid, x.MaterialSlot, x.Material.FileId, x.Material.Guid)).ToArray();
+    }
+
     private static IReadOnlyDictionary<string, string> SelectRootTransformOverrides(
         IReadOnlyDictionary<PrefabTransformTarget, Dictionary<string, string>> overrides,
         string? sourceGuid,
@@ -440,5 +482,6 @@ public static partial class UnityPrefabParser
         long FileId,
         UnityAssetReference SourcePrefab,
         long ParentTransformFileId,
-        IReadOnlyDictionary<string, string> TransformOverrides);
+        IReadOnlyDictionary<string, string> TransformOverrides,
+        IReadOnlyList<PrefabMaterialOverride> MaterialOverrides);
 }

@@ -51,6 +51,7 @@ public sealed class PrefabNode
     public List<string> Components { get; } = [];
     public UnityAssetReference? Mesh { get; set; }
     public List<UnityAssetReference> Materials { get; } = [];
+    public List<PrefabMaterialOverride> MaterialOverrides { get; } = [];
     public UnityAssetReference? SourcePrefab { get; set; }
     public List<PrefabNode> Children { get; } = [];
 }
@@ -63,6 +64,8 @@ public sealed record PrefabModelPlacement(
     IReadOnlyList<long> MeshFileIds)
 {
     public IReadOnlyList<PrefabRendererMaterialAssignment> RendererAssignments { get; init; } = [];
+    public bool UsesRootTransformApproximation { get; init; }
+    public IReadOnlyList<PrefabMaterialOverride> MaterialOverrides { get; init; } = [];
 }
 
 /// <summary>Material references belonging to one Unity renderer and source Mesh subasset.</summary>
@@ -70,6 +73,13 @@ public sealed record PrefabRendererMaterialAssignment(
     long MeshFileId,
     string RendererName,
     IReadOnlyList<UnityAssetReference> Materials);
+
+/// <summary>Nested Prefab material override retained for diagnostics when its source renderer cannot be mapped.</summary>
+public sealed record PrefabMaterialOverride(
+    long TargetFileId,
+    string? TargetGuid,
+    int MaterialSlot,
+    UnityAssetReference Material);
 
 public readonly record struct Vector3Value(float X, float Y, float Z)
 {

@@ -431,7 +431,10 @@ public partial class MainWindow : Window
             });
             cancellationToken.ThrowIfCancellationRequested();
             var tree = result.Roots.Select(x => new PrefabNodeView(x, cancellationToken: cancellationToken)).ToArray();
-            var models = UnityPrefabParser.GetModelPlacements(result.Roots);
+            // Importer loads the entire FBX scene. A skinned renderer's leaf transform often
+            // contains the FBX rest-pose axis conversion; applying it to the whole scene tilts it.
+            // Keep explicit transforms on static MeshFilter references and nested prefab instances.
+            var models = UnityPrefabParser.GetModelPlacements(result.Roots, useRootTransformForSkinnedMeshRenderers: true);
             return new PrefabPreviewData(result, tree, models);
         }, cancellationToken);
         if (!_previewRequests.IsCurrent(requestId)) return;
@@ -450,6 +453,8 @@ public partial class MainWindow : Window
             var placement = modelsToLoad[index];
             var node = placement.Node;
             var guid = placement.Guid;
+            if (placement.UsesRootTransformApproximation)
+                warnings.Add($"{node.Name}: Skinned FBX is shown as a whole-scene approximation using the Prefab root transform; per-renderer and bone-local placement is not reproduced.");
             if (displayedModelGuids.Contains(guid))
             {
                 var fileIds = placement.MeshFileIds.Count == 0 ? "unknown" : string.Join(", ", placement.MeshFileIds);
@@ -475,7 +480,7 @@ public partial class MainWindow : Window
             try
             {
                 var modelEntry = catalog.FindByGuid(guid, packageMemberPath, entry);
-                var loaded = await LoadPackageModelAsyncCore(guid, placement.Transform, placement.Materials, packageMemberPath, entry, modelEntry, cancellationToken, materialInfoCache, requestId, placement.RendererAssignments, isPrefabPreview: true);
+                var loaded = await LoadPackageModelAsyncCore(guid, placement.Transform, placement.Materials, packageMemberPath, entry, modelEntry, cancellationToken, materialInfoCache, requestId, placement.RendererAssignments, isPrefabPreview: true, materialOverrides: placement.MaterialOverrides);
                 if (!_previewRequests.IsCurrent(requestId)) return;
                 displayedModelGuids.Add(guid);
                 models.Add(loaded.Scene);
@@ -543,7 +548,8 @@ public partial class MainWindow : Window
         IDictionary<string, UnityMaterialInfo?>? materialInfoCache = null,
         long requestId = 0,
         IReadOnlyList<PrefabRendererMaterialAssignment>? rendererAssignments = null,
-        bool isPrefabPreview = false)
+        bool isPrefabPreview = false,
+        IReadOnlyList<PrefabMaterialOverride>? materialOverrides = null)
     {
         var catalog = _catalog ?? throw new InvalidOperationException("Asset catalog is not open.");
         var temp = EnsureTemporaryRoot(requestId);
@@ -630,6 +636,59 @@ public partial class MainWindow : Window
                 }
             }
 
+            foreach (var materialOverride in materialOverrides ?? [])
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var target = $"target renderer fileID {materialOverride.TargetFileId}, material slot {materialOverride.MaterialSlot}";
+                if (materialOverride.Material.Guid is not { } overrideGuid)
+                {
+                    warnings.Add($"Nested Prefab override for {target} has no material GUID; it was not applied to the FBX.");
+                    continue;
+                }
+
+                var overridePath = catalog.ResolvePath(overrideGuid, packageMemberPath, referenceEntry);
+                if (overridePath is null)
+                {
+                    warnings.Add($"Nested Prefab override for {target} references missing material GUID {overrideGuid}; it was not applied to the FBX.");
+                    continue;
+                }
+
+                UnityMaterialInfo? overrideInfo;
+                if (materialInfoCache is not null && materialInfoCache.TryGetValue(overrideGuid, out var cachedOverrideInfo))
+                {
+                    overrideInfo = cachedOverrideInfo;
+                }
+                else
+                {
+                    overrideInfo = catalog.ReadMaterialInfo(overrideGuid, cancellationToken, packageMemberPath, referenceEntry);
+                    materialInfoCache?.Add(overrideGuid, overrideInfo);
+                }
+
+                if (overrideInfo is null)
+                {
+                    warnings.Add($"Nested Prefab override for {target} could not read material {overridePath}; it was not applied to the FBX.");
+                    continue;
+                }
+
+                var overrideName = overrideInfo.Name ?? Path.GetFileNameWithoutExtension(overridePath);
+                var resolvedOverrideTextures = overrideInfo.SupportedTextures
+                    .Select(texture => (texture.Guid, Path: catalog.ResolvePath(texture.Guid, packageMemberPath, referenceEntry)))
+                    .ToArray();
+                var texturePaths = resolvedOverrideTextures
+                    .Where(texture => texture.Path is not null)
+                    .Select(texture => texture.Path!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var textureDescription = texturePaths.Length > 0
+                    ? $"resolved texture(s) {string.Join(", ", texturePaths)}"
+                    : overrideInfo.SupportedTextures.Count > 0
+                        ? $"supported texture reference(s) could not be resolved: {string.Join(", ", resolvedOverrideTextures.Select(x => x.Guid))}"
+                        : overrideInfo.UnsupportedTextureGuids.Count > 0
+                            ? $"unsupported texture slot reference(s): {string.Join(", ", overrideInfo.UnsupportedTextureGuids)}"
+                            : "no supported texture reference";
+                warnings.Add($"Nested Prefab override for {target} references material '{overrideName}' ({textureDescription}); it was not applied because the FBX submesh could not be identified safely.");
+            }
+
             using var importer = new Importer();
             var configuration = PreviewImporterConfiguration.Create();
             var scene = importer.Load(modelPath, configuration);
@@ -637,7 +696,7 @@ public partial class MainWindow : Window
             cancellationToken.ThrowIfCancellationRequested();
             scene.Root.ModelMatrix *= transform;
             scene.Root.UpdateAllTransformMatrix();
-            warnings.AddRange(ApplyUnityTextures(scene.Root, textureBindings, materials, rendererAssignments ?? [], isPrefabPreview));
+            warnings.AddRange(ApplyUnityTextures(scene.Root, textureBindings, materials, rendererAssignments ?? [], isPrefabPreview, materialOverrides?.Count > 0));
             return new ModelLoadResult(scene, warnings);
         }, cancellationToken);
     }
@@ -661,11 +720,14 @@ public partial class MainWindow : Window
         IReadOnlyList<TextureBinding> textureBindings,
         IReadOnlyList<UnityAssetReference> materialReferences,
         IReadOnlyList<PrefabRendererMaterialAssignment> rendererAssignments,
-        bool isPrefabPreview)
+        bool isPrefabPreview,
+        bool hasUnappliedMaterialOverrides = false)
     {
         if (textureBindings.Count == 0)
             return isPrefabPreview
-                ? [UnityMaterialPreviewDiagnostics.GetMissingSupportedTextureWarning(materialReferences.Count)]
+                ? [hasUnappliedMaterialOverrides
+                    ? "Nested Prefab material override textures were inspected for diagnostics but not applied because their FBX submesh targets could not be identified safely."
+                    : UnityMaterialPreviewDiagnostics.GetMissingSupportedTextureWarning(materialReferences.Count)]
                 : [];
         var meshNodes = EnumerateSceneNodes(root).OfType<HelixToolkit.SharpDX.Model.Scene.MeshNode>().ToArray();
         var warnings = new List<string>();
@@ -720,9 +782,18 @@ public partial class MainWindow : Window
     };
 
     private static void SetDiffuseTexture(HelixToolkit.SharpDX.Model.Scene.MeshNode mesh, string path) =>
-        mesh.Material = new HelixToolkit.SharpDX.Model.PhongMaterialCore
+        mesh.Material = CreateTexturePreviewMaterial(path);
+
+    private static HelixToolkit.SharpDX.Model.PhongMaterialCore CreateTexturePreviewMaterial(string path) =>
+        new()
         {
+            // PhongMaterialCore defaults AmbientColor to 0.66 and SpecularColor to 0.5.
+            // With the white viewport lights those defaults wash out the sampled diffuse map.
+            AmbientColor = new HelixToolkit.Maths.Color4(0.08f, 0.08f, 0.08f, 1f),
             DiffuseColor = new HelixToolkit.Maths.Color4(1, 1, 1, 1),
+            EmissiveColor = new HelixToolkit.Maths.Color4(0, 0, 0, 1),
+            SpecularColor = new HelixToolkit.Maths.Color4(0.06f, 0.06f, 0.06f, 1f),
+            SpecularShininess = 24f,
             DiffuseMap = HelixToolkit.SharpDX.TextureModel.Create(path)
         };
 

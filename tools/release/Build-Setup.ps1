@@ -51,6 +51,8 @@ $publishArguments = @(
     '-o', $publishDirectory,
     '-p:DebugType=None',
     '-p:DebugSymbols=false',
+    "-p:Version=$Version",
+    "-p:FileVersion=$Version.0",
     "-p:BaseOutputPath=$buildOutputDirectory"
 )
 if (-not [string]::IsNullOrWhiteSpace($env:UPX_RESTORE_CONFIG_FILE)) {

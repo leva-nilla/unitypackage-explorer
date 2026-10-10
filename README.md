@@ -14,6 +14,10 @@ Unityを起動せずに、ダウンロードしたZIPの中のUnityPackageやPre
 
 閲覧だけでは元ファイルの隣に展開物やHTMLを作成しません。
 
+![自作サンプルのPrefabプレビュー](docs/media/showcase-prefab.png)
+
+[自作サンプルZIP](tools/samples/UnityPackageExplorer-Showcase.zip)で、ZIP内のPrefab・FBX・画像を試せます。サンプル素材はCC0です。
+
 ## インストール
 
 1. [Releases](https://github.com/leva-nilla/unitypackage-explorer/releases) から `UnityPackageExplorer-Setup-0.1.0-x64.exe` をダウンロードします。
@@ -34,7 +38,9 @@ Unityを起動せずに、ダウンロードしたZIPの中のUnityPackageやPre
 - Unityのテキスト形式Prefabの階層とTransformを読みます。バイナリPrefabや解析できない部分は警告を表示します。
 - 参照FBXはファイル単位で読み込みます。UnityのMesh fileIDからFBX内の個別メッシュを特定できない場合は、FBX全体を近似表示します。
 - 同じFBXの別メッシュを分けられない参照やネストPrefabは、重複配置を避けて省略し、画面に理由を表示します。
+- スキン付きメッシュのFBX全体を表示するときはPrefabのルート位置・回転・大きさを使います。個別ボーンの配置や変形は再現しません。
 - 基本の色テクスチャだけをマテリアル名とスロットから対応付けます。シェーダー固有の表現、未対応スロット、見つからない素材は表示しません。
+- FBXの参照対応表が空、またはUnityの材質名とFBXの材質名が対応しない場合は、Prefabに色の指定があっても反映できないことがあります。ネストPrefabのRendererとスロットを特定できない上書き指定も警告し、元のFBXの材質で表示します。
 - 未対応の形式、欠けた参照、循環・深すぎる階層は、確認できる範囲を表示して警告します。
 
 エクスプローラーのプレビュー欄用Preview Handlerはこの初回版には登録しません。Windows 11の新メニュー登録も含め、専用アプリ画面からの確認を標準にします。
