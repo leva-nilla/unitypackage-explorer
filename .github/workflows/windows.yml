@@ -114,6 +114,27 @@ jobs:
             if ($actualCommand -ne $expectedCommand) { throw "Context menu command for $extension did not match the installed app." }
           }
 
+          $ownedProgIdVerbPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
+            $userChoicePath = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$extension\UserChoice"
+            $progId = $null
+            if (Test-Path -LiteralPath $userChoicePath) {
+              $userChoice = Get-ItemProperty -LiteralPath $userChoicePath -Name ProgId -ErrorAction SilentlyContinue
+              if ($userChoice) { $progId = $userChoice.ProgId }
+            }
+            if (-not $progId) {
+              $extensionKey = Get-Item -LiteralPath "Registry::HKEY_CLASSES_ROOT\$extension" -ErrorAction SilentlyContinue
+              if ($extensionKey) { $progId = $extensionKey.GetValue('') }
+            }
+            if (-not $progId) { continue }
+            if ($progId -notmatch '^[A-Za-z0-9._-]+(\\[A-Za-z0-9._-]+)*$' -or $progId.Split('\') -contains '.' -or $progId.Split('\') -contains '..') { throw "Unexpected ProgID for ${extension}: $progId" }
+            $verbPath = "Registry::HKEY_CURRENT_USER\Software\Classes\$progId\shell\UnityPackageExplorer.Open"
+            $commandPath = "$verbPath\command"
+            $actualCommand = (Get-Item -LiteralPath $commandPath -ErrorAction Stop).GetValue('')
+            if ($actualCommand -ne $expectedCommand) { throw "ProgID context menu command for $extension did not match the installed app." }
+            [void]$ownedProgIdVerbPaths.Add($verbPath)
+          }
+
           $fixtureDirectory = Join-Path $env:RUNNER_TEMP '日本語 fixture files'
           New-Item -ItemType Directory -Force -Path $fixtureDirectory | Out-Null
           $fixtures = @(
@@ -155,5 +176,19 @@ jobs:
           foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
             $key = "Registry::HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\$extension\shell\UnityPackageExplorer.Open"
             if (Test-Path -LiteralPath $key) { throw "Context menu registration for $extension remained after uninstall." }
+          }
+          foreach ($verbPath in $ownedProgIdVerbPaths) {
+            if (-not (Test-Path -LiteralPath $verbPath)) { continue }
+            $verb = Get-Item -LiteralPath $verbPath
+            $remainingLabel = [string]$verb.GetValue('')
+            $remainingIcon = [string]$verb.GetValue('Icon')
+            $commandPath = Join-Path $verbPath 'command'
+            $remainingCommand = $null
+            if (Test-Path -LiteralPath $commandPath) {
+              $remainingCommand = [string](Get-Item -LiteralPath $commandPath).GetValue('')
+            }
+            if ($remainingCommand -eq $expectedCommand) { throw "An owned ProgID command still targets the uninstalled app: $verbPath" }
+            if ($remainingLabel -eq 'UnityPackage Explorer で開く') { throw "An owned ProgID verb label remained after uninstall: $verbPath" }
+            if ($remainingIcon -eq "$app,0" -or $remainingIcon -eq "`"$app`",0") { throw "An owned ProgID verb icon remained after uninstall: $verbPath" }
           }
           if (Test-Path -LiteralPath $installDirectory) { throw 'The isolated install directory remained after uninstall.' }

@@ -28,6 +28,7 @@ $dotnetPathResolved = if ($dotnetCommand -is [IO.FileInfo]) {
     $dotnetCommand.Source
 }
 $publishDirectory = Join-Path $releaseRoot 'publish'
+$buildOutputDirectory = [IO.Path]::GetFullPath((Join-Path $releaseRoot 'build')).TrimEnd('\') + '\'
 $setupScript = Join-Path $PSScriptRoot 'UnityPackageExplorer.iss'
 $applicationProject = Join-Path $repoRoot 'src\UnityPackageExplorer.App\UnityPackageExplorer.App.csproj'
 $assetsFile = Join-Path $repoRoot 'src\UnityPackageExplorer.App\obj\project.assets.json'
@@ -49,7 +50,10 @@ $publishArguments = @(
     '--self-contained', 'true',
     '-o', $publishDirectory,
     '-p:DebugType=None',
-    '-p:DebugSymbols=false'
+    '-p:DebugSymbols=false',
+    "-p:Version=$Version",
+    "-p:FileVersion=$Version.0",
+    "-p:BaseOutputPath=$buildOutputDirectory"
 )
 if (-not [string]::IsNullOrWhiteSpace($env:UPX_RESTORE_CONFIG_FILE)) {
     $publishArguments += "-p:RestoreConfigFile=$env:UPX_RESTORE_CONFIG_FILE"

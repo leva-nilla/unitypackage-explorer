@@ -222,9 +222,120 @@ public sealed class UnityPrefabParserTests
         var repeated = Assert.Single(placements, x => x.Node.Name == "Foot");
         Assert.Equal(2, repeated.Materials.Count);
         Assert.Equal([101L, 102L], repeated.MeshFileIds);
+        Assert.Equal(["Foot", "Jacket"], repeated.RendererAssignments.Select(x => x.RendererName));
+        Assert.Equal([101L, 102L], repeated.RendererAssignments.Select(x => x.MeshFileId));
+        Assert.Equal(["cccccccccccccccccccccccccccccccc", "dddddddddddddddddddddddddddddddd"],
+            repeated.RendererAssignments.Select(x => Assert.Single(x.Materials).Guid));
         Assert.Equal(Matrix4x4.Identity, repeated.Transform);
         Assert.Contains(placements, x => x.Node.Name == "Translated" && x.Transform != Matrix4x4.Identity);
         Assert.Contains(placements, x => x.Node.Name == "Another");
+    }
+
+    [Fact]
+    public void WholeFbxPreviewUsesRootTransformForSkinnedRendererButKeepsStaticMeshTransform()
+    {
+        const string modelGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        var root = new PrefabNode { FileId = 1, Name = "OutfitRoot", Position = new Vector3Value(2, 0, 0) };
+        var renderer = new PrefabNode
+        {
+            FileId = 2,
+            Name = "SleeveBoneRenderer",
+            Position = new Vector3Value(0, 4, 0),
+            Rotation = new QuaternionValue(0.7071068f, 0, 0, 0.7071068f),
+            Mesh = new UnityAssetReference(101, modelGuid)
+        };
+        renderer.Components.Add("SkinnedMeshRenderer");
+        var staticModelReference = new PrefabNode
+        {
+            FileId = 4,
+            Name = "StaticModelReference",
+            Mesh = new UnityAssetReference(103, modelGuid)
+        };
+        staticModelReference.Components.Add("MeshFilter");
+        root.Children.Add(staticModelReference);
+        root.Children.Add(renderer);
+        var staticMesh = new PrefabNode
+        {
+            FileId = 3,
+            Name = "PlacedProp",
+            Position = new Vector3Value(0, 4, 0),
+            Mesh = new UnityAssetReference(102, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        };
+        staticMesh.Components.Add("MeshFilter");
+        root.Children.Add(staticMesh);
+
+        var placements = UnityPrefabParser.GetModelPlacements([root], useRootTransformForSkinnedMeshRenderers: true);
+        var placement = Assert.Single(placements, x => x.Guid == modelGuid);
+
+        Assert.Same(staticModelReference, placement.Node);
+        Assert.Equal(Matrix4x4.CreateTranslation(2, 0, 0), placement.Transform);
+        Assert.True(placement.UsesRootTransformApproximation);
+        Assert.Equal([103L, 101L], placement.MeshFileIds);
+        Assert.Equal(Matrix4x4.CreateTranslation(2, 4, 0), Assert.Single(placements, x => x.Guid == staticMesh.Mesh!.Guid).Transform);
+    }
+
+    [Fact]
+    public void IncludesPrefabSourceReferencesAsModelPlacements()
+    {
+        const string sourceGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        var sourcePrefab = new PrefabNode
+        {
+            FileId = 5,
+            Name = "ImportedModelPrefab",
+            SourcePrefab = new UnityAssetReference(100100000, sourceGuid)
+        };
+
+        var placement = Assert.Single(UnityPrefabParser.GetModelPlacements([sourcePrefab]));
+
+        Assert.Equal(sourceGuid, placement.Guid);
+        Assert.Same(sourcePrefab, placement.Node);
+        Assert.Empty(placement.MeshFileIds);
+    }
+
+    [Fact]
+    public void ParsesNestedPrefabMaterialOverridesAndWarnsAboutApproximateRendererMapping()
+    {
+        const string sourceGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string materialGuid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const string yaml = """
+            --- !u!1 &100
+            GameObject:
+              m_Component:
+              - component: {fileID: 101}
+              m_Name: Outfit
+              m_PrefabInstance: {fileID: 500}
+            --- !u!4 &101
+            Transform:
+              m_GameObject: {fileID: 100}
+              m_Father: {fileID: 0}
+            --- !u!1001 &500
+            PrefabInstance:
+              m_SourcePrefab: {fileID: 100100000, guid: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, type: 3}
+              m_Modification:
+                m_TransformParent: {fileID: 0}
+                m_Modifications:
+                - target: {fileID: 44, guid: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, type: 3}
+                  propertyPath: m_Materials.Array.data[0]
+                  value:
+                    objectReference: {fileID: 2100000, guid: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, type: 2}
+            """;
+
+        var result = UnityPrefabParser.Parse(yaml);
+        var root = Assert.Single(result.Roots);
+
+        Assert.Equal(sourceGuid, root.SourcePrefab?.Guid);
+        Assert.Empty(root.Materials);
+        var materialOverride = Assert.Single(root.MaterialOverrides);
+        Assert.Equal(44, materialOverride.TargetFileId);
+        Assert.Equal(sourceGuid, materialOverride.TargetGuid);
+        Assert.Equal(0, materialOverride.MaterialSlot);
+        Assert.Equal(materialGuid, materialOverride.Material.Guid);
+        var placement = Assert.Single(UnityPrefabParser.GetModelPlacements(result.Roots));
+        Assert.Empty(placement.Materials);
+        Assert.Empty(placement.RendererAssignments);
+        Assert.Equal(materialOverride, Assert.Single(placement.MaterialOverrides));
+        Assert.Contains(result.Warnings, warning => warning.Contains("target renderer and slot are retained for diagnostics", StringComparison.Ordinal));
+        Assert.DoesNotContain("Unknown component", root.Components);
     }
 
     [Fact]

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$InstallDirectory,
@@ -295,20 +295,84 @@ function Remove-Owned-Shell-Command([string]$VerbPath) {
     $command = $reg.OpenSubKey($commandPath)
     if (-not $command) { return }
     $registeredCommand = [string]$command.GetValue('')
-    $canRemoveCommand = $registeredCommand -eq $expectedCommand -and $command.GetSubKeyNames().Count -eq 0
+    $cleanupPlan = Get-OwnedShellCommandCleanupPlan -RegisteredCommand $registeredCommand -ExpectedCommand $expectedCommand `
+        -ValueNames $command.GetValueNames() -SubKeyCount $command.GetSubKeyNames().Count
     $command.Dispose()
-    if (-not $canRemoveCommand) { return }
+    if ($cleanupPlan -eq 'Preserve') { return }
 
-    $reg.DeleteSubKey($commandPath, $false)
+    if ($cleanupPlan -eq 'RemoveKey') {
+        $reg.DeleteSubKey($commandPath, $false)
+    } elseif ($cleanupPlan -eq 'RemoveDefaultValue') {
+        $command = $reg.OpenSubKey($commandPath, $true)
+        if (-not $command) { throw "The owned shell command disappeared during cleanup: $commandPath" }
+        try { $command.DeleteValue('', $false) } finally { $command.Dispose() }
+    }
     $verb = $reg.OpenSubKey($VerbPath, $true)
     if (-not $verb) { return }
     $label = [string]$verb.GetValue('')
     if ($label -in @('UnityPackage Explorer で開く', 'UnityPackage Explorer でプレビュー', 'UnityPackage Explorerで開く')) {
         $verb.DeleteValue('', $false)
     }
-    if ([string]$verb.GetValue('Icon') -eq ('"' + $appPath + '",0')) { $verb.DeleteValue('Icon', $false) }
+    $registeredIcon = [string]$verb.GetValue('Icon')
+    if ($registeredIcon -eq ($appPath + ',0') -or $registeredIcon -eq ('"' + $appPath + '",0')) {
+        $verb.DeleteValue('Icon', $false)
+    }
     $verb.Dispose()
     Remove-Key-If-Empty $VerbPath
+}
+
+function Get-RecordedProgIdVerbCount {
+    $statePath = 'Software\UnityPackageExplorer\Install'
+    $state = $reg.OpenSubKey($statePath)
+    if (-not $state) { return -1 }
+    try {
+        $countValue = $state.GetValue('ProgIdVerbCount', $null)
+        if ($null -eq $countValue) { return -1 }
+        $count = [int]$countValue
+        if ($count -lt 0 -or $count -gt 3) { throw "Invalid recorded ProgID verb count: $count." }
+
+        for ($index = 0; $index -lt $count; $index++) {
+            $progId = [string]$state.GetValue("ProgIdVerb${index}ProgId", '')
+            $recordedCommand = [string]$state.GetValue("ProgIdVerb${index}Command", '')
+            if ($progId -notmatch '^[A-Za-z0-9._-]+(\\[A-Za-z0-9._-]+)*$' -or $progId.Split('\') -contains '.' -or $progId.Split('\') -contains '..') {
+                throw "Invalid recorded ProgID at index $index."
+            }
+            if ($recordedCommand -cne $expectedCommand) { throw "Recorded ProgID command does not match this install's application path." }
+        }
+    } finally { $state.Dispose() }
+    return $count
+}
+
+function Remove-RecordedProgIdVerbs([int]$Count) {
+    if ($Count -lt 0) { return }
+    $state = $reg.OpenSubKey('Software\UnityPackageExplorer\Install')
+    if (-not $state) { throw 'The install state disappeared before ProgID ownership could be read.' }
+    try {
+        for ($index = 0; $index -lt $Count; $index++) {
+            $progId = [string]$state.GetValue("ProgIdVerb${index}ProgId", '')
+            $recordedCommand = [string]$state.GetValue("ProgIdVerb${index}Command", '')
+            if ($progId -notmatch '^[A-Za-z0-9._-]+(\\[A-Za-z0-9._-]+)*$' -or
+                $progId.Split('\') -contains '.' -or $progId.Split('\') -contains '..' -or
+                $recordedCommand -cne $expectedCommand) {
+                throw "The recorded ProgID ownership changed during cleanup at index $index."
+            }
+            Remove-Owned-Shell-Command "$classes\$progId\shell\UnityPackageExplorer.Open"
+        }
+    } finally { $state.Dispose() }
+}
+
+function Clear-RecordedProgIdVerbState([int]$Count) {
+    if ($Count -lt 0) { return }
+    $statePath = 'Software\UnityPackageExplorer\Install'
+    $state = $reg.OpenSubKey($statePath, $true)
+    if (-not $state) { throw 'The install state disappeared before ProgID ownership could be cleared.' }
+    try {
+        $state.DeleteValue('ProgIdVerbCount', $false)
+        for ($index = 0; $index -lt $count; $index++) {
+            $state.DeleteValue("ProgIdVerb${index}ProgId", $false)
+            $state.DeleteValue("ProgIdVerb${index}Command", $false)
+        }
+    } finally { $state.Dispose() }
 }
 
 function Get-OldPreviewAssociation([string]$Extension) {
@@ -319,6 +383,9 @@ function Get-OldPreviewAssociation([string]$Extension) {
 }
 
 Invoke-RequiredCleanupStep -StepName 'legacy PreviewHandler and shell registration cleanup' -Action {
+    $progIdVerbCount = Get-RecordedProgIdVerbCount
+    Remove-RecordedProgIdVerbs $progIdVerbCount
+
     $classKeyPath = "$classes\CLSID\$classId"
     $serverKey = $reg.OpenSubKey("$classKeyPath\InProcServer32")
     $registeredServer = if ($serverKey) { [string]$serverKey.GetValue('') } else { '' }
@@ -371,6 +438,7 @@ Invoke-RequiredCleanupStep -StepName 'legacy PreviewHandler and shell registrati
         "$classes\CompressedFolder\shell\UnityPackageExplorerPreview"
     )
     foreach ($verb in $legacyVerbs) { Remove-Owned-Shell-Command $verb }
+    Clear-RecordedProgIdVerbState $progIdVerbCount
 }
 
 if ($legacyFilesMigrated -and $legacyMarkerVerified) {
