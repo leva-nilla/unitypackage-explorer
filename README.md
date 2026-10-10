@@ -1,58 +1,59 @@
-# UnityPackage Explorer Tools
+# UnityPackage Explorer
 
-UnityPackage Explorer は、Windows Explorer の `.unitypackage` 向けコンテキストメニューから
-「内容を表示」「展開」「開く」を実行するためのPowerShellスクリプトです。
+Unityを起動せずに、ダウンロードしたZIPの中のUnityPackageやPrefabを確認するWindows 11向けツールです。ファイルを展開せずに内容を見て、整理先を決められます。
 
-## 構成
+## 主な機能
 
-- `UnityPackageTools.ps1` ... 本体。
-  - `-Action inspect|extract|open`
-  - `-File "..."`
-  - `-Destination "..."`（`extract` / `open` の出力先。未指定時は同階層の `<元ファイル名>_extracted`）
-- `Install-UnityPackageExplorerContextMenu.ps1` ... 右クリックメニューを HKCU に登録
-- `Uninstall-UnityPackageExplorerContextMenu.ps1` ... 登録解除
+- `.unitypackage` のフォルダー構成、検索、ファイル種類別表示、画像プレビュー。
+- `.zip` は展開せずに中身を調べ、内包するUnityPackageとZIP直下の素材を表示。
+- `.prefab` の階層、FBX参照、基本的なテクスチャを表示。
+- 3D画面をマウスで回転・拡大でき、Unityに近いフライスルー操作で移動。
+- ファイルを画面へドラッグ＆ドロップ、またはエクスプローラーの右クリックから開く。
+- ZIPの分類はプレビュー後にアプリから実行。元ZIPを展開せず、移動先で同名ファイルがある場合も上書きしません。
+- UnityPackageを展開する場合は、パスを検証し、新しい一時フォルダーで作成してから空いている名前へ移動します。
 
-## 使い方
+閲覧だけでは元ファイルの隣に展開物やHTMLを作成しません。
 
-### 1. メニュー登録（要実行）
+## インストール
+
+1. [Releases](https://github.com/leva-nilla/unitypackage-explorer/releases) から `UnityPackageExplorer-Setup-0.1.0-x64.exe` をダウンロードします。
+2. セットアップを実行します。アプリは現在のユーザーのみにインストールされます。
+3. セットアップで「従来の右クリックメニューに追加」を有効にすると、ファイルの右クリック→「その他のオプションを確認」に「UnityPackage Explorer で開く」が追加されます。Windows 11の新しい右クリックメニューには登録しません。
+4. ZIPを右クリックして開くか、ファイルをアプリへドラッグ＆ドロップします。
+
+セットアップにはアプリ本体、.NET 10の実行環境、FBX読込用ライブラリと必要なVisual C++ランタイムを含みます。利用者に.NET SDK、Unity、Visual Studio、C++開発ツールは必要ありません。インストーラーと実行ファイルは未署名のため、Windows SmartScreenが発行元を確認できないと表示する場合があります。配布元とSHA-256を確認してから実行してください。
+
+.NETとVisual C++ランタイムはアプリと一緒に配置され、システム全体にはインストールされません。これらのランタイム更新は新しいアプリ版に含めて配布するため、修正を受け取るにはUnityPackage Explorerを最新版に更新してください。
+
+旧PowerShell版が同じユーザーの標準インストール先にある場合は、その場所へ更新します。旧版のPreview Handler登録は削除し、ほかのファイル関連付けやユーザーファイルには触れません。
+
+## Prefab表示の制約
+
+画面は素材整理用の近似表示です。Unityのシェーダー、ライティング、物理、独自コンポーネントやUnity上の完成形は再現しません。
+
+- Unityのテキスト形式Prefabの階層とTransformを読みます。バイナリPrefabや解析できない部分は警告を表示します。
+- 参照FBXはファイル単位で読み込みます。UnityのMesh fileIDからFBX内の個別メッシュを特定できない場合は、FBX全体を近似表示します。
+- 同じFBXの別メッシュを分けられない参照やネストPrefabは、重複配置を避けて省略し、画面に理由を表示します。
+- 基本の色テクスチャだけをマテリアル名とスロットから対応付けます。シェーダー固有の表現、未対応スロット、見つからない素材は表示しません。
+- 未対応の形式、欠けた参照、循環・深すぎる階層は、確認できる範囲を表示して警告します。
+
+エクスプローラーのプレビュー欄用Preview Handlerはこの初回版には登録しません。Windows 11の新メニュー登録も含め、専用アプリ画面からの確認を標準にします。
+
+## 右クリック項目の解除
+
+Windowsの「設定」→「アプリ」→「インストールされているアプリ」からUnityPackage Explorerをアンインストールします。アプリが作成した右クリック項目、スタートメニューと「送る」のショートカットだけを解除します。`.zip`、`.prefab`、`.unitypackage` の既定アプリや、ほかのアプリの登録は変更しません。
+
+## 開発
+
+必要なものは.NET 10 SDK、Windows 11 x64、Inno Setup 6です。セットアップ作成ではVisual Studioのx64 Visual C++再配布ファイルを使います。
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File .\Install-UnityPackageExplorerContextMenu.ps1
+dotnet test .\UnityPackageExplorer.sln -c Release
+.\tools\release\Build-Setup.ps1 -Version 0.1.0
 ```
 
-### 2. 動作
+配布物は `.artifacts\release\v0.1.0` に生成されます。GitHub ActionsのWindowsジョブでもReleaseビルド、テスト、セットアップ生成を行います。
 
-- `.unitypackage` を右クリック
-  - `内容を表示（UnityPackage）`
-  - `展開（UnityPackage）`
-  - `開く（UnityPackage）`
-- 「内容を表示」は、`pathname` を一覧化したHTMLを作成し開きます。`<対象>.unitypackage.viewer.html`
-- 「展開」は、`asset` と `asset.meta` を安全化した相対パスで復元します。
-- 「開く」は展開後にそのフォルダを Explorer で表示します。
+## ライセンス
 
-## 既知の仕様 / 制約
-
-- 展開先は、同一フォルダに `<unitypackage名>_extracted` を作ります。
-- 指定先が既に存在する場合は `-2`, `-3`, ... を付与して新規作成します。
-- `pathname` の相対パス保護:
-  - `..` は除去して、サンドボックス外へ書き込まないようにしています。
-  - Windows禁止文字は `_` に置換します。
-- `asset`/`asset.meta` 以外の `pathname` ベース（例: フォルダメタ情報）については現状復元対象から除外しています。
-- 文字コードは UTF-8 前提。壊れたアーカイブでは失敗報告します。
-
-## ロールバック
-
-```powershell
-pwsh -ExecutionPolicy Bypass -File .\Uninstall-UnityPackageExplorerContextMenu.ps1
-```
-
-## 例外テスト想定
-
-- 存在しないファイル、拡張子不一致
-- パスに空白や日本語を含む `.unitypackage`
-- 右クリックからの `%1` 引数受け渡し
-- 同名保存先を繰り返し指定し直し（上書き回避）
-
-## 変更履歴
-
-- 2026-09-09: 初版
+プロジェクトのソースはMIT Licenseです。依存コンポーネントの著作権・ライセンスは[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)と[`ThirdPartyLicenses`](ThirdPartyLicenses/)に記載しています。

@@ -1,0 +1,36 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\tools\context-menu\AppxManifest.xml" Link="TestData\AppxManifest.xml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\UnityPackageExplorer.ShellExtension\UnityPackageExplorerShellCommand.cpp" Link="TestData\UnityPackageExplorerShellCommand.cpp" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\Install-UnityPackageExplorerContextMenu.ps1" Link="TestData\Install-UnityPackageExplorerContextMenu.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\Uninstall-UnityPackageExplorerContextMenu.ps1" Link="TestData\Uninstall-UnityPackageExplorerContextMenu.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tools\context-menu\Build-ExplorerContextMenuPackage.ps1" Link="TestData\Build-ExplorerContextMenuPackage.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tools\context-menu\Install-ExplorerContextMenuPackage.ps1" Link="TestData\Install-ExplorerContextMenuPackage.ps1" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\UnityPackageExplorer.Core\UnityPackageExplorer.Core.csproj" />
+    <ProjectReference Include="..\..\src\UnityPackageExplorer.App\UnityPackageExplorer.App.csproj" />
+  </ItemGroup>
+
+</Project>

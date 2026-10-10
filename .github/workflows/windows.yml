@@ -1,0 +1,147 @@
+name: Windows build and setup
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-release:
+    runs-on: windows-2025
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Determine release version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -match '^v(\d+\.\d+\.\d+)$') {
+            $version = $Matches[1]
+          } else {
+            $version = '0.1.0'
+          }
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Test and build solution
+        run: dotnet test .\UnityPackageExplorer.sln -c Release
+
+      - name: Test legacy install migration safety
+        shell: pwsh
+        run: .\tests\PowerShell\Migrate-LegacyInstallFiles.Tests.ps1
+
+      - name: Test legacy install removal safety
+        shell: pwsh
+        run: .\tests\PowerShell\LegacyInstallSafety.Tests.ps1
+
+      - name: Ensure Inno Setup is installed
+        shell: pwsh
+        run: |
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $compiler)) {
+            choco install innosetup --yes --no-progress
+          }
+          if (-not (Test-Path -LiteralPath $compiler)) {
+            throw 'Inno Setup compiler was not found after installation.'
+          }
+          "INNO_SETUP_COMPILER=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build self-contained x64 setup
+        shell: pwsh
+        run: .\tools\release\Build-Setup.ps1 -Version '${{ steps.version.outputs.value }}'
+
+      - name: Upload setup and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnityPackageExplorer-Setup
+          path: |
+            .artifacts/release/v${{ steps.version.outputs.value }}/UnityPackageExplorer-Setup-${{ steps.version.outputs.value }}-x64.exe
+            .artifacts/release/v${{ steps.version.outputs.value }}/UnityPackageExplorer-Setup-${{ steps.version.outputs.value }}-x64.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  installer-smoke:
+    needs: windows-release
+    runs-on: windows-2025
+    steps:
+      - name: Download setup artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: UnityPackageExplorer-Setup
+          path: setup-artifact
+
+      - name: Install, launch without .NET on PATH, validate Explorer commands, and uninstall
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -match '^v(\d+\.\d+\.\d+)$') { $Matches[1] } else { '0.1.0' }
+          $setup = Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'setup-artifact') -Filter "UnityPackageExplorer-Setup-$version-x64.exe" -File -Recurse | Select-Object -First 1
+          if (-not $setup) { throw 'Setup EXE is missing from the downloaded artifact.' }
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'UnityPackageExplorer-IsolatedInstall'
+          $setupArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$installDirectory`"", '/TASKS=contextmenu')
+          $setupProcess = Start-Process -FilePath $setup.FullName -ArgumentList $setupArguments -Wait -PassThru
+          if ($setupProcess.ExitCode -ne 0) { throw "Setup exited with code $($setupProcess.ExitCode)." }
+
+          $app = Join-Path $installDirectory 'UnityPackageExplorer.App.exe'
+          $uninstaller = Join-Path $installDirectory 'unins000.exe'
+          if (-not (Test-Path -LiteralPath $app -PathType Leaf)) { throw 'Installed application was not found.' }
+          if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { throw 'Installed uninstaller was not found.' }
+
+          $expectedCommand = '"{0}" "%1"' -f $app
+          foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
+            $key = "Software\Classes\SystemFileAssociations\$extension\shell\UnityPackageExplorer.Open\command"
+            $actualCommand = (Get-Item -LiteralPath "Registry::HKEY_CURRENT_USER\$key" -ErrorAction Stop).GetValue('')
+            if ($actualCommand -ne $expectedCommand) { throw "Context menu command for $extension did not match the installed app." }
+          }
+
+          $fixtureDirectory = Join-Path $env:RUNNER_TEMP '日本語 fixture files'
+          New-Item -ItemType Directory -Force -Path $fixtureDirectory | Out-Null
+          $fixtures = @(
+            (Join-Path $fixtureDirectory '素材 sample.unitypackage'),
+            (Join-Path $fixtureDirectory 'Prefab sample.prefab'),
+            (Join-Path $fixtureDirectory 'Archive sample.zip')
+          )
+          Set-Content -LiteralPath $fixtures[0] -Value 'invalid test package' -Encoding UTF8
+          Set-Content -LiteralPath $fixtures[1] -Value 'invalid test prefab' -Encoding UTF8
+          $zipSource = Join-Path $fixtureDirectory 'zip-content.txt'
+          Set-Content -LiteralPath $zipSource -Value 'fixture' -Encoding UTF8
+          Compress-Archive -LiteralPath $zipSource -DestinationPath $fixtures[2] -Force
+          Remove-Item -LiteralPath $zipSource -Force
+
+          $childEnvironment = @{
+            PATH = (Join-Path $env:SystemRoot 'System32')
+            DOTNET_ROOT = ''
+            DOTNET_ROOT_X64 = ''
+            DOTNET_MULTILEVEL_LOOKUP = '0'
+          }
+          foreach ($fixture in $fixtures) {
+            $process = Start-Process -FilePath $app -ArgumentList @("`"$fixture`"") -Environment $childEnvironment -PassThru
+            try {
+              Start-Sleep -Seconds 5
+              $process.Refresh()
+              if ($process.HasExited) { throw "App exited while opening '$fixture' with code $($process.ExitCode)." }
+              if ($process.MainWindowHandle -eq [IntPtr]::Zero) { throw "App did not create a window for '$fixture'." }
+            } finally {
+              if (-not $process.HasExited -and -not $process.CloseMainWindow()) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+              if (-not $process.HasExited) { [void]$process.WaitForExit(5000) }
+              if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+            }
+          }
+
+          $uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($uninstallProcess.ExitCode -ne 0) { throw "Uninstaller exited with code $($uninstallProcess.ExitCode)." }
+          foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
+            $key = "Registry::HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\$extension\shell\UnityPackageExplorer.Open"
+            if (Test-Path -LiteralPath $key) { throw "Context menu registration for $extension remained after uninstall." }
+          }
+          if (Test-Path -LiteralPath $installDirectory) { throw 'The isolated install directory remained after uninstall.' }
