@@ -41,7 +41,7 @@ public partial class MainWindow : Window
     private double _flightSpeed = 12;
     private long _lastMovementTimestamp;
 
-    private sealed record TextureBinding(string MaterialName, string Slot, string AssetPath);
+    private sealed record TextureBinding(string MaterialGuid, string MaterialName, string TextureName, string Slot, string AssetPath);
     private sealed record ModelLoadResult(HelixToolkitScene Scene, IReadOnlyList<string> Warnings);
     private sealed record PrefabPreviewData(PrefabParseResult Parse, IReadOnlyList<PrefabNodeView> Tree, IReadOnlyList<PrefabModelPlacement> Models);
     private sealed class PreviewTemporaryState(string path)
@@ -450,11 +450,6 @@ public partial class MainWindow : Window
             var placement = modelsToLoad[index];
             var node = placement.Node;
             var guid = placement.Guid;
-            if (node.Mesh is null && node.SourcePrefab is not null)
-            {
-                warnings.Add($"{node.Name}: nested Prefab reference {guid} is not expanded by this viewer.");
-                continue;
-            }
             if (displayedModelGuids.Contains(guid))
             {
                 var fileIds = placement.MeshFileIds.Count == 0 ? "unknown" : string.Join(", ", placement.MeshFileIds);
@@ -471,13 +466,16 @@ public partial class MainWindow : Window
             }
             if (!modelPath.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase))
             {
-                warnings.Add($"{node.Name}: FBX 以外の参照は 3D 表示できません ({modelPath})。");
+                if (node.Mesh is null && node.SourcePrefab is not null)
+                    warnings.Add($"{node.Name}: nested Prefab reference {guid} resolves to a non-FBX asset and is not expanded by this viewer ({modelPath}).");
+                else
+                    warnings.Add($"{node.Name}: FBX 以外の参照は 3D 表示できません ({modelPath})。");
                 continue;
             }
             try
             {
                 var modelEntry = catalog.FindByGuid(guid, packageMemberPath, entry);
-                var loaded = await LoadPackageModelAsyncCore(guid, placement.Transform, placement.Materials, packageMemberPath, entry, modelEntry, cancellationToken, materialInfoCache, requestId);
+                var loaded = await LoadPackageModelAsyncCore(guid, placement.Transform, placement.Materials, packageMemberPath, entry, modelEntry, cancellationToken, materialInfoCache, requestId, placement.RendererAssignments, isPrefabPreview: true);
                 if (!_previewRequests.IsCurrent(requestId)) return;
                 displayedModelGuids.Add(guid);
                 models.Add(loaded.Scene);
@@ -543,7 +541,9 @@ public partial class MainWindow : Window
         UnityPackageEntry? modelEntry = null,
         CancellationToken cancellationToken = default,
         IDictionary<string, UnityMaterialInfo?>? materialInfoCache = null,
-        long requestId = 0)
+        long requestId = 0,
+        IReadOnlyList<PrefabRendererMaterialAssignment>? rendererAssignments = null,
+        bool isPrefabPreview = false)
     {
         var catalog = _catalog ?? throw new InvalidOperationException("Asset catalog is not open.");
         var temp = EnsureTemporaryRoot(requestId);
@@ -621,7 +621,12 @@ public partial class MainWindow : Window
                     }
                     if (textureExtension.Equals(".tga", StringComparison.OrdinalIgnoreCase))
                         texturePath = ConvertTgaToPng(texturePath);
-                    textureBindings.Add(new TextureBinding(materialName, textureReference.Slot, texturePath));
+                    textureBindings.Add(new TextureBinding(
+                        material.Guid,
+                        materialName,
+                        Path.GetFileNameWithoutExtension(textureSourcePath),
+                        textureReference.Slot,
+                        texturePath));
                 }
             }
 
@@ -632,7 +637,7 @@ public partial class MainWindow : Window
             cancellationToken.ThrowIfCancellationRequested();
             scene.Root.ModelMatrix *= transform;
             scene.Root.UpdateAllTransformMatrix();
-            warnings.AddRange(ApplyUnityTextures(scene.Root, textureBindings, materials));
+            warnings.AddRange(ApplyUnityTextures(scene.Root, textureBindings, materials, rendererAssignments ?? [], isPrefabPreview));
             return new ModelLoadResult(scene, warnings);
         }, cancellationToken);
     }
@@ -654,18 +659,31 @@ public partial class MainWindow : Window
     private static IReadOnlyList<string> ApplyUnityTextures(
         HelixToolkit.SharpDX.Model.Scene.SceneNode root,
         IReadOnlyList<TextureBinding> textureBindings,
-        IReadOnlyList<UnityAssetReference> materialReferences)
+        IReadOnlyList<UnityAssetReference> materialReferences,
+        IReadOnlyList<PrefabRendererMaterialAssignment> rendererAssignments,
+        bool isPrefabPreview)
     {
-        if (textureBindings.Count == 0) return [];
+        if (textureBindings.Count == 0)
+            return isPrefabPreview
+                ? [UnityMaterialPreviewDiagnostics.GetMissingSupportedTextureWarning(materialReferences.Count)]
+                : [];
         var meshNodes = EnumerateSceneNodes(root).OfType<HelixToolkit.SharpDX.Model.Scene.MeshNode>().ToArray();
         var warnings = new List<string>();
         var applied = new HashSet<TextureBinding>();
         foreach (var mesh in meshNodes)
         {
             var materialName = mesh.Material?.Name;
-            var matching = textureBindings.Where(x =>
-                string.Equals(x.MaterialName, materialName, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(x.MaterialName, mesh.Name, StringComparison.OrdinalIgnoreCase)).ToArray();
+            var matchingRenderers = rendererAssignments
+                .Where(x => UnityMaterialNameMatcher.HaveSameNormalizedName(x.RendererName, mesh.Name))
+                .ToArray();
+            var scopedBindings = matchingRenderers.Length == 1
+                ? textureBindings.Where(binding => matchingRenderers[0].Materials.Any(reference => string.Equals(reference.Guid, binding.MaterialGuid, StringComparison.OrdinalIgnoreCase)))
+                : textureBindings;
+            var matching = scopedBindings.Where(x =>
+                UnityMaterialNameMatcher.AreEquivalent(x.MaterialName, materialName)
+                || UnityMaterialNameMatcher.AreEquivalent(x.MaterialName, mesh.Name)
+                || UnityMaterialNameMatcher.AreEquivalent(x.TextureName, materialName)
+                || UnityMaterialNameMatcher.AreEquivalent(x.TextureName, mesh.Name)).ToArray();
             var paths = matching
                 .OrderBy(x => TextureSlotPriority(x.Slot))
                 .Select(x => x.AssetPath)
@@ -690,7 +708,7 @@ public partial class MainWindow : Window
         }
 
         foreach (var binding in textureBindings.Except(applied))
-            warnings.Add($"Texture for material '{binding.MaterialName}' could not be matched to an FBX mesh and was left unused.");
+            warnings.Add($"Texture '{binding.TextureName}' for material '{binding.MaterialName}' could not be matched to an FBX material and was left unused.");
         return warnings;
     }
 

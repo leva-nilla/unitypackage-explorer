@@ -187,7 +187,14 @@ public static partial class UnityPrefabParser
                 var first = group.First();
                 var materials = group.SelectMany(x => x.Node.Materials).DistinctBy(x => (x.FileId, x.Guid)).ToArray();
                 var meshFileIds = group.Select(x => x.MeshFileId).Where(x => x != 0).Distinct().ToArray();
-                return new PrefabModelPlacement(first.Guid, first.Transform, first.Node, materials, meshFileIds);
+                var rendererAssignments = group
+                    .Where(x => x.MeshFileId != 0)
+                    .Select(x => new PrefabRendererMaterialAssignment(x.MeshFileId, x.Node.Name, x.Node.Materials.ToArray()))
+                    .ToArray();
+                return new PrefabModelPlacement(first.Guid, first.Transform, first.Node, materials, meshFileIds)
+                {
+                    RendererAssignments = rendererAssignments
+                };
             })
             .ToArray();
     }

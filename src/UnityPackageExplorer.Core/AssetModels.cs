@@ -60,7 +60,16 @@ public sealed record PrefabModelPlacement(
     Matrix4x4 Transform,
     PrefabNode Node,
     IReadOnlyList<UnityAssetReference> Materials,
-    IReadOnlyList<long> MeshFileIds);
+    IReadOnlyList<long> MeshFileIds)
+{
+    public IReadOnlyList<PrefabRendererMaterialAssignment> RendererAssignments { get; init; } = [];
+}
+
+/// <summary>Material references belonging to one Unity renderer and source Mesh subasset.</summary>
+public sealed record PrefabRendererMaterialAssignment(
+    long MeshFileId,
+    string RendererName,
+    IReadOnlyList<UnityAssetReference> Materials);
 
 public readonly record struct Vector3Value(float X, float Y, float Z)
 {

@@ -158,4 +158,20 @@ public sealed class ExplorerCommandRegistrationTests
         Assert.Contains("if (-not $progId) { continue }", smokeCheck, StringComparison.Ordinal);
         Assert.DoesNotContain("Get-Item -LiteralPath \"Registry::HKEY_CLASSES_ROOT\\$extension\" -ErrorAction SilentlyContinue).GetValue", smokeCheck, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void InstallerSmokeAllowsUnknownProgIdDataButRejectsReferencesToUninstalledApp()
+    {
+        var workflow = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "TestData", "windows.yml"));
+        var uninstallStart = workflow.IndexOf("foreach ($verbPath in $ownedProgIdVerbPaths)", StringComparison.Ordinal);
+        var uninstallEnd = workflow.IndexOf("if (Test-Path -LiteralPath $installDirectory)", uninstallStart, StringComparison.Ordinal);
+        Assert.True(uninstallStart >= 0 && uninstallEnd > uninstallStart, "The ProgID uninstall smoke check was not found.");
+        var uninstallCheck = workflow[uninstallStart..uninstallEnd];
+
+        Assert.Contains("if (-not (Test-Path -LiteralPath $verbPath)) { continue }", uninstallCheck, StringComparison.Ordinal);
+        Assert.Contains("$remainingCommand -eq $expectedCommand", uninstallCheck, StringComparison.Ordinal);
+        Assert.Contains("$remainingLabel -eq 'UnityPackage Explorer で開く'", uninstallCheck, StringComparison.Ordinal);
+        Assert.Contains("$remainingIcon -eq \"$app,0\"", uninstallCheck, StringComparison.Ordinal);
+        Assert.DoesNotContain("Owned ProgID context menu registration remained after uninstall", uninstallCheck, StringComparison.Ordinal);
+    }
 }

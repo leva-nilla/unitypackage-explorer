@@ -178,6 +178,17 @@ jobs:
             if (Test-Path -LiteralPath $key) { throw "Context menu registration for $extension remained after uninstall." }
           }
           foreach ($verbPath in $ownedProgIdVerbPaths) {
-            if (Test-Path -LiteralPath $verbPath) { throw "Owned ProgID context menu registration remained after uninstall: $verbPath" }
+            if (-not (Test-Path -LiteralPath $verbPath)) { continue }
+            $verb = Get-Item -LiteralPath $verbPath
+            $remainingLabel = [string]$verb.GetValue('')
+            $remainingIcon = [string]$verb.GetValue('Icon')
+            $commandPath = Join-Path $verbPath 'command'
+            $remainingCommand = $null
+            if (Test-Path -LiteralPath $commandPath) {
+              $remainingCommand = [string](Get-Item -LiteralPath $commandPath).GetValue('')
+            }
+            if ($remainingCommand -eq $expectedCommand) { throw "An owned ProgID command still targets the uninstalled app: $verbPath" }
+            if ($remainingLabel -eq 'UnityPackage Explorer で開く') { throw "An owned ProgID verb label remained after uninstall: $verbPath" }
+            if ($remainingIcon -eq "$app,0" -or $remainingIcon -eq "`"$app`",0") { throw "An owned ProgID verb icon remained after uninstall: $verbPath" }
           }
           if (Test-Path -LiteralPath $installDirectory) { throw 'The isolated install directory remained after uninstall.' }

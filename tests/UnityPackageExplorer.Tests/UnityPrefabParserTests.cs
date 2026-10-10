@@ -222,9 +222,31 @@ public sealed class UnityPrefabParserTests
         var repeated = Assert.Single(placements, x => x.Node.Name == "Foot");
         Assert.Equal(2, repeated.Materials.Count);
         Assert.Equal([101L, 102L], repeated.MeshFileIds);
+        Assert.Equal(["Foot", "Jacket"], repeated.RendererAssignments.Select(x => x.RendererName));
+        Assert.Equal([101L, 102L], repeated.RendererAssignments.Select(x => x.MeshFileId));
+        Assert.Equal(["cccccccccccccccccccccccccccccccc", "dddddddddddddddddddddddddddddddd"],
+            repeated.RendererAssignments.Select(x => Assert.Single(x.Materials).Guid));
         Assert.Equal(Matrix4x4.Identity, repeated.Transform);
         Assert.Contains(placements, x => x.Node.Name == "Translated" && x.Transform != Matrix4x4.Identity);
         Assert.Contains(placements, x => x.Node.Name == "Another");
+    }
+
+    [Fact]
+    public void IncludesPrefabSourceReferencesAsModelPlacements()
+    {
+        const string sourceGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        var sourcePrefab = new PrefabNode
+        {
+            FileId = 5,
+            Name = "ImportedModelPrefab",
+            SourcePrefab = new UnityAssetReference(100100000, sourceGuid)
+        };
+
+        var placement = Assert.Single(UnityPrefabParser.GetModelPlacements([sourcePrefab]));
+
+        Assert.Equal(sourceGuid, placement.Guid);
+        Assert.Same(sourcePrefab, placement.Node);
+        Assert.Empty(placement.MeshFileIds);
     }
 
     [Fact]
