@@ -33,6 +33,32 @@ $legacyStartMenuPath = ''
 $legacyMarkerVerified = $false
 $innoMarkerVerified = $false
 
+function Assert-NoReparsePathUnderInstall([string]$Path) {
+    Assert-NoReparsePathUnderRoot -Root $installRoot -Path $Path
+}
+
+function Assert-VerifiedInnoUninstallerFiles {
+    $pairs = @()
+    foreach ($executable in @(Get-ChildItem -LiteralPath $installRoot -File -Force | Where-Object { $_.Name -match '^unins\d+\.exe$' })) {
+        $dataPath = Join-Path $installRoot ($executable.BaseName + '.dat')
+        if (Test-Path -LiteralPath $dataPath -PathType Leaf) {
+            Assert-NoReparsePathUnderInstall $executable.FullName
+            Assert-NoReparsePathUnderInstall $dataPath
+            $pairs += [pscustomobject]@{ Executable = $executable.FullName; Data = $dataPath }
+        }
+    }
+    if ($pairs.Count -ne 1) {
+        throw "Expected one verified Inno uninstaller executable/data pair in '$installRoot'; found $($pairs.Count)."
+    }
+}
+
+function New-EmptyRecoveryManifest {
+    $path = Join-Path ([IO.Path]::GetTempPath()) ('UnityPackageExplorer-empty-manifest-' + [Guid]::NewGuid().ToString('N') + '.txt')
+    $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    $stream.Dispose()
+    return $path
+}
+
 function Write-SparsePackageFailure([string]$Message) {
     if ([string]::IsNullOrWhiteSpace($SparsePackageErrorLog)) { return }
     try { Set-Content -LiteralPath $SparsePackageErrorLog -Value $Message -Encoding UTF8 -Force }
@@ -101,6 +127,8 @@ if (Test-Path -LiteralPath $legacyMarkerPath -PathType Leaf) {
     } catch { }
 }
 $innoMarkerPath = Join-Path $installRoot '.unitypackage-explorer-inno-install.json'
+$legacyMarkerExists = Test-Path -LiteralPath $legacyMarkerPath
+$innoMarkerExists = Test-Path -LiteralPath $innoMarkerPath
 if (Test-Path -LiteralPath $innoMarkerPath -PathType Leaf) {
     try {
         $markerFile = Get-Item -LiteralPath $innoMarkerPath -Force
@@ -125,23 +153,68 @@ $migrationScript = if ([string]::IsNullOrWhiteSpace($MigrationScriptPath)) {
     [IO.Path]::GetFullPath($MigrationScriptPath)
 }
 $legacyFilesMigrated = $false
-if (Test-Path -LiteralPath $legacyMarkerPath) {
-    if (-not $legacyMarkerVerified) {
+if ((Test-Path -LiteralPath $legacyMarkerPath) -or $innoMarkerExists) {
+    if ($legacyMarkerExists -and -not $legacyMarkerVerified) {
         throw "The legacy ownership marker is invalid; cleanup was stopped: $legacyMarkerPath"
     }
-    if (-not (Test-Path -LiteralPath $migrationScript -PathType Leaf)) {
-        throw "The required legacy migration helper is missing: $migrationScript"
+    if ($innoMarkerExists -and -not $innoMarkerVerified) {
+        throw "The Inno ownership marker is invalid; cleanup was stopped: $innoMarkerPath"
     }
-    if (-not (Test-Path -LiteralPath $CurrentFilesManifest -PathType Leaf)) {
-        throw "The required current file manifest is missing: $CurrentFilesManifest"
-    }
-    try {
-        Invoke-RequiredCleanupStep -StepName 'legacy-owned file migration' -Action {
-            & $migrationScript -InstallDirectory $installRoot -CurrentFilesManifest $CurrentFilesManifest -Mode $Mode
+    $previousInnoManifestPath = Join-Path $installRoot 'Tools\CurrentInstallFiles.txt'
+    $previousInnoManifestExists = Test-Path -LiteralPath $previousInnoManifestPath
+    $legacyOnlyUninstallMigration = Should-RunLegacyOnlyUninstallMigration -Mode $Mode `
+        -InnoMarkerVerified $innoMarkerVerified `
+        -PreviousInnoManifestExists $previousInnoManifestExists `
+        -LegacyMarkerVerified $legacyMarkerVerified
+    $skipFileMigration = Should-SkipOwnedFileMigrationForUninstall -Mode $Mode `
+        -InnoMarkerVerified $innoMarkerVerified `
+        -PreviousInnoManifestExists $previousInnoManifestExists `
+        -LegacyMarkerVerified $legacyMarkerVerified
+    if ($legacyOnlyUninstallMigration) {
+        Assert-NoReparseTree -Root $installRoot
+        Assert-NoReparsePathUnderInstall $installRoot
+        Assert-NoReparsePathUnderInstall $innoMarkerPath
+        Assert-NoReparsePathUnderInstall $legacyMarkerPath
+        Assert-NoReparsePathUnderInstall (Join-Path $installRoot 'Tools')
+        Assert-NoReparsePathUnderInstall $appPath
+        Assert-VerifiedInnoUninstallerFiles
+        $emptyManifest = New-EmptyRecoveryManifest
+        try {
+            Invoke-RequiredCleanupStep -StepName 'legacy PowerShell-owned file uninstall' -Action {
+                & $migrationScript -InstallDirectory $installRoot -CurrentFilesManifest $emptyManifest -Mode Uninstall -LegacyOnlyUninstall
+            }
+            $legacyFilesMigrated = $true
+        } catch {
+            throw "Legacy PowerShell-owned files could not be removed safely; Inno uninstall cleanup was stopped: $($_.Exception.Message)"
+        } finally {
+            if (Test-Path -LiteralPath $emptyManifest) { Remove-Item -LiteralPath $emptyManifest -Force }
         }
-        $legacyFilesMigrated = $true
-    } catch {
-        throw "Legacy file migration did not complete; uninstall or upgrade cleanup was stopped: $($_.Exception.Message)"
+    } elseif ($skipFileMigration) {
+        # Inno may delete targets recorded anywhere in its uninstall log. Scan the
+        # complete tree before handing control to it, without traversing links.
+        Assert-NoReparseTree -Root $installRoot
+        Assert-NoReparsePathUnderInstall $installRoot
+        Assert-NoReparsePathUnderInstall $innoMarkerPath
+        Assert-NoReparsePathUnderInstall $legacyMarkerPath
+        Assert-NoReparsePathUnderInstall (Join-Path $installRoot 'Tools')
+        Assert-NoReparsePathUnderInstall $appPath
+        Assert-VerifiedInnoUninstallerFiles
+        Write-Warning 'The verified Inno installation has no previous file manifest. Custom file migration was skipped; Inno will remove only files in its uninstall log. Any legacy PowerShell ownership marker is retained so a later setup can safely reconcile its recorded files.'
+    } else {
+        if (-not (Test-Path -LiteralPath $migrationScript -PathType Leaf)) {
+            throw "The required legacy migration helper is missing: $migrationScript"
+        }
+        if (-not (Test-Path -LiteralPath $CurrentFilesManifest -PathType Leaf)) {
+            throw "The required current file manifest is missing: $CurrentFilesManifest"
+        }
+        try {
+            Invoke-RequiredCleanupStep -StepName 'legacy-owned file migration' -Action {
+                & $migrationScript -InstallDirectory $installRoot -CurrentFilesManifest $CurrentFilesManifest -Mode $Mode
+            }
+            $legacyFilesMigrated = $true
+        } catch {
+            throw "Legacy file migration did not complete; uninstall or upgrade cleanup was stopped: $($_.Exception.Message)"
+        }
     }
 }
 if ($legacyFilesMigrated -and $legacyMarkerVerified -and
@@ -159,6 +232,7 @@ if ($legacyFilesMigrated -and $legacyMarkerVerified -and
 function Remove-Verified-Legacy-Shortcut([string]$RecordedPath, [string]$ExpectedPath, [string]$ExpectedTarget, [switch]$IsSendTo) {
     if (-not ($legacyMarkerVerified -or $innoMarkerVerified) -or [string]::IsNullOrWhiteSpace($RecordedPath) -or
         [string]::IsNullOrWhiteSpace($ExpectedTarget)) { return }
+    $targetsCurrentInstall = $false
     try {
         if ([IO.Path]::GetFullPath($RecordedPath) -ne [IO.Path]::GetFullPath($ExpectedPath)) { return }
         if (-not (Test-Path -LiteralPath $ExpectedPath -PathType Leaf)) { return }
@@ -170,9 +244,14 @@ function Remove-Verified-Legacy-Shortcut([string]$RecordedPath, [string]$Expecte
         $targetsCurrentInstall = $target.Equals($appPath, [StringComparison]::OrdinalIgnoreCase)
         if ($IsSendTo -and (Should-PreserveSendToShortcutOnUpgrade -Mode $Mode `
             -SendToTaskSelected ([bool]$KeepSendToOnUpgrade) -LinkTargetsCurrentInstall $targetsCurrentInstall)) { return }
-        Remove-Item -LiteralPath $ExpectedPath -Force
+        $targetsCurrentInstall = $target.Equals($appPath, [StringComparison]::OrdinalIgnoreCase)
     } catch {
         Write-Warning "Could not inspect legacy shortcut '$RecordedPath'; it was left untouched: $_"
+        return
+    }
+
+    if ($targetsCurrentInstall) {
+        Remove-VerifiedOwnedShortcut -Path $ExpectedPath
     }
 }
 
@@ -292,4 +371,10 @@ Invoke-RequiredCleanupStep -StepName 'legacy PreviewHandler and shell registrati
         "$classes\CompressedFolder\shell\UnityPackageExplorerPreview"
     )
     foreach ($verb in $legacyVerbs) { Remove-Owned-Shell-Command $verb }
+}
+
+if ($legacyFilesMigrated -and $legacyMarkerVerified) {
+    Invoke-RequiredCleanupStep -StepName 'legacy ownership marker finalization' -Action {
+        Remove-VerifiedLegacyOwnershipMarker -InstallDirectory $installRoot
+    }
 }

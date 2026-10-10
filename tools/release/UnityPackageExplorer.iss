@@ -184,7 +184,11 @@ begin
     Exit;
   end;
   if MigrationResultCode <> 0 then begin
-    Result := '現在のセットアップが上書きするファイルに旧版の所有記録がありません。未知のファイルを保護するため、セットアップを中止しました。';
+    if HasOwnedInstallMarker(InstallDirectory, '.unitypackage-explorer-inno-install.json') and
+       not FileExists(InstallDirectory + '\Tools\CurrentInstallFiles.txt') then
+      Result := '旧版Innoセットアップの所有ファイル一覧（Tools\CurrentInstallFiles.txt）が見つかりません。安全に確認できない既存ファイルを保護するため、更新を中止しました。Windowsの「設定 > アプリ > インストールされているアプリ」からUnityPackage Explorerをアンインストールし、完了後にこのセットアップを再実行してください。'
+    else
+      Result := '現在のセットアップが上書きするファイルに旧版の所有記録がありません。未知のファイルを保護するため、セットアップを中止しました。';
     Exit;
   end;
 

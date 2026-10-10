@@ -64,4 +64,46 @@ try {
 }
 Assert-True $registrationCleanupFailed 'A required legacy registration cleanup failure was swallowed.'
 
+$verifiedShortcutRemovalFailed = $false
+try {
+    Remove-VerifiedOwnedShortcut -Path 'mocked-owned-shortcut.lnk' -RemoveFile { param($path) throw "simulated shortcut deletion denial: $path" }
+} catch {
+    $verifiedShortcutRemovalFailed = $_.Exception.Message -match 'verified legacy shortcut removal.*simulated shortcut deletion denial.*mocked-owned-shortcut.lnk'
+}
+Assert-True $verifiedShortcutRemovalFailed 'A verified owned shortcut deletion failure was swallowed.'
+
+Assert-True (-not (Should-SkipOwnedFileMigrationForUninstall -Mode Uninstall -InnoMarkerVerified $true -PreviousInnoManifestExists $false -LegacyMarkerVerified $true)) 'Mixed-marker uninstall must not skip the validated legacy-owned files.'
+Assert-True (Should-SkipOwnedFileMigrationForUninstall -Mode Uninstall -InnoMarkerVerified $true -PreviousInnoManifestExists $false -LegacyMarkerVerified $false) 'Uninstall without a legacy marker must delegate file removal to Inno.'
+Assert-True (-not (Should-SkipOwnedFileMigrationForUninstall -Mode Upgrade -InnoMarkerVerified $true -PreviousInnoManifestExists $false -LegacyMarkerVerified $false)) 'Upgrade must fail closed when the verified Inno file manifest is missing.'
+Assert-True (-not (Should-SkipOwnedFileMigrationForUninstall -Mode Uninstall -InnoMarkerVerified $true -PreviousInnoManifestExists $true -LegacyMarkerVerified $false)) 'Uninstall must use the migration when its paired Inno file manifest exists.'
+Assert-True (-not (Should-SkipOwnedFileMigrationForUninstall -Mode Uninstall -InnoMarkerVerified $false -PreviousInnoManifestExists $false -LegacyMarkerVerified $false)) 'An unverified install must not skip ownership validation.'
+Assert-True (Should-RunLegacyOnlyUninstallMigration -Mode Uninstall -InnoMarkerVerified $true -PreviousInnoManifestExists $false -LegacyMarkerVerified $true) 'Mixed-marker uninstall must process only validated legacy PowerShell-owned paths.'
+Assert-True (-not (Should-RunLegacyOnlyUninstallMigration -Mode Upgrade -InnoMarkerVerified $true -PreviousInnoManifestExists $false -LegacyMarkerVerified $true)) 'Legacy-only migration must not run during upgrade.'
+
+$reparseRoot = Join-Path $env:TEMP ('UnityPackageExplorer-reparse-check-' + [Guid]::NewGuid().ToString('N'))
+$reparseTarget = Join-Path $env:TEMP ('UnityPackageExplorer-reparse-target-' + [Guid]::NewGuid().ToString('N'))
+$previewHandlerRoot = Join-Path $env:TEMP ('UnityPackageExplorer-preview-reparse-check-' + [Guid]::NewGuid().ToString('N'))
+$previewHandlerTarget = Join-Path $env:TEMP ('UnityPackageExplorer-preview-reparse-target-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $reparseRoot, $reparseTarget, $previewHandlerRoot, $previewHandlerTarget | Out-Null
+try {
+    New-Item -ItemType Junction -Path (Join-Path $reparseRoot 'linked') -Target $reparseTarget | Out-Null
+    $reparseRejected = $false
+    try { Assert-NoReparsePathUnderRoot -Root $reparseRoot -Path (Join-Path $reparseRoot 'linked\unins000.exe') }
+    catch { $reparseRejected = $_.Exception.Message -match 'Reparse point' }
+    Assert-True $reparseRejected 'The uninstall recovery path accepted a reparse-point component.'
+
+    $previewHandler = Join-Path $previewHandlerRoot 'PreviewHandler'
+    New-Item -ItemType Directory -Path $previewHandler | Out-Null
+    New-Item -ItemType Junction -Path (Join-Path $previewHandler 'linked') -Target $previewHandlerTarget | Out-Null
+    $treeReparseRejected = $false
+    try { Assert-NoReparseTree -Root $previewHandlerRoot }
+    catch { $treeReparseRejected = $_.Exception.Message -match 'Reparse points are not allowed in the install tree' }
+    Assert-True $treeReparseRejected 'The missing-manifest recovery scan accepted a nested PreviewHandler junction.'
+} finally {
+    if (Test-Path -LiteralPath $reparseRoot) { Remove-Item -LiteralPath $reparseRoot -Recurse -Force }
+    if (Test-Path -LiteralPath $reparseTarget) { Remove-Item -LiteralPath $reparseTarget -Recurse -Force }
+    if (Test-Path -LiteralPath $previewHandlerRoot) { Remove-Item -LiteralPath $previewHandlerRoot -Recurse -Force }
+    if (Test-Path -LiteralPath $previewHandlerTarget) { Remove-Item -LiteralPath $previewHandlerTarget -Recurse -Force }
+}
+
 Write-Output 'Legacy install safety tests passed.'
