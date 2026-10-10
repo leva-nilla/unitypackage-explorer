@@ -57,7 +57,7 @@ Source: "{#PublishRoot}\Tools\CurrentInstallFiles.txt"; Flags: dontcopy
 
 [Icons]
 Name: "{group}\{#ProductName}"; Filename: "{app}\{#ProductExe}"; WorkingDir: "{app}"; Tasks: startmenu
-Name: "{userappdata}\Microsoft\Windows\SendTo\{#ProductName}.lnk"; Filename: "{app}\{#ProductExe}"; WorkingDir: "{app}"; Tasks: sendto
+Name: "{userappdata}\Microsoft\Windows\SendTo\{#ProductName}"; Filename: "{app}\{#ProductExe}"; WorkingDir: "{app}"; Tasks: sendto
 
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: ""; ValueData: "UnityPackage Explorer で開く"; Flags: uninsdeletekey; Tasks: contextmenu

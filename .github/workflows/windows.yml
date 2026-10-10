@@ -88,14 +88,24 @@ jobs:
           $setup = Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'setup-artifact') -Filter "UnityPackageExplorer-Setup-$version-x64.exe" -File -Recurse | Select-Object -First 1
           if (-not $setup) { throw 'Setup EXE is missing from the downloaded artifact.' }
           $installDirectory = Join-Path $env:RUNNER_TEMP 'UnityPackageExplorer-IsolatedInstall'
-          $setupArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$installDirectory`"", '/TASKS=contextmenu')
+          $setupArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$installDirectory`"", '/TASKS=contextmenu,sendto')
           $setupProcess = Start-Process -FilePath $setup.FullName -ArgumentList $setupArguments -Wait -PassThru
           if ($setupProcess.ExitCode -ne 0) { throw "Setup exited with code $($setupProcess.ExitCode)." }
 
           $app = Join-Path $installDirectory 'UnityPackageExplorer.App.exe'
           $uninstaller = Join-Path $installDirectory 'unins000.exe'
+          $sendToDirectory = Join-Path $env:APPDATA 'Microsoft\Windows\SendTo'
+          $sendToShortcut = Join-Path $sendToDirectory 'UnityPackage Explorer.lnk'
+          $doubleExtensionShortcut = Join-Path $sendToDirectory 'UnityPackage Explorer.lnk.lnk'
           if (-not (Test-Path -LiteralPath $app -PathType Leaf)) { throw 'Installed application was not found.' }
           if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { throw 'Installed uninstaller was not found.' }
+          if (-not (Test-Path -LiteralPath $sendToShortcut -PathType Leaf)) { throw "Expected Send To shortcut was not installed: $sendToShortcut" }
+          if (Test-Path -LiteralPath $doubleExtensionShortcut) { throw "Send To shortcut has an unwanted double extension: $doubleExtensionShortcut" }
+          $shortcutShell = New-Object -ComObject WScript.Shell
+          $sendToTarget = [IO.Path]::GetFullPath($shortcutShell.CreateShortcut($sendToShortcut).TargetPath)
+          if (-not $sendToTarget.Equals([IO.Path]::GetFullPath($app), [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Send To shortcut does not target the installed application: $sendToTarget"
+          }
 
           $expectedCommand = '"{0}" "%1"' -f $app
           foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
@@ -140,6 +150,8 @@ jobs:
 
           $uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
           if ($uninstallProcess.ExitCode -ne 0) { throw "Uninstaller exited with code $($uninstallProcess.ExitCode)." }
+          if (Test-Path -LiteralPath $sendToShortcut) { throw 'Send To shortcut remained after uninstall.' }
+          if (Test-Path -LiteralPath $doubleExtensionShortcut) { throw 'Double-extension Send To shortcut remained after uninstall.' }
           foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
             $key = "Registry::HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\$extension\shell\UnityPackageExplorer.Open"
             if (Test-Path -LiteralPath $key) { throw "Context menu registration for $extension remained after uninstall." }
