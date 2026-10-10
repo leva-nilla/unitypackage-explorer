@@ -117,8 +117,15 @@ jobs:
           $ownedProgIdVerbPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
           foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
             $userChoicePath = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$extension\UserChoice"
-            $progId = if (Test-Path -LiteralPath $userChoicePath) { (Get-ItemProperty -LiteralPath $userChoicePath -Name ProgId -ErrorAction SilentlyContinue).ProgId }
-            if (-not $progId) { $progId = (Get-Item -LiteralPath "Registry::HKEY_CLASSES_ROOT\$extension" -ErrorAction SilentlyContinue).GetValue('') }
+            $progId = $null
+            if (Test-Path -LiteralPath $userChoicePath) {
+              $userChoice = Get-ItemProperty -LiteralPath $userChoicePath -Name ProgId -ErrorAction SilentlyContinue
+              if ($userChoice) { $progId = $userChoice.ProgId }
+            }
+            if (-not $progId) {
+              $extensionKey = Get-Item -LiteralPath "Registry::HKEY_CLASSES_ROOT\$extension" -ErrorAction SilentlyContinue
+              if ($extensionKey) { $progId = $extensionKey.GetValue('') }
+            }
             if (-not $progId) { continue }
             if ($progId -notmatch '^[A-Za-z0-9._-]+(\\[A-Za-z0-9._-]+)*$' -or $progId.Split('\') -contains '.' -or $progId.Split('\') -contains '..') { throw "Unexpected ProgID for ${extension}: $progId" }
             $verbPath = "Registry::HKEY_CURRENT_USER\Software\Classes\$progId\shell\UnityPackageExplorer.Open"

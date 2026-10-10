@@ -28,6 +28,7 @@
     <None Include="..\..\tools\context-menu\Install-ExplorerContextMenuPackage.ps1" Link="TestData\Install-ExplorerContextMenuPackage.ps1" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tools\release\UnityPackageExplorer.iss" Link="TestData\UnityPackageExplorer.iss" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tools\release\Cleanup-LegacyExplorerRegistration.ps1" Link="TestData\Cleanup-LegacyExplorerRegistration.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\.github\workflows\windows.yml" Link="TestData\windows.yml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
