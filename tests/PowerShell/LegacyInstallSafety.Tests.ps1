@@ -49,6 +49,12 @@ Assert-True (-not (Should-PreserveSendToShortcutOnUpgrade -Mode Upgrade -SendToT
 Assert-True (-not (Should-PreserveSendToShortcutOnUpgrade -Mode Uninstall -SendToTaskSelected $true -LinkTargetsCurrentInstall $true)) 'Uninstall must not retain the shortcut.'
 Assert-True (-not (Should-PreserveSendToShortcutOnUpgrade -Mode Upgrade -SendToTaskSelected $true -LinkTargetsCurrentInstall $false)) 'A shortcut to another target must not be retained as ours.'
 
+$expectedShellCommand = '"C:\Apps\UnityPackageExplorer.App.exe" "%1"'
+Assert-True ((Get-OwnedShellCommandCleanupPlan -RegisteredCommand $expectedShellCommand -ExpectedCommand $expectedShellCommand -ValueNames @('') -SubKeyCount 0) -eq 'RemoveKey') 'A product-only command key should be removed as a whole.'
+Assert-True ((Get-OwnedShellCommandCleanupPlan -RegisteredCommand $expectedShellCommand -ExpectedCommand $expectedShellCommand -ValueNames @('', 'DelegateExecute') -SubKeyCount 0) -eq 'RemoveDefaultValue') 'An owned default command should be removed while preserving DelegateExecute.'
+Assert-True ((Get-OwnedShellCommandCleanupPlan -RegisteredCommand $expectedShellCommand -ExpectedCommand $expectedShellCommand -ValueNames @('') -SubKeyCount 1) -eq 'RemoveDefaultValue') 'An owned default command should be removed while preserving command subkeys.'
+Assert-True ((Get-OwnedShellCommandCleanupPlan -RegisteredCommand '"C:\Other\Other.exe" "%1"' -ExpectedCommand $expectedShellCommand -ValueNames @('', 'DelegateExecute') -SubKeyCount 0) -eq 'Preserve') 'A changed third-party command must be preserved in full.'
+
 $requiredCleanupFailed = $false
 try { Invoke-RequiredCleanupStep -StepName 'legacy migration' -Action { throw 'simulated migration failure' } }
 catch { $requiredCleanupFailed = $_.Exception.Message -match 'legacy migration.*simulated migration failure' }

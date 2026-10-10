@@ -101,4 +101,46 @@ public sealed class ExplorerCommandRegistrationTests
         Assert.Contains("CreateProcessW failed (Win32 error %lu)", launch, StringComparison.Ordinal);
         Assert.DoesNotContain("ShellExecuteW(", launch, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void StaticVerbsCoverAssociationProgidsAndRemoveOnlyRecordedOwnedCommands()
+    {
+        var testData = Path.Combine(AppContext.BaseDirectory, "TestData");
+        var installer = File.ReadAllText(Path.Combine(testData, "UnityPackageExplorer.iss"));
+        var cleanup = File.ReadAllText(Path.Combine(testData, "Cleanup-LegacyExplorerRegistration.ps1"));
+
+        var associationLookup = installer[installer.IndexOf("function GetAssociationProgId", StringComparison.Ordinal)..
+            installer.IndexOf("procedure RegisterAssociationProgIdVerb", StringComparison.Ordinal)];
+        Assert.DoesNotContain("function HasAssociationProgId", installer, StringComparison.Ordinal);
+        Assert.True(associationLookup.IndexOf("FileExts\\' + Extension + '\\UserChoice", StringComparison.Ordinal) <
+                    associationLookup.IndexOf("RegQueryStringValue(HKCR, Extension", StringComparison.Ordinal),
+            "The active UserChoice ProgID must take priority over the extension's HKCR fallback.");
+        Assert.Contains("RegKeyExists(HKCR, ProgId)", associationLookup, StringComparison.Ordinal);
+        Assert.Contains("IsValidAssociationProgId", associationLookup, StringComparison.Ordinal);
+        Assert.Contains("Segment = '..'", installer, StringComparison.Ordinal);
+        Assert.Contains("RegisterAssociationProgIdVerb", installer, StringComparison.Ordinal);
+        Assert.Contains("Software\\UnityPackageExplorer\\Install", installer, StringComparison.Ordinal);
+        Assert.Contains("ProgIdVerbCount", installer, StringComparison.Ordinal);
+        Assert.True(installer.IndexOf("'ProgIdVerbCount'", StringComparison.Ordinal) <
+                    installer.LastIndexOf("RegisterAssociationProgIdVerb(RegisteredProgIds[", StringComparison.Ordinal),
+            "Ownership state must be recorded before direct ProgID registry values are changed.");
+        Assert.Contains("SystemFileAssociations\\.unitypackage\\shell\\UnityPackageExplorer.Open", installer, StringComparison.Ordinal);
+        Assert.Contains("SystemFileAssociations\\.prefab\\shell\\UnityPackageExplorer.Open", installer, StringComparison.Ordinal);
+        Assert.Contains("SystemFileAssociations\\.zip\\shell\\UnityPackageExplorer.Open", installer, StringComparison.Ordinal);
+        Assert.False(installer.Contains("{code:GetAssociationProgId", StringComparison.Ordinal),
+            "ProgID keys must not be automatically deleted by Inno because that could erase a later third-party edit.");
+
+        var removal = cleanup[cleanup.IndexOf("function Remove-RecordedProgIdVerbs", StringComparison.Ordinal)..
+            cleanup.IndexOf("function Get-OldPreviewAssociation", StringComparison.Ordinal)];
+        var ownedCommandRemoval = cleanup[cleanup.IndexOf("function Remove-Owned-Shell-Command", StringComparison.Ordinal)..
+            cleanup.IndexOf("function Get-RecordedProgIdVerbCount", StringComparison.Ordinal)];
+        Assert.Contains("$progId -notmatch '^[A-Za-z0-9._-]+(\\\\[A-Za-z0-9._-]+)*$'", removal, StringComparison.Ordinal);
+        Assert.Contains("$recordedCommand -cne $expectedCommand", removal, StringComparison.Ordinal);
+        Assert.Contains("Remove-Owned-Shell-Command \"$classes\\$progId\\shell\\UnityPackageExplorer.Open\"", removal, StringComparison.Ordinal);
+        Assert.Contains("Remove-RecordedProgIdVerbs", cleanup, StringComparison.Ordinal);
+        Assert.Contains("Get-OwnedShellCommandCleanupPlan", ownedCommandRemoval, StringComparison.Ordinal);
+        Assert.Contains("$command.DeleteValue('', $false)", ownedCommandRemoval, StringComparison.Ordinal);
+        Assert.Contains("$registeredIcon -eq ($appPath + ',0')", cleanup, StringComparison.Ordinal);
+        Assert.Contains("$registeredIcon -eq ('\"' + $appPath + '\",0')", cleanup, StringComparison.Ordinal);
+    }
 }
