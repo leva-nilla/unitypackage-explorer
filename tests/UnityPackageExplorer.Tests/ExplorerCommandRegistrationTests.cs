@@ -143,4 +143,19 @@ public sealed class ExplorerCommandRegistrationTests
         Assert.Contains("$registeredIcon -eq ($appPath + ',0')", cleanup, StringComparison.Ordinal);
         Assert.Contains("$registeredIcon -eq ('\"' + $appPath + '\",0')", cleanup, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void InstallerSmokeSkipsProgidValidationWhenTheExtensionHasNoAssociation()
+    {
+        var workflow = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "TestData", "windows.yml"));
+        var smokeStart = workflow.IndexOf("$ownedProgIdVerbPaths =", StringComparison.Ordinal);
+        var smokeEnd = workflow.IndexOf("$fixtureDirectory =", smokeStart, StringComparison.Ordinal);
+        Assert.True(smokeStart >= 0 && smokeEnd > smokeStart, "The ProgID smoke check was not found.");
+        var smokeCheck = workflow[smokeStart..smokeEnd];
+
+        Assert.Contains("$extensionKey = Get-Item", smokeCheck, StringComparison.Ordinal);
+        Assert.Contains("if ($extensionKey) { $progId = $extensionKey.GetValue('') }", smokeCheck, StringComparison.Ordinal);
+        Assert.Contains("if (-not $progId) { continue }", smokeCheck, StringComparison.Ordinal);
+        Assert.DoesNotContain("Get-Item -LiteralPath \"Registry::HKEY_CLASSES_ROOT\\$extension\" -ErrorAction SilentlyContinue).GetValue", smokeCheck, StringComparison.Ordinal);
+    }
 }
