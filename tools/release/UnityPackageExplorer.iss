@@ -70,7 +70,6 @@ Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.prefab\shell\Unity
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: ""; ValueData: "UnityPackage Explorer で開く"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#ProductExe},0"; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#ProductExe}"" ""%1"""; Tasks: contextmenu
-
 [Run]
 Filename: "{app}\{#ProductExe}"; Description: "{cm:LaunchProgram,{#StringChange(ProductName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
@@ -78,6 +77,120 @@ Filename: "{app}\{#ProductExe}"; Description: "{cm:LaunchProgram,{#StringChange(
 Type: files; Name: "{app}\.unitypackage-explorer-inno-install.json"
 
 [Code]
+function IsValidAssociationProgId(const ProgId: String): Boolean;
+var
+  Index: Integer;
+  Segment: String;
+begin
+  Result := False;
+  if ProgId = '' then Exit;
+  Segment := '';
+  for Index := 1 to Length(ProgId) do begin
+    if Copy(ProgId, Index, 1) = '\' then begin
+      if (Segment = '') or (Segment = '.') or (Segment = '..') then Exit;
+      Segment := '';
+    end else begin
+      if Pos(Copy(ProgId, Index, 1), 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-') = 0 then Exit;
+      Segment := Segment + Copy(ProgId, Index, 1);
+    end;
+  end;
+  if (Segment = '') or (Segment = '.') or (Segment = '..') then Exit;
+  Result := True;
+end;
+
+function GetAssociationProgId(const Extension: String): String;
+var
+  ProgId: String;
+begin
+  Result := '';
+  if RegQueryStringValue(HKCU,
+    'Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\' + Extension + '\UserChoice',
+    'ProgId', ProgId) then begin
+    if IsValidAssociationProgId(ProgId) and RegKeyExists(HKCR, ProgId) then begin Result := ProgId; Exit; end;
+  end;
+  if not RegQueryStringValue(HKCR, Extension, '', ProgId) then Exit;
+  if IsValidAssociationProgId(ProgId) and RegKeyExists(HKCR, ProgId) then Result := ProgId;
+end;
+
+procedure RegisterAssociationProgIdVerb(const ProgId, ApplicationPath: String);
+var
+  VerbPath, CommandPath, CommandValue, ExpectedCommand, IconValue: String;
+begin
+  if ProgId = '' then Exit;
+
+  VerbPath := 'Software\Classes\' + ProgId + '\shell\UnityPackageExplorer.Open';
+  CommandPath := VerbPath + '\command';
+  ExpectedCommand := '"' + ApplicationPath + '" "%1"';
+  if RegValueExists(HKCU, CommandPath, '') then begin
+    if not RegQueryStringValue(HKCU, CommandPath, '', CommandValue) or
+       (CompareText(CommandValue, ExpectedCommand) <> 0) then
+      RaiseException('A conflicting command appeared for ProgID ' + ProgId + '.');
+  end;
+  if not RegValueExists(HKCU, CommandPath, '') and
+     (RegValueExists(HKCU, VerbPath, '') or RegValueExists(HKCU, VerbPath, 'Icon')) then
+    RaiseException('An existing ProgID verb without an owned command was left untouched for ' + ProgId + '.');
+  if RegQueryStringValue(HKCU, VerbPath, '', CommandValue) and
+     (CommandValue <> '') and (CommandValue <> 'UnityPackage Explorer で開く') then
+    RaiseException('A conflicting verb appeared for ProgID ' + ProgId + '.');
+  if RegQueryStringValue(HKCU, VerbPath, 'Icon', IconValue) and
+     (CompareText(IconValue, ApplicationPath + ',0') <> 0) then
+    RaiseException('A conflicting verb icon appeared for ProgID ' + ProgId + '.');
+
+  if not RegWriteStringValue(HKCU, CommandPath, '', ExpectedCommand) then
+    RaiseException('Could not register the UnityPackage Explorer command for ProgID ' + ProgId + '.');
+  if not RegWriteStringValue(HKCU, VerbPath, '', 'UnityPackage Explorer で開く') or
+     not RegWriteStringValue(HKCU, VerbPath, 'Icon', ApplicationPath + ',0') then
+    RaiseException('Could not register the UnityPackage Explorer verb for ProgID ' + ProgId + '.');
+end;
+
+procedure RegisterCurrentAssociationProgIdVerbs(const ApplicationPath: String);
+var
+  RegisteredProgIds: TArrayOfString;
+  Index, InnerIndex: Integer;
+  ValueName: String;
+  ProgId, Extension, StatePath: String;
+begin
+  SetArrayLength(RegisteredProgIds, 0);
+  for Index := 0 to 2 do begin
+    case Index of
+      0: Extension := '.unitypackage';
+      1: Extension := '.prefab';
+      2: Extension := '.zip';
+    end;
+    ProgId := GetAssociationProgId(Extension);
+    if ProgId <> '' then begin
+      for InnerIndex := 0 to GetArrayLength(RegisteredProgIds) - 1 do
+        if CompareText(RegisteredProgIds[InnerIndex], ProgId) = 0 then ProgId := '';
+      if ProgId <> '' then begin
+        SetArrayLength(RegisteredProgIds, GetArrayLength(RegisteredProgIds) + 1);
+        RegisteredProgIds[GetArrayLength(RegisteredProgIds) - 1] := ProgId;
+      end;
+    end;
+  end;
+
+  StatePath := 'Software\UnityPackageExplorer\Install';
+  for Index := 0 to GetArrayLength(RegisteredProgIds) - 1 do begin
+    ValueName := 'ProgIdVerb' + IntToStr(Index) + 'ProgId';
+    if not RegWriteStringValue(HKCU, StatePath, ValueName, RegisteredProgIds[Index]) or
+       not RegWriteStringValue(HKCU, StatePath, 'ProgIdVerb' + IntToStr(Index) + 'Command', '"' + ApplicationPath + '" "%1"') then begin
+      for InnerIndex := 0 to GetArrayLength(RegisteredProgIds) - 1 do begin
+        RegDeleteValue(HKCU, StatePath, 'ProgIdVerb' + IntToStr(InnerIndex) + 'ProgId');
+        RegDeleteValue(HKCU, StatePath, 'ProgIdVerb' + IntToStr(InnerIndex) + 'Command');
+      end;
+      RaiseException('Could not save ProgID verb ownership state.');
+    end;
+  end;
+  if not RegWriteDWordValue(HKCU, StatePath, 'ProgIdVerbCount', GetArrayLength(RegisteredProgIds)) then begin
+    for Index := 0 to GetArrayLength(RegisteredProgIds) - 1 do begin
+      RegDeleteValue(HKCU, StatePath, 'ProgIdVerb' + IntToStr(Index) + 'ProgId');
+      RegDeleteValue(HKCU, StatePath, 'ProgIdVerb' + IntToStr(Index) + 'Command');
+    end;
+    RaiseException('Could not save ProgID verb ownership state.');
+  end;
+  for Index := 0 to GetArrayLength(RegisteredProgIds) - 1 do
+    RegisterAssociationProgIdVerb(RegisteredProgIds[Index], ApplicationPath);
+end;
+
 function HasOwnedInstallMarker(const InstallDirectory, MarkerName: String): Boolean;
 var
   MarkerLines: TArrayOfString;
@@ -157,8 +270,8 @@ var
   PowerShellPath, MigrationScript, CurrentFilesManifest, MigrationParameters: String;
   CleanupScript, SparseErrorLog, CleanupParameters, CleanupErrorText: String;
   ShellPaths: TArrayOfString;
-  ShellPath: String;
-  Index, MigrationResultCode, CleanupResultCode: Integer;
+  ShellPath, AssociationProgId, VerbPath, RegisteredLabel, RegisteredIcon: String;
+  Index, PathCount, MigrationResultCode, CleanupResultCode: Integer;
 begin
   Result := '';
   InstallDirectory := ExpandConstant('{app}');
@@ -207,11 +320,44 @@ begin
   ShellPaths[0] := 'Software\Classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorer.Open\command';
   ShellPaths[1] := 'Software\Classes\SystemFileAssociations\.prefab\shell\UnityPackageExplorer.Open\command';
   ShellPaths[2] := 'Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open\command';
-  for Index := 0 to GetArrayLength(ShellPaths) - 1 do begin
+  PathCount := 3;
+  for Index := 0 to 2 do begin
+    case Index of
+      0: AssociationProgId := GetAssociationProgId('.unitypackage');
+      1: AssociationProgId := GetAssociationProgId('.prefab');
+      2: AssociationProgId := GetAssociationProgId('.zip');
+    end;
+    if AssociationProgId <> '' then begin
+      SetArrayLength(ShellPaths, PathCount + 1);
+      ShellPaths[PathCount] := 'Software\Classes\' + AssociationProgId + '\shell\UnityPackageExplorer.Open\command';
+      PathCount := PathCount + 1;
+    end;
+  end;
+  for Index := 0 to PathCount - 1 do begin
     ShellPath := ShellPaths[Index];
-    if RegQueryStringValue(HKCU, ShellPath, '', RegisteredCommand) and (CompareText(RegisteredCommand, ExpectedCommand) <> 0) then begin
-      Result := '右クリックメニューに同じ名前の別コマンドがあります。既存の登録を保護するため、登録を中止しました。';
-      Exit;
+    if RegValueExists(HKCU, ShellPath, '') then begin
+      if not RegQueryStringValue(HKCU, ShellPath, '', RegisteredCommand) or (CompareText(RegisteredCommand, ExpectedCommand) <> 0) then begin
+        Result := '右クリックメニューに同じ名前の別コマンドがあります。既存の登録を保護するため、登録を中止しました。';
+        Exit;
+      end;
+    end;
+    if Pos('SystemFileAssociations', ShellPath) = 0 then begin
+      VerbPath := Copy(ShellPath, 1, Length(ShellPath) - Length('\command'));
+      if not RegValueExists(HKCU, ShellPath, '') and
+         (RegValueExists(HKCU, VerbPath, '') or RegValueExists(HKCU, VerbPath, 'Icon')) then begin
+        Result := 'ProgIDに所有を確認できない同名の右クリック項目があります。既存の登録を保護するため、登録を中止しました。';
+        Exit;
+      end;
+      if RegQueryStringValue(HKCU, VerbPath, '', RegisteredLabel) and (RegisteredLabel <> '') and
+         (RegisteredLabel <> 'UnityPackage Explorer で開く') then begin
+        Result := 'ProgIDの右クリック項目に同じ名前の別登録があります。既存の登録を保護するため、登録を中止しました。';
+        Exit;
+      end;
+      if RegQueryStringValue(HKCU, VerbPath, 'Icon', RegisteredIcon) and
+         (CompareText(RegisteredIcon, ApplicationPath + ',0') <> 0) then begin
+        Result := 'ProgIDの右クリック項目に別アプリのアイコン登録があります。既存の登録を保護するため、登録を中止しました。';
+        Exit;
+      end;
     end;
   end;
 
@@ -267,11 +413,14 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  InstallDirectory, EscapedDirectory, MarkerPath: String;
+  InstallDirectory, ApplicationPath, EscapedDirectory, MarkerPath: String;
   MarkerText: AnsiString;
 begin
   if CurStep = ssPostInstall then begin
     InstallDirectory := ExpandConstant('{app}');
+    ApplicationPath := InstallDirectory + '\{#ProductExe}';
+    if WizardIsTaskSelected('contextmenu') then
+      RegisterCurrentAssociationProgIdVerbs(ApplicationPath);
     EscapedDirectory := InstallDirectory;
     StringChangeEx(EscapedDirectory, '\', '\\', True);
     MarkerPath := InstallDirectory + '\.unitypackage-explorer-inno-install.json';

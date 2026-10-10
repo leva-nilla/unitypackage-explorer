@@ -114,6 +114,20 @@ jobs:
             if ($actualCommand -ne $expectedCommand) { throw "Context menu command for $extension did not match the installed app." }
           }
 
+          $ownedProgIdVerbPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
+            $userChoicePath = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$extension\UserChoice"
+            $progId = if (Test-Path -LiteralPath $userChoicePath) { (Get-ItemProperty -LiteralPath $userChoicePath -Name ProgId -ErrorAction SilentlyContinue).ProgId }
+            if (-not $progId) { $progId = (Get-Item -LiteralPath "Registry::HKEY_CLASSES_ROOT\$extension" -ErrorAction SilentlyContinue).GetValue('') }
+            if (-not $progId) { continue }
+            if ($progId -notmatch '^[A-Za-z0-9._-]+(\\[A-Za-z0-9._-]+)*$' -or $progId.Split('\') -contains '.' -or $progId.Split('\') -contains '..') { throw "Unexpected ProgID for ${extension}: $progId" }
+            $verbPath = "Registry::HKEY_CURRENT_USER\Software\Classes\$progId\shell\UnityPackageExplorer.Open"
+            $commandPath = "$verbPath\command"
+            $actualCommand = (Get-Item -LiteralPath $commandPath -ErrorAction Stop).GetValue('')
+            if ($actualCommand -ne $expectedCommand) { throw "ProgID context menu command for $extension did not match the installed app." }
+            [void]$ownedProgIdVerbPaths.Add($verbPath)
+          }
+
           $fixtureDirectory = Join-Path $env:RUNNER_TEMP '日本語 fixture files'
           New-Item -ItemType Directory -Force -Path $fixtureDirectory | Out-Null
           $fixtures = @(
@@ -155,5 +169,8 @@ jobs:
           foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
             $key = "Registry::HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\$extension\shell\UnityPackageExplorer.Open"
             if (Test-Path -LiteralPath $key) { throw "Context menu registration for $extension remained after uninstall." }
+          }
+          foreach ($verbPath in $ownedProgIdVerbPaths) {
+            if (Test-Path -LiteralPath $verbPath) { throw "Owned ProgID context menu registration remained after uninstall: $verbPath" }
           }
           if (Test-Path -LiteralPath $installDirectory) { throw 'The isolated install directory remained after uninstall.' }

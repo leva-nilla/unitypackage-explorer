@@ -84,6 +84,22 @@ function Remove-VerifiedOwnedShortcut {
     }
 }
 
+function Get-OwnedShellCommandCleanupPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string]$RegisteredCommand,
+        [Parameter(Mandatory = $true)] [string]$ExpectedCommand,
+        [Parameter(Mandatory = $true)] [AllowEmptyString()] [string[]]$ValueNames,
+        [Parameter(Mandatory = $true)] [int]$SubKeyCount
+    )
+
+    if ($RegisteredCommand -ne $ExpectedCommand -or $ValueNames -notcontains '') { return 'Preserve' }
+    if ($SubKeyCount -gt 0 -or @($ValueNames | Where-Object { $_ -ne '' }).Count -gt 0) {
+        return 'RemoveDefaultValue'
+    }
+    return 'RemoveKey'
+}
+
 function Should-SkipOwnedFileMigrationForUninstall {
     [CmdletBinding()]
     param(
@@ -194,4 +210,4 @@ function Assert-NoReparseTree {
     }
 }
 
-Export-ModuleMember -Function Remove-RecordedSparsePackage, Should-PreserveSendToShortcutOnUpgrade, Invoke-RequiredCleanupStep, Remove-VerifiedOwnedShortcut, Should-SkipOwnedFileMigrationForUninstall, Should-RunLegacyOnlyUninstallMigration, Remove-VerifiedLegacyOwnershipMarker, Assert-NoReparsePathUnderRoot, Assert-NoReparseTree
+Export-ModuleMember -Function Remove-RecordedSparsePackage, Should-PreserveSendToShortcutOnUpgrade, Invoke-RequiredCleanupStep, Remove-VerifiedOwnedShortcut, Get-OwnedShellCommandCleanupPlan, Should-SkipOwnedFileMigrationForUninstall, Should-RunLegacyOnlyUninstallMigration, Remove-VerifiedLegacyOwnershipMarker, Assert-NoReparsePathUnderRoot, Assert-NoReparseTree
