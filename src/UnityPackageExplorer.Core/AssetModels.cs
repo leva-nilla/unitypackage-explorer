@@ -36,7 +36,33 @@ public sealed record UnityMaterialInfo(
     string? Name,
     IReadOnlyList<string> TextureGuids,
     IReadOnlyList<string> UnsupportedTextureGuids,
-    IReadOnlyList<UnityMaterialTextureReference> SupportedTextures);
+    IReadOnlyList<UnityMaterialTextureReference> SupportedTextures)
+{
+    public UnityMaterialColor? Color { get; init; }
+    public string? ShaderGuid { get; init; }
+    public string? ShaderName { get; init; }
+    public bool IsLilToonShaderAsset { get; init; }
+    public string? RenderTypeTag { get; init; }
+    public UnityMaterialRenderMode RenderMode { get; init; }
+    public float? Cutoff { get; init; }
+    public IReadOnlyList<string> EnabledUnsupportedFeatures { get; init; } = [];
+}
+
+public readonly record struct UnityMaterialColor(float R, float G, float B, float A);
+
+public enum UnityMaterialRenderMode { Unknown, Opaque, Cutout, Transparent }
+
+public static class UnityMaterialPreviewPolicy
+{
+    public static float DisplayAlpha(UnityMaterialColor? color, UnityMaterialRenderMode mode) =>
+        mode == UnityMaterialRenderMode.Transparent ? Math.Clamp(color?.A ?? 1f, 0f, 1f) : 1f;
+
+    public static bool UsesTransparentPass(UnityMaterialRenderMode mode) =>
+        mode is UnityMaterialRenderMode.Transparent or UnityMaterialRenderMode.Cutout;
+
+    public static float? CutoutThreshold(UnityMaterialRenderMode mode, float? cutoff) =>
+        mode == UnityMaterialRenderMode.Cutout && cutoff is { } value && float.IsFinite(value) ? Math.Clamp(value, 0f, 1f) : null;
+}
 
 public sealed record UnityMaterialTextureReference(string Slot, string Guid);
 

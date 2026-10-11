@@ -45,13 +45,14 @@ public partial class MainWindow : Window
     private double _flightSpeed = 12;
     private long _lastMovementTimestamp;
 
-    private sealed record TextureBinding(string MaterialGuid, string MaterialName, string TextureName, string Slot, string AssetPath);
+    private sealed record MaterialBinding(string MaterialGuid, string MaterialName, string TextureName, string Slot, string? AssetPath, UnityMaterialColor? Color, UnityMaterialRenderMode RenderMode, float? Cutoff);
     private sealed record ModelLoadResult(HelixToolkitScene Scene, IReadOnlyList<string> Warnings);
     private sealed record PrefabPreviewData(PrefabParseResult Parse, IReadOnlyList<PrefabNodeView> Tree, IReadOnlyList<PrefabModelPlacement> Models);
     private sealed class PreviewTemporaryState(string path)
     {
         public string Path { get; } = path;
         public bool InFlight { get; set; } = true;
+        public Dictionary<string, string> AlphaTextureCache { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
     private static readonly string[] Categories = ["アクセサリー", "アバター", "その他", "ツール", "テクスチャ", "ワールド", "衣装", "小物", "髪型"];
 
@@ -614,6 +615,7 @@ public partial class MainWindow : Window
             .AppendLine($"Prefab 階層: {CountNodes(preview.Parse.Roots):N0} 個")
             .AppendLine($"FBX 参照: {CountModelReferences(preview.Parse.Roots):N0} 個")
             .AppendLine($"FBX モデル表示: {models.Count:N0} 個");
+        if (models.Count > 0) details.AppendLine("材質表示: 基本色・明示された透過モードを近似。シェーダー固有の描画は省略します。");
         var distinctWarnings = warnings.Distinct(StringComparer.Ordinal).ToArray();
         if (distinctWarnings.Length > 0)
             details.AppendLine($"確認できない内容: {distinctWarnings.Length:N0} 件").AppendLine().AppendLine("詳細").AppendLine(string.Join(Environment.NewLine, distinctWarnings));
@@ -626,7 +628,7 @@ public partial class MainWindow : Window
         }
         else ViewerEmpty.Text = "表示できる FBX がありません。Prefab の階層と確認できない内容を表示しています";
         DetailsText.Text = details.ToString();
-        SetStatus(models.Count > 0 ? "参照 FBX を表示しました。テクスチャとシェーダーは簡易表示です。" : "Prefab の構造を読み込みました。");
+        SetStatus(models.Count > 0 ? "参照 FBX を表示しました。材質色・透過は近似表示です。" : "Prefab の構造を読み込みました。");
     }
 
     private async Task LoadPackageModelAsync(UnityPackageEntry entry, Matrix4x4 transform, IReadOnlyList<UnityAssetReference> materials, long requestId, CancellationToken cancellationToken)
@@ -665,6 +667,7 @@ public partial class MainWindow : Window
     {
         var catalog = _catalog ?? throw new InvalidOperationException("Asset catalog is not open.");
         var temp = EnsureTemporaryRoot(requestId);
+        var alphaTextureCache = _requestTemporaryRoots[requestId].AlphaTextureCache;
         return await Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -672,7 +675,7 @@ public partial class MainWindow : Window
                 ? catalog.StageAsset(guid, temp, cancellationToken: cancellationToken, packageMemberPath: packageMemberPath, referenceEntry: referenceEntry)
                 : catalog.StageAsset(modelEntry, temp, cancellationToken);
             StageSiblingImages(catalog, temp, guid, packageMemberPath, referenceEntry, modelEntry, cancellationToken);
-            var textureBindings = new List<TextureBinding>();
+            var materialBindings = new List<MaterialBinding>();
             var warnings = new List<string>();
             foreach (var material in materials)
             {
@@ -706,6 +709,12 @@ public partial class MainWindow : Window
                 }
 
                 var materialName = materialInfo.Name ?? Path.GetFileNameWithoutExtension(materialPath);
+                foreach (var feature in materialInfo.EnabledUnsupportedFeatures)
+                    warnings.Add($"Material '{materialName}' enables {feature}, which is not included in the simplified material preview.");
+                if (materialInfo.RenderMode == UnityMaterialRenderMode.Cutout)
+                    warnings.Add(materialInfo.Cutoff is null
+                        ? $"Material '{materialName}' uses alpha cutout but has no readable cutoff; the texture alpha is not masked."
+                        : $"Material '{materialName}' uses alpha cutout. It is shown with a binary texture-alpha approximation; depth and sorting may differ from Unity.");
                 foreach (var textureGuid in materialInfo.UnsupportedTextureGuids)
                 {
                     var unsupportedPath = catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
@@ -713,6 +722,7 @@ public partial class MainWindow : Window
                         ? $"Texture GUID {textureGuid} referenced by material '{materialName}' was not found."
                         : $"Texture {unsupportedPath} is referenced by a material slot that this simplified viewer does not render.");
                 }
+                var bindingCountBeforeMaterial = materialBindings.Count;
                 foreach (var textureReference in materialInfo.SupportedTextures)
                 {
                     var textureGuid = textureReference.Guid;
@@ -739,13 +749,22 @@ public partial class MainWindow : Window
                     }
                     if (textureExtension.Equals(".tga", StringComparison.OrdinalIgnoreCase))
                         texturePath = ConvertTgaToPng(texturePath);
-                    textureBindings.Add(new TextureBinding(
+                    materialBindings.Add(new MaterialBinding(
                         material.Guid,
                         materialName,
                         Path.GetFileNameWithoutExtension(textureSourcePath),
                         textureReference.Slot,
-                        texturePath));
+                        texturePath,
+                        materialInfo.Color,
+                        materialInfo.RenderMode,
+                        materialInfo.Cutoff));
                 }
+                if (materialBindings.Count == bindingCountBeforeMaterial)
+                    materialBindings.Add(new MaterialBinding(material.Guid, materialName, string.Empty, string.Empty, null, materialInfo.Color, materialInfo.RenderMode, materialInfo.Cutoff));
+                if (materialInfo.RenderMode == UnityMaterialRenderMode.Unknown && materialInfo.Color is { A: < 1f })
+                    warnings.Add($"Material '{materialName}' has alpha color but no explicit transparent mode; it remains opaque in this preview.");
+                else if (materialInfo.RenderMode == UnityMaterialRenderMode.Unknown && materialInfo.IsLilToonShaderAsset)
+                    warnings.Add($"Material '{materialName}' uses an unrecognized lilToon shader variant; its render mode is left opaque in this simplified preview.");
             }
 
             foreach (var materialOverride in materialOverrides ?? [])
@@ -805,11 +824,20 @@ public partial class MainWindow : Window
             var configuration = PreviewImporterConfiguration.Create();
             var scene = importer.Load(modelPath, configuration);
             if (scene is null) throw new InvalidDataException("FBX を読み込めませんでした。");
-            cancellationToken.ThrowIfCancellationRequested();
-            scene.Root.ModelMatrix *= transform;
-            scene.Root.UpdateAllTransformMatrix();
-            warnings.AddRange(ApplyUnityTextures(scene.Root, textureBindings, materials, rendererAssignments ?? [], isPrefabPreview, materialOverrides?.Count > 0));
-            return new ModelLoadResult(scene, warnings);
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                scene.Root.ModelMatrix *= transform;
+                scene.Root.UpdateAllTransformMatrix();
+                warnings.AddRange(ApplyUnityMaterials(scene.Root, materialBindings, materials, rendererAssignments ?? [], isPrefabPreview, materialOverrides?.Count > 0, cancellationToken, alphaTextureCache));
+                cancellationToken.ThrowIfCancellationRequested();
+                return new ModelLoadResult(scene, warnings);
+            }
+            catch
+            {
+                scene.Root.Dispose();
+                throw;
+            }
         }, cancellationToken);
     }
 
@@ -827,15 +855,17 @@ public partial class MainWindow : Window
         }
     }
 
-    private static IReadOnlyList<string> ApplyUnityTextures(
+    private static IReadOnlyList<string> ApplyUnityMaterials(
         HelixToolkit.SharpDX.Model.Scene.SceneNode root,
-        IReadOnlyList<TextureBinding> textureBindings,
+        IReadOnlyList<MaterialBinding> materialBindings,
         IReadOnlyList<UnityAssetReference> materialReferences,
         IReadOnlyList<PrefabRendererMaterialAssignment> rendererAssignments,
         bool isPrefabPreview,
-        bool hasUnappliedMaterialOverrides = false)
+        bool hasUnappliedMaterialOverrides = false,
+        CancellationToken cancellationToken = default,
+        IDictionary<string, string>? alphaTextureCache = null)
     {
-        if (textureBindings.Count == 0)
+        if (materialBindings.Count == 0)
             return isPrefabPreview
                 ? [hasUnappliedMaterialOverrides
                     ? "Nested Prefab material override textures were inspected for diagnostics but not applied because their FBX submesh targets could not be identified safely."
@@ -843,7 +873,8 @@ public partial class MainWindow : Window
                 : [];
         var meshNodes = EnumerateSceneNodes(root).OfType<HelixToolkit.SharpDX.Model.Scene.MeshNode>().ToArray();
         var warnings = new List<string>();
-        var applied = new HashSet<TextureBinding>();
+        var applied = new HashSet<MaterialBinding>();
+        alphaTextureCache ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var mesh in meshNodes)
         {
             var materialName = mesh.Material?.Name;
@@ -851,39 +882,69 @@ public partial class MainWindow : Window
                 .Where(x => UnityMaterialNameMatcher.HaveSameNormalizedName(x.RendererName, mesh.Name))
                 .ToArray();
             var scopedBindings = matchingRenderers.Length == 1
-                ? textureBindings.Where(binding => matchingRenderers[0].Materials.Any(reference => string.Equals(reference.Guid, binding.MaterialGuid, StringComparison.OrdinalIgnoreCase)))
-                : textureBindings;
-            var matching = scopedBindings.Where(x =>
-                UnityMaterialNameMatcher.AreEquivalent(x.MaterialName, materialName)
-                || UnityMaterialNameMatcher.AreEquivalent(x.MaterialName, mesh.Name)
-                || UnityMaterialNameMatcher.AreEquivalent(x.TextureName, materialName)
-                || UnityMaterialNameMatcher.AreEquivalent(x.TextureName, mesh.Name)).ToArray();
-            var paths = matching
-                .OrderBy(x => TextureSlotPriority(x.Slot))
-                .Select(x => x.AssetPath)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            if (paths.Length == 1)
+                ? materialBindings.Where(binding => matchingRenderers[0].Materials.Any(reference => string.Equals(reference.Guid, binding.MaterialGuid, StringComparison.OrdinalIgnoreCase)))
+                : materialBindings;
+            var matchingGuids = UnityMaterialNameMatcher.FindMatchingMaterialGuids(
+                scopedBindings.Select(x => (x.MaterialGuid, x.MaterialName, (string?)x.TextureName)), materialName, mesh.Name);
+            if (matchingGuids.Count == 1)
             {
-                SetDiffuseTexture(mesh, paths[0]);
-                foreach (var item in matching) applied.Add(item);
+                var bindings = scopedBindings.Where(x => string.Equals(x.MaterialGuid, matchingGuids[0], StringComparison.OrdinalIgnoreCase)).ToArray();
+                var textured = bindings.Where(x => x.AssetPath is not null).OrderBy(x => TextureSlotPriority(x.Slot)).ToArray();
+                var bestPriority = textured.Length == 0 ? int.MaxValue : TextureSlotPriority(textured[0].Slot);
+                var paths = textured.Where(x => TextureSlotPriority(x.Slot) == bestPriority).Select(x => x.AssetPath!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                if (paths.Length <= 1)
+                {
+                    var binding = bindings[0];
+                    var path = paths.Length == 1 ? paths[0] : null;
+                    if (path is not null) path = PrepareTextureAlphaForPreview(path, binding, alphaTextureCache, warnings, cancellationToken);
+                    SetPreviewMaterial(mesh, path, binding.Color, binding.RenderMode, binding.Cutoff);
+                    foreach (var item in bindings) applied.Add(item);
+                }
+                else warnings.Add($"Several main textures match FBX material '{mesh.Name}'; no material settings were applied.");
             }
-            else if (paths.Length > 1)
-                warnings.Add($"Several textures match FBX material '{mesh.Name}'; no texture was selected automatically.");
+            else if (matchingGuids.Count > 1) warnings.Add($"Several Unity materials match FBX material '{mesh.Name}'; no material settings were applied.");
         }
 
-        var allReferencedMaterialsHaveOneTexture = materialReferences.Count == 1
-            && textureBindings.Select(x => x.AssetPath).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1;
-        if (applied.Count == 0 && allReferencedMaterialsHaveOneTexture)
+        var importedMaterialNames = meshNodes.Select(x => x.Material?.Name).ToArray();
+        var sceneHasSingleNamedMaterial = importedMaterialNames.Length > 0 && importedMaterialNames.All(x => !string.IsNullOrWhiteSpace(x))
+            && importedMaterialNames.Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1;
+        var oneReferencedMaterial = materialReferences.Count == 1 && materialBindings.Select(x => x.MaterialGuid).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1;
+        var distinctFallbackPaths = materialBindings.Where(x => x.AssetPath is not null).Select(x => x.AssetPath!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var hasOnlyOneColorMaterial = materialBindings.Select(x => x.MaterialGuid).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1;
+        if (applied.Count == 0 && oneReferencedMaterial && sceneHasSingleNamedMaterial && (distinctFallbackPaths.Length == 1 || (distinctFallbackPaths.Length == 0 && hasOnlyOneColorMaterial)))
         {
-            var path = textureBindings[0].AssetPath;
-            foreach (var mesh in meshNodes) SetDiffuseTexture(mesh, path);
-            foreach (var item in textureBindings) applied.Add(item);
+            var binding = materialBindings[0];
+            var path = distinctFallbackPaths.SingleOrDefault();
+            if (path is not null) path = PrepareTextureAlphaForPreview(path, binding, alphaTextureCache, warnings, cancellationToken);
+            foreach (var mesh in meshNodes) SetPreviewMaterial(mesh, path, binding.Color, binding.RenderMode, binding.Cutoff);
+            foreach (var item in materialBindings) applied.Add(item);
         }
 
-        foreach (var binding in textureBindings.Except(applied))
-            warnings.Add($"Texture '{binding.TextureName}' for material '{binding.MaterialName}' could not be matched to an FBX material and was left unused.");
+        foreach (var binding in materialBindings.Except(applied).DistinctBy(x => x.MaterialGuid, StringComparer.OrdinalIgnoreCase))
+            warnings.Add($"Material '{binding.MaterialName}' could not be matched to an FBX material and was left unused.");
         return warnings;
+    }
+
+    private static string PrepareTextureAlphaForPreview(string path, MaterialBinding binding, IDictionary<string, string> cache, ICollection<string> warnings, CancellationToken cancellationToken)
+    {
+        if (binding.RenderMode == UnityMaterialRenderMode.Opaque)
+        {
+            try { return AlphaTexturePreparation.PrepareOpaquePng(path, cache, cancellationToken); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or ArgumentException or OverflowException)
+            {
+                warnings.Add($"Opaque texture alpha for material '{binding.MaterialName}' could not be removed ({ex.Message}); transparent pixels may still appear as holes.");
+                return path;
+            }
+        }
+        if (UnityMaterialPreviewPolicy.CutoutThreshold(binding.RenderMode, binding.Cutoff) is not { } cutoff) return path;
+        try { return AlphaTexturePreparation.PrepareCutoutPng(path, cutoff, binding.Color?.A ?? 1f, cache, cancellationToken); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or ArgumentException)
+        {
+            warnings.Add($"Cutout texture for material '{binding.MaterialName}' could not be converted ({ex.Message}); the original texture is shown without cutoff masking.");
+            return path;
+        }
     }
 
     private static int TextureSlotPriority(string slot) => slot switch
@@ -893,20 +954,30 @@ public partial class MainWindow : Window
         _ => 2
     };
 
-    private static void SetDiffuseTexture(HelixToolkit.SharpDX.Model.Scene.MeshNode mesh, string path) =>
-        mesh.Material = CreateTexturePreviewMaterial(path);
+    private static void SetPreviewMaterial(HelixToolkit.SharpDX.Model.Scene.MeshNode mesh, string? path, UnityMaterialColor? color, UnityMaterialRenderMode mode, float? cutoff)
+    {
+        var alpha = UnityMaterialPreviewPolicy.DisplayAlpha(color, mode);
+        var material = CreatePreviewMaterial(path, color, alpha);
+        mesh.Material = material;
+        mesh.IsTransparent = UnityMaterialPreviewPolicy.UsesTransparentPass(mode);
+        if (path is null && UnityMaterialPreviewPolicy.CutoutThreshold(mode, cutoff) is { } threshold)
+            mesh.Visible = (color?.A ?? 1f) >= threshold;
+    }
 
-    private static HelixToolkit.SharpDX.Model.PhongMaterialCore CreateTexturePreviewMaterial(string path) =>
+    private static HelixToolkit.SharpDX.Model.PhongMaterialCore CreateTexturePreviewMaterial(string path) => CreatePreviewMaterial(path, null, 1f);
+
+    private static HelixToolkit.SharpDX.Model.PhongMaterialCore CreatePreviewMaterial(string? path, UnityMaterialColor? color, float alpha) =>
         new()
         {
             // PhongMaterialCore defaults AmbientColor to 0.66 and SpecularColor to 0.5.
             // With the white viewport lights those defaults wash out the sampled diffuse map.
             AmbientColor = new HelixToolkit.Maths.Color4(0.08f, 0.08f, 0.08f, 1f),
-            DiffuseColor = new HelixToolkit.Maths.Color4(1, 1, 1, 1),
+            DiffuseColor = new HelixToolkit.Maths.Color4(color?.R ?? 1f, color?.G ?? 1f, color?.B ?? 1f, alpha),
             EmissiveColor = new HelixToolkit.Maths.Color4(0, 0, 0, 1),
             SpecularColor = new HelixToolkit.Maths.Color4(0.06f, 0.06f, 0.06f, 1f),
             SpecularShininess = 24f,
-            DiffuseMap = HelixToolkit.SharpDX.TextureModel.Create(path)
+            RenderDiffuseMap = path is not null,
+            DiffuseMap = path is null ? null : HelixToolkit.SharpDX.TextureModel.Create(path)
         };
 
     private static IEnumerable<HelixToolkit.SharpDX.Model.Scene.SceneNode> EnumerateSceneNodes(HelixToolkit.SharpDX.Model.Scene.SceneNode root)

@@ -39,6 +39,22 @@ public static class UnityMaterialNameMatcher
         return left.Length > 0 && string.Equals(left, right, StringComparison.Ordinal);
     }
 
+    /// <summary>Returns distinct Unity materials that safely match an imported material or mesh name.</summary>
+    public static IReadOnlyList<string> FindMatchingMaterialGuids(
+        IEnumerable<(string Guid, string MaterialName, string? TextureName)> bindings,
+        string? importedMaterialName,
+        string? meshName)
+    {
+        return bindings.Where(binding =>
+                AreEquivalent(binding.MaterialName, importedMaterialName)
+                || AreEquivalent(binding.MaterialName, meshName)
+                || (binding.TextureName is { Length: > 0 }
+                    && (AreEquivalent(binding.TextureName, importedMaterialName) || AreEquivalent(binding.TextureName, meshName))))
+            .Select(binding => binding.Guid)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     private static string Normalize(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return string.Empty;
