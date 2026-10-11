@@ -90,6 +90,8 @@ public partial class MainWindow : Window
         var cancellation = Interlocked.Exchange(ref _previewCancellation, null);
         cancellation?.Cancel();
         ClearDisplay();
+        DetailsText.Text = "検索・種類の条件を変更しました。結果のファイルまたはPrefab候補を選ぶとプレビューできます。";
+        SetStatus("検索結果から表示する素材を選んでください。");
         SetBusy(false);
     }
 
