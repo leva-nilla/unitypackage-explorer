@@ -1,3 +1,4 @@
+using System.Globalization;
 using UnityPackageExplorer.Core;
 
 namespace UnityPackageExplorer.Tests;
@@ -90,7 +91,10 @@ public sealed class UnityAssetCatalogTests
         var root = Path.Combine(Path.GetTempPath(), $"unitypackage-material-test-{Guid.NewGuid():N}");
         var prefabPath = Path.Combine(root, "Assets", "Prefabs", "Item.prefab");
         var materialPath = Path.Combine(root, "Assets", "Materials", "Leather.mat");
+        var cutoutMaterialPath = Path.Combine(root, "Assets", "Materials", "Leaf.mat");
         var texturePath = Path.Combine(root, "Assets", "Textures", "Leather.png");
+        var shaderPath = Path.Combine(root, "Assets", "lilToon", "Shader", "lts.shader");
+        var originalCulture = CultureInfo.CurrentCulture;
         const string materialGuid = "11111111111111111111111111111111";
         const string textureGuid = "22222222222222222222222222222222";
         try
@@ -98,12 +102,18 @@ public sealed class UnityAssetCatalogTests
             Directory.CreateDirectory(Path.GetDirectoryName(prefabPath)!);
             Directory.CreateDirectory(Path.GetDirectoryName(materialPath)!);
             Directory.CreateDirectory(Path.GetDirectoryName(texturePath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(shaderPath)!);
             File.WriteAllText(prefabPath, "prefab");
-            File.WriteAllText(materialPath, $"m_Name: Leather\nm_SavedProperties:\n  m_TexEnvs:\n  - _MainTex:\n      m_Texture: {{fileID: 2800000, guid: {textureGuid}, type: 3}}\n  - _BumpMap:\n      m_Texture: {{fileID: 2800000, guid: 33333333333333333333333333333333, type: 3}}\n");
+            File.WriteAllText(materialPath, $"Material:\n  m_Name: Leather\n  m_Shader: {{fileID: 4800000, guid: 165365ab7100a044ca85fc8c33548a62, type: 3}}\n  m_SavedProperties:\n    m_TexEnvs:\n    - _MainTex:\n        m_Texture: {{fileID: 2800000, guid: {textureGuid}, type: 3}}\n    - _BumpMap:\n        m_Texture: {{fileID: 2800000, guid: 33333333333333333333333333333333, type: 3}}\n    m_Floats:\n    - _Cutoff: 0.37\n    - _TransparentMode: 1\n    - _AlphaMaskMode: 1\n    - _UseOutline: 0\n    m_Colors:\n    - _Color: {{r: 0.25, g: 0.5, b: 0.75, a: 0.4}}\n");
             File.WriteAllText(materialPath + ".meta", $"fileFormatVersion: 2\nguid: {materialGuid}\n");
+            File.WriteAllText(cutoutMaterialPath, "Material:\n  m_Name: Leaf\n  m_Shader: {fileID: 4800000, guid: 85d6126cae43b6847aff4b13f4adb8ec, type: 3}\n  m_SavedProperties:\n    m_Floats:\n    - _Cutoff: 0.37\n");
+            File.WriteAllText(cutoutMaterialPath + ".meta", "fileFormatVersion: 2\nguid: 88888888888888888888888888888888\n");
+            File.WriteAllText(shaderPath, "Shader \"lilToon\" {}\n");
+            File.WriteAllText(shaderPath + ".meta", "fileFormatVersion: 2\nguid: 165365ab7100a044ca85fc8c33548a62\n");
             File.WriteAllBytes(texturePath, [0]);
             File.WriteAllText(texturePath + ".meta", $"fileFormatVersion: 2\nguid: {textureGuid}\n");
 
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
             var catalog = UnityAssetCatalog.OpenProjectPrefab(prefabPath);
 
             var preview = catalog.ReadMaterialInfo(materialGuid);
@@ -111,10 +121,75 @@ public sealed class UnityAssetCatalogTests
             Assert.NotNull(preview);
             Assert.Equal("Leather", preview.Name);
             Assert.Equal(textureGuid, Assert.Single(preview.TextureGuids));
+            Assert.Equal(new UnityMaterialColor(0.25f, 0.5f, 0.75f, 0.4f), preview.Color);
+            Assert.Equal(UnityMaterialRenderMode.Transparent, preview.RenderMode);
+            Assert.Equal("lts", preview.ShaderName);
+            Assert.True(preview.IsLilToonShaderAsset);
+            Assert.Equal(0.37f, preview.Cutoff);
+            Assert.Equal(["_AlphaMaskMode"], preview.EnabledUnsupportedFeatures);
+            var cutout = catalog.ReadMaterialInfo("88888888888888888888888888888888");
+            Assert.NotNull(cutout);
+            Assert.Equal(UnityMaterialRenderMode.Cutout, cutout.RenderMode);
             Assert.Equal("33333333333333333333333333333333", Assert.Single(preview.UnsupportedTextureGuids));
             Assert.Equal("Leather", catalog.ReadMaterialName(materialGuid));
             Assert.Equal(textureGuid, Assert.Single(catalog.ReadMaterialTextureGuids(materialGuid)));
             Assert.Equal("33333333333333333333333333333333", Assert.Single(catalog.ReadUnsupportedMaterialTextureGuids(materialGuid)));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CutoffAloneDoesNotClassifyMaterialAndMalformedColorIsIgnored()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"unitypackage-material-malformed-{Guid.NewGuid():N}");
+        var prefabPath = Path.Combine(root, "Assets", "Item.prefab");
+        var materialPath = Path.Combine(root, "Assets", "Broken.mat");
+        const string materialGuid = "55555555555555555555555555555555";
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(prefabPath)!);
+            File.WriteAllText(prefabPath, "prefab");
+            File.WriteAllText(materialPath, "m_Name: Broken\nm_SavedProperties:\n  m_Floats:\n  - _Cutoff: not-a-number\n  m_Colors:\n  - _Color: {r: NaN, g: 0.2, b: 0.3, a: 1}\n");
+            File.WriteAllText(materialPath + ".meta", $"fileFormatVersion: 2\nguid: {materialGuid}\n");
+            var info = UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo(materialGuid);
+            Assert.NotNull(info);
+            Assert.Equal(UnityMaterialRenderMode.Unknown, info.RenderMode);
+            Assert.Null(info.Cutoff);
+            Assert.Null(info.Color);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void UnknownLilToonVariantIsNotGuessedFromCutoffOrTransparentModeValue()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"unitypackage-unknown-shader-{Guid.NewGuid():N}");
+        var prefabPath = Path.Combine(root, "Assets", "Item.prefab");
+        var shaderPath = Path.Combine(root, "Assets", "lilToon", "Shader", "ltsmulti.shader");
+        var materialPath = Path.Combine(root, "Assets", "Item.mat");
+        const string shaderGuid = "66666666666666666666666666666666";
+        const string materialGuid = "77777777777777777777777777777777";
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(shaderPath)!);
+            File.WriteAllText(prefabPath, "prefab");
+            File.WriteAllText(shaderPath, "Shader \"lilToonMulti\" {}\n");
+            File.WriteAllText(shaderPath + ".meta", $"fileFormatVersion: 2\nguid: {shaderGuid}\n");
+            File.WriteAllText(materialPath, $"Material:\n  m_Name: Unknown\n  m_Shader: {{fileID: 4800000, guid: {shaderGuid}, type: 3}}\n  stringTagMap: {{RenderType: Opaque}}\n  m_SavedProperties:\n    m_Floats:\n    - _TransparentMode: 1\n    - _Cutoff: 0.4\n");
+            File.WriteAllText(materialPath + ".meta", $"fileFormatVersion: 2\nguid: {materialGuid}\n");
+
+            var info = UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo(materialGuid);
+            Assert.NotNull(info);
+            Assert.Equal("ltsmulti", info.ShaderName);
+            Assert.True(info.IsLilToonShaderAsset);
+            Assert.Equal(UnityMaterialRenderMode.Unknown, info.RenderMode);
         }
         finally
         {

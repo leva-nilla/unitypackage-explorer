@@ -1,15 +1,45 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Globalization;
 
 namespace UnityPackageExplorer.Core;
 
 public sealed class UnityAssetCatalog
 {
     private const long MaximumMetaBytes = 1024 * 1024;
-    private static readonly Regex MaterialNamePattern = new("(?m)^m_Name:\\s*(?<name>[^\\r\\n]*)", RegexOptions.Compiled);
+    private static readonly Regex MaterialNamePattern = new("(?m)^[ \\t]*m_Name:\\s*(?<name>[^\\r\\n]*)", RegexOptions.Compiled);
     private static readonly Regex MaterialTextureBlockPattern = new("(?ms)^\\s*-\\s*(?<name>_[A-Za-z0-9]+):\\s*(?<body>.*?)(?=^\\s*-\\s*_[A-Za-z0-9]+:|^\\S|\\z)", RegexOptions.Compiled);
     private static readonly Regex MaterialTextureReferencePattern = new("(?m)^\\s*m_Texture:\\s*\\{\\s*fileID:\\s*-?\\d+\\s*,\\s*guid:\\s*([0-9a-fA-F]{32})", RegexOptions.Compiled);
+    private static readonly Regex ColorPattern = new("(?ms)^\\s*-\\s*_Color:\\s*\\{(?<body>[^}]+)\\}", RegexOptions.Compiled);
+    private static readonly Regex ColorComponentPattern = new("(?<key>[rgba]):\\s*(?<value>[-+0-9.eE]+)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex ShaderGuidPattern = new("(?m)^[ \\t]*m_Shader:\\s*\\{[^}]*guid:\\s*(?<guid>[0-9a-fA-F]{32})", RegexOptions.Compiled);
+    private static readonly Regex CutoffPattern = new("(?m)^\\s*-\\s*_Cutoff:\\s*(?<value>[-+0-9.eE]+)\\s*$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex RenderTypePattern = new("RenderType:\\s*['\\\"]?(?<value>[A-Za-z]+)", RegexOptions.Compiled);
+    private static readonly Regex ShaderKeywordsPattern = new("(?m)^[ \\t]*m_ShaderKeywords:\\s*(?<value>[^\\r\\n]*)", RegexOptions.Compiled);
+    private static readonly Regex ValidKeywordsPattern = new("(?ms)^[ \\t]*m_ValidKeywords:[ \\t]*(?<value>.*?)(?=^[ \\t]*[A-Za-z][A-Za-z0-9_]*:|\\z)", RegexOptions.Compiled);
     private static readonly HashSet<string> SupportedMaterialTextureSlots = new(["_MainTex", "_BaseMap", "_BaseColorMap", "_BaseColorTexture"], StringComparer.OrdinalIgnoreCase);
+    // GUIDs were verified at the lilToon 1.3.7 tag (36ff295b41cc4c398b95419d513adeecb0b322d4) and the current tag (72fc09625b24c9a750591c286e9192512a5177a).
+    private static readonly IReadOnlyDictionary<string, UnityMaterialRenderMode> KnownLilToonShaderModes = new Dictionary<string, UnityMaterialRenderMode>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["df12117ecd77c31469c224178886498e"] = UnityMaterialRenderMode.Opaque,
+        ["efa77a80ca0344749b4f19fdd5891cbe"] = UnityMaterialRenderMode.Opaque,
+        ["381af8ba8e1740a41b9768ccfb0416c2"] = UnityMaterialRenderMode.Opaque,
+        ["583a88005abb81a4ebbce757b4851a0d"] = UnityMaterialRenderMode.Opaque,
+        ["85d6126cae43b6847aff4b13f4adb8ec"] = UnityMaterialRenderMode.Cutout,
+        ["3b4aa19949601f046a20ca8bdaee929f"] = UnityMaterialRenderMode.Cutout,
+        ["b957dce3d03ff5445ac989f8de643c7f"] = UnityMaterialRenderMode.Cutout,
+        ["8cf5267d397b04846856f6d3d9561da0"] = UnityMaterialRenderMode.Cutout,
+        ["165365ab7100a044ca85fc8c33548a62"] = UnityMaterialRenderMode.Transparent,
+        ["3c79b10c7e0b2784aaa4c2f8dd17d55e"] = UnityMaterialRenderMode.Transparent,
+        ["0e3ece1bd59542743bccadb21f68318e"] = UnityMaterialRenderMode.Transparent,
+        ["1c12a37046f07ac4486881deaf0187ea"] = UnityMaterialRenderMode.Transparent
+    };
+    private static readonly HashSet<string> KnownLilToonOutlineShaderGuids = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "efa77a80ca0344749b4f19fdd5891cbe", "583a88005abb81a4ebbce757b4851a0d",
+        "3b4aa19949601f046a20ca8bdaee929f", "8cf5267d397b04846856f6d3d9561da0",
+        "3c79b10c7e0b2784aaa4c2f8dd17d55e", "1c12a37046f07ac4486881deaf0187ea"
+    };
     private readonly UnityPackageReader? _package;
     private readonly Dictionary<string, List<UnityPackageEntry>> _byGuid;
     private readonly Dictionary<string, UnityPackageEntry> _byPath;
@@ -260,8 +290,86 @@ public sealed class UnityAssetCatalog
             .Where(guid => !supportedSet.Contains(guid))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        return new UnityMaterialInfo(name, supported, unsupported, supportedBlocks);
+        var shaderGuid = ShaderGuidPattern.Match(text) is { Success: true } shaderMatch
+            ? shaderMatch.Groups["guid"].Value.ToLowerInvariant() : null;
+        var shaderPath = shaderGuid is null ? null : ResolvePath(shaderGuid, packageMemberPath, referenceEntry);
+        var shaderName = shaderPath is null ? null : Path.GetFileNameWithoutExtension(shaderPath);
+        var color = ParseMaterialColor(text);
+        var renderTagMatch = RenderTypePattern.Match(text);
+        var renderTag = renderTagMatch.Success ? renderTagMatch.Groups["value"].Value : null;
+        float? cutoff = ParseFiniteFloat(CutoffPattern.Match(text)) is { } parsedCutoff ? Math.Clamp(parsedCutoff, 0f, 1f) : null;
+        var keywordMatch = ShaderKeywordsPattern.Match(text);
+        var keywords = keywordMatch.Success
+            ? keywordMatch.Groups["value"].Value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var validKeywords = ValidKeywordsPattern.Match(text);
+        if (validKeywords.Success)
+            foreach (Match keyword in Regex.Matches(validKeywords.Groups["value"].Value, "[A-Za-z0-9_]+", RegexOptions.CultureInvariant))
+                keywords.Add(keyword.Value);
+        var isLilToonShaderAsset = shaderPath?.Contains("lilToon", StringComparison.OrdinalIgnoreCase) == true;
+        var renderMode = ResolveRenderMode(renderTag, keywords, shaderGuid, shaderName, isLilToonShaderAsset, text);
+        var enabledFeatures = new[] { "_AlphaMaskMode", "_UseMatCap", "_UseMatCap2nd", "_UseOutline", "_UseEmission" }
+            .Where(feature => HasEnabledMaterialFloat(text, feature) || keywords.Contains(feature.ToUpperInvariant()))
+            .ToArray();
+        if (shaderGuid is not null && KnownLilToonOutlineShaderGuids.Contains(shaderGuid) && !enabledFeatures.Contains("outline shader variant", StringComparer.Ordinal))
+            enabledFeatures = [.. enabledFeatures, "outline shader variant"];
+        return new UnityMaterialInfo(name, supported, unsupported, supportedBlocks)
+        {
+            Color = color,
+            ShaderGuid = shaderGuid,
+            ShaderName = shaderName,
+            IsLilToonShaderAsset = isLilToonShaderAsset,
+            RenderTypeTag = renderTag,
+            RenderMode = renderMode,
+            Cutoff = cutoff,
+            EnabledUnsupportedFeatures = enabledFeatures
+        };
     }
+
+    private static UnityMaterialColor? ParseMaterialColor(string text)
+    {
+        var match = ColorPattern.Match(text);
+        if (!match.Success) return null;
+        var values = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+        foreach (Match component in ColorComponentPattern.Matches(match.Groups["body"].Value))
+            if (float.TryParse(component.Groups["value"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && float.IsFinite(value))
+                values[component.Groups["key"].Value] = Math.Clamp(value, 0f, 1f);
+        return values.TryGetValue("r", out var r) && values.TryGetValue("g", out var g) && values.TryGetValue("b", out var b)
+            ? new UnityMaterialColor(r, g, b, values.GetValueOrDefault("a", 1f)) : null;
+    }
+
+    private static float? ParseFiniteFloat(Match match) => match.Success
+        && float.TryParse(match.Groups["value"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
+        && float.IsFinite(value) ? value : null;
+
+    private static UnityMaterialRenderMode ResolveRenderMode(string? tag, HashSet<string> keywords, string? shaderGuid, string? shaderName, bool isLilToonShaderAsset, string text)
+    {
+        if (shaderGuid is not null && KnownLilToonShaderModes.TryGetValue(shaderGuid, out var knownMode)) return knownMode;
+        if (isLilToonShaderAsset) return UnityMaterialRenderMode.Unknown;
+        if (string.Equals(tag, "Transparent", StringComparison.OrdinalIgnoreCase)) return UnityMaterialRenderMode.Transparent;
+        if (string.Equals(tag, "TransparentCutout", StringComparison.OrdinalIgnoreCase) || string.Equals(tag, "Cutout", StringComparison.OrdinalIgnoreCase)) return UnityMaterialRenderMode.Cutout;
+        if (string.Equals(tag, "Opaque", StringComparison.OrdinalIgnoreCase)) return UnityMaterialRenderMode.Opaque;
+        var cutout = keywords.Contains("_ALPHATEST_ON");
+        var transparent = keywords.Contains("_ALPHABLEND_ON") || keywords.Contains("_ALPHAPREMULTIPLY_ON");
+        if (cutout != transparent) return cutout ? UnityMaterialRenderMode.Cutout : UnityMaterialRenderMode.Transparent;
+        if (cutout) return UnityMaterialRenderMode.Unknown;
+        if (shaderName?.Contains("Standard", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            var mode = Regex.Match(text, "(?m)^\\s*-\\s*_Mode:\\s*(?<value>[-+0-9.eE]+)\\s*$", RegexOptions.CultureInvariant);
+            if (ParseFiniteFloat(mode) is { } standardMode)
+                return standardMode switch { 0 => UnityMaterialRenderMode.Opaque, 1 => UnityMaterialRenderMode.Cutout, 2 or 3 => UnityMaterialRenderMode.Transparent, _ => UnityMaterialRenderMode.Unknown };
+        }
+        return UnityMaterialRenderMode.Unknown;
+    }
+
+    private static bool HasEnabledMaterialFloat(string text, string property)
+    {
+        return ParseFiniteFloat(MatchMaterialProperty(text, property)) is > 0;
+    }
+
+    private static Match MatchMaterialProperty(string text, string property) =>
+        Regex.Match(text, $"(?m)^\\s*-\\s*{Regex.Escape(property)}:\\s*(?<value>[-+0-9.eE]+)\\s*$", RegexOptions.CultureInvariant);
+
 
     public string StageAsset(string guid, string temporaryRoot, string? fallbackName = null, CancellationToken cancellationToken = default, string? packageMemberPath = null, UnityPackageEntry? referenceEntry = null)
     {
