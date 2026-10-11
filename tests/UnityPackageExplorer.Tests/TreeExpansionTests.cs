@@ -48,4 +48,29 @@ public sealed class TreeExpansionTests
         Assert.False(view.Children[0].IsExpanded);
         Assert.False(view.Children[0].Children[0].IsExpanded);
     }
+
+    [Fact]
+    public void SelectingDeepPathExpandsOnlyItsAncestors()
+    {
+        var selected = new UnityPackageEntry("selected", "Archive/Assets/Artwork/Models/Avatar.prefab", true, true);
+        var other = new UnityPackageEntry("other", "Archive/Assets/Artwork/Textures/face.png", true, true);
+        var roots = AssetTreeItemView.CreateTree(UnityAssetCatalog.BuildTree([selected, other]), maximumFullyExpandedItems: 1);
+
+        Assert.True(AssetTreeItemView.SelectPath(roots, selected.PathName));
+        var archive = Assert.Single(roots);
+        var assets = Assert.Single(archive.Children);
+        var artwork = assets.Children.Single(x => x.Name == "Artwork");
+        var models = artwork.Children.Single(x => x.Name == "Models");
+        Assert.True(archive.IsExpanded);
+        Assert.True(assets.IsExpanded);
+        Assert.True(artwork.IsExpanded);
+        Assert.True(models.IsExpanded);
+        Assert.True(Assert.Single(models.Children).IsSelected);
+        Assert.False(artwork.Children.Single(x => x.Name == "Textures").IsExpanded);
+
+        var texture = artwork.Children.Single(x => x.Name == "Textures").Children.Single();
+        Assert.True(AssetTreeItemView.SelectPath(roots, other.PathName));
+        Assert.False(Assert.Single(models.Children).IsSelected);
+        Assert.True(texture.IsSelected);
+    }
 }
