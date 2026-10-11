@@ -2,7 +2,7 @@ using UnityPackageExplorer.Core;
 
 namespace UnityPackageExplorer.App;
 
-public sealed class AssetTreeItemView
+public sealed class AssetTreeItemView : System.ComponentModel.INotifyPropertyChanged
 {
     private const int DefaultFullyExpandedTreeLimit = 2_000;
     private const int ShallowExpansionDepth = 3;
@@ -15,6 +15,46 @@ public sealed class AssetTreeItemView
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFullyExpandedItems);
         var expandAll = CountItems(roots, maximumFullyExpandedItems, cancellationToken) <= maximumFullyExpandedItems;
         return roots.Select(x => new AssetTreeItemView(x, expandAll, 0, cancellationToken)).ToArray();
+    }
+
+    public static bool SelectPath(IReadOnlyList<AssetTreeItemView> roots, string pathName)
+    {
+        SetSelected(roots, false);
+        foreach (var item in roots)
+            if (SelectPath(item, pathName)) return true;
+        return false;
+    }
+
+    private static void SetSelected(IEnumerable<AssetTreeItemView> items, bool selected)
+    {
+        foreach (var item in items)
+        {
+            item.IsSelected = selected;
+            SetSelected(item.Children, selected);
+        }
+    }
+
+    public static AssetTreeItemView? FindPath(IReadOnlyList<AssetTreeItemView> roots, string pathName)
+    {
+        foreach (var item in roots)
+        {
+            if (string.Equals(item.PathName, pathName, StringComparison.OrdinalIgnoreCase)) return item;
+            var found = FindPath(item.Children, pathName);
+            if (found is not null) return found;
+        }
+        return null;
+    }
+
+    private static bool SelectPath(AssetTreeItemView item, string pathName)
+    {
+        if (string.Equals(item.PathName, pathName, StringComparison.OrdinalIgnoreCase))
+        {
+            item.IsSelected = true;
+            return true;
+        }
+        foreach (var child in item.Children)
+            if (SelectPath(child, pathName)) { item.IsExpanded = true; return true; }
+        return false;
     }
 
     private AssetTreeItemView(AssetTreeItem item, bool expandAll, int depth, CancellationToken cancellationToken)
@@ -44,8 +84,12 @@ public sealed class AssetTreeItemView
     public string Name { get; }
     public string PathName { get; }
     public UnityPackageEntry? Entry { get; }
-    public bool IsExpanded { get; set; }
+    private bool _isExpanded;
+    private bool _isSelected;
+    public bool IsExpanded { get => _isExpanded; set { if (_isExpanded == value) return; _isExpanded = value; PropertyChanged?.Invoke(this, new(nameof(IsExpanded))); } }
+    public bool IsSelected { get => _isSelected; set { if (_isSelected == value) return; _isSelected = value; PropertyChanged?.Invoke(this, new(nameof(IsSelected))); } }
     public IReadOnlyList<AssetTreeItemView> Children { get; }
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
 }
 
 public sealed class PrefabNodeView
@@ -60,5 +104,6 @@ public sealed class PrefabNodeView
 
     public string DisplayName { get; }
     public bool IsExpanded { get; set; }
+    public bool IsSelected { get; set; }
     public IReadOnlyList<PrefabNodeView> Children { get; }
 }

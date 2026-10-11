@@ -32,6 +32,10 @@ public partial class MainWindow : Window
     private bool _updatingFilter;
     private bool _isBusy;
     private bool _isOpeningSource;
+    private bool _filterChangedWhileOpening;
+    private bool _updatingSelection;
+    private UnityPackageEntry? _selectedPreviewEntry;
+    private IReadOnlyList<AssetTreeItemView> _treeItems = [];
     private readonly HashSet<Key> _flightKeys = [];
     private readonly List<HelixToolkitScene> _currentScenes = [];
     private readonly Dictionary<long, PreviewTemporaryState> _requestTemporaryRoots = [];
@@ -82,6 +86,7 @@ public partial class MainWindow : Window
     private void CancelActivePreview()
     {
         _previewRequests.BeginRequest();
+        ResetPreviewSelection();
         var cancellation = Interlocked.Exchange(ref _previewCancellation, null);
         cancellation?.Cancel();
         ClearDisplay();
@@ -100,7 +105,7 @@ public partial class MainWindow : Window
     private void Window_DragEnter(object sender, DragEventArgs e)
     {
         var paths = GetDroppedPaths(e);
-        if (paths.Length == 1 && IsSupportedDrop(paths[0]) && !_isBusy)
+        if (paths.Length == 1 && IsSupportedDrop(paths[0]) && !_isOpeningSource)
         {
             e.Effects = DragDropEffects.Copy;
             SetStatus("対応ファイルをドロップするとプレビューします。元ファイルは移動・展開しません。");
@@ -116,7 +121,7 @@ public partial class MainWindow : Window
     private void Window_DragOver(object sender, DragEventArgs e)
     {
         var paths = GetDroppedPaths(e);
-        e.Effects = !_isBusy && paths.Length == 1 && IsSupportedDrop(paths[0]) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Effects = !_isOpeningSource && paths.Length == 1 && IsSupportedDrop(paths[0]) ? DragDropEffects.Copy : DragDropEffects.None;
         e.Handled = true;
     }
 
@@ -134,7 +139,7 @@ public partial class MainWindow : Window
             SetStatus("対応形式は .zip、.unitypackage、.prefab です。元ファイルは変更していません。");
             return;
         }
-        if (_isBusy)
+        if (_isOpeningSource)
         {
             SetStatus("読み込みが終わってからファイルをドロップしてください。");
             return;
@@ -155,10 +160,28 @@ public partial class MainWindow : Window
         try
         {
             _isOpeningSource = true;
+            _filterChangedWhileOpening = false;
+            ResetPreviewSelection();
+            _treeItems = [];
+            _updatingSelection = true;
+            try
+            {
+                PrefabPicker.ItemsSource = null;
+                PrefabPicker.SelectedItem = null;
+                PrefabPicker.IsEnabled = false;
+                PrefabCandidateCount.Text = "Prefab 0件";
+            }
+            finally { _updatingSelection = false; }
             SetBusy(true, "読み込み中…");
             ClearDisplay();
             _updatingFilter = true;
-            try { AssetTree.ItemsSource = null; }
+            try
+            {
+                AssetTree.ItemsSource = null;
+                SearchBox.Clear();
+                _selectedKind = "すべて";
+                KindFilter.SelectedIndex = 0;
+            }
             finally { _updatingFilter = false; }
             _packagePath = null;
             _directPrefabPath = null;
@@ -185,7 +208,15 @@ public partial class MainWindow : Window
                 ExtractButton.IsEnabled = true;
                 DetailsText.Text = presentation.Summary;
                 SetStatus($"{_entries.Count:N0} 個のパスを読み込みました。Unity は起動していません。");
+                RefreshPrefabCandidates();
+                var suppressAutoPreview = _filterChangedWhileOpening;
+                _filterChangedWhileOpening = false;
+                _isOpeningSource = false;
+                SetBusy(false);
                 await RefreshTreeAsync(cancellationToken);
+                if (!_previewRequests.IsCurrent(requestId)) return;
+                if (AutoPreviewToggle.IsChecked == true && !suppressAutoPreview)
+                    await PreviewAutomaticCandidateAsync(Path.GetFileName(path), requestId, cancellationToken);
             }
             else if (extension == ".zip")
             {
@@ -209,7 +240,15 @@ public partial class MainWindow : Window
                 var warningsStatus = _catalog.Warnings.Count == 0 ? string.Empty : $" {_catalog.Warnings.Count:N0} 件の警告があります。";
                 var emptyStatus = _entries.Count == 0 ? " 対応する素材が見つかりません。" : string.Empty;
                 SetStatus($"ZIP内の素材を読み込みました。元ZIPは展開していません。{warningsStatus}{emptyStatus}");
+                RefreshPrefabCandidates();
+                var suppressAutoPreview = _filterChangedWhileOpening;
+                _filterChangedWhileOpening = false;
+                _isOpeningSource = false;
+                SetBusy(false);
                 await RefreshTreeAsync(cancellationToken);
+                if (!_previewRequests.IsCurrent(requestId)) return;
+                if (AutoPreviewToggle.IsChecked == true && !suppressAutoPreview)
+                    await PreviewAutomaticCandidateAsync(Path.GetFileName(path), requestId, cancellationToken);
             }
             else if (extension == ".prefab")
             {
@@ -243,7 +282,7 @@ public partial class MainWindow : Window
         {
             Interlocked.CompareExchange(ref _previewCancellation, null, cancellation);
             cancellation.Dispose();
-            _isOpeningSource = false;
+            if (_previewRequests.IsCurrent(requestId)) _isOpeningSource = false;
             CompletePreviewRequest(requestId);
             if (_previewRequests.IsCurrent(requestId)) SetBusy(false);
         }
@@ -324,7 +363,7 @@ public partial class MainWindow : Window
             }, cancellation.Token);
             if (cancellation.IsCancellationRequested || requestVersion != Volatile.Read(ref _treeRefreshVersion)) return;
             _updatingFilter = true;
-            try { AssetTree.ItemsSource = items; }
+            try { _treeItems = items; AssetTree.ItemsSource = items; }
             finally { _updatingFilter = false; }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
@@ -342,7 +381,8 @@ public partial class MainWindow : Window
 
     private async void AssetTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
-        if (_updatingFilter) return;
+        if (_updatingFilter || _updatingSelection) return;
+        if (e.NewValue is AssetTreeItemView { Entry: { } selected } && Equals(selected, _selectedPreviewEntry)) return;
         var (requestId, cancellation) = BeginPreviewRequest();
         var cancellationToken = cancellation.Token;
         try
@@ -350,39 +390,24 @@ public partial class MainWindow : Window
             if (_catalog is null) return;
             if (e.NewValue is not AssetTreeItemView { Entry: { } entry } || !entry.HasAsset)
             {
+                ResetPreviewSelection();
                 ClearDisplay();
                 DetailsText.Text = "ファイルを選択すると内容をプレビューできます。";
                 SetBusy(false);
                 return;
             }
 
-            SetBusy(true, $"{entry.PathName} を読み込み中…");
-            switch (entry.Extension)
-            {
-                case ".prefab": await LoadPrefabAsync(entry, null, requestId, cancellationToken); break;
-                case ".fbx": await LoadPackageModelAsync(entry, Matrix4x4.Identity, [], requestId, cancellationToken); break;
-                case ".png":
-                case ".jpg":
-                case ".jpeg":
-                case ".bmp":
-                case ".gif":
-                case ".tga":
-                case ".psd":
-                case ".tif":
-                case ".tiff":
-                    await ShowImageAsync(entry, requestId, cancellationToken);
-                    break;
-                default:
-                    ClearDisplay();
-                    DetailsText.Text = $"{entry.PathName}{Environment.NewLine}種類: {entry.Kind}{Environment.NewLine}GUID: {entry.Guid}";
-                    SetStatus("このファイル形式は一覧で確認できます。画像・Prefab・FBX はプレビューできます。");
-                    break;
-            }
+            _updatingSelection = true;
+            try { PrefabPicker.SelectedItem = (PrefabPicker.ItemsSource as IEnumerable<PrefabCandidate>)?.FirstOrDefault(x => ReferenceEquals(x.Entry, entry)); }
+            finally { _updatingSelection = false; }
+
+            await PreviewEntryAsync(entry, requestId, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (Exception ex)
         {
             if (!_previewRequests.IsCurrent(requestId)) return;
+            ResetPreviewSelection();
             SetStatus($"表示に失敗しました: {ex.Message}");
             DetailsText.Text = ex.Message;
         }
@@ -393,6 +418,91 @@ public partial class MainWindow : Window
             CompletePreviewRequest(requestId);
             if (_previewRequests.IsCurrent(requestId)) SetBusy(false);
         }
+    }
+
+    private async Task PreviewEntryAsync(UnityPackageEntry entry, long requestId, CancellationToken cancellationToken)
+    {
+        if (!_previewRequests.IsCurrent(requestId)) return;
+        _selectedPreviewEntry = entry;
+        SetBusy(true, $"{entry.PathName} を読み込み中…");
+        switch (entry.Extension)
+        {
+            case ".prefab": await LoadPrefabAsync(entry, null, requestId, cancellationToken); break;
+            case ".fbx": await LoadPackageModelAsync(entry, Matrix4x4.Identity, [], requestId, cancellationToken); break;
+            case ".png": case ".jpg": case ".jpeg": case ".bmp": case ".gif": case ".tga": case ".psd": case ".tif": case ".tiff":
+                await ShowImageAsync(entry, requestId, cancellationToken); break;
+            default:
+                ClearDisplay();
+                DetailsText.Text = $"{entry.PathName}{Environment.NewLine}種類: {entry.Kind}{Environment.NewLine}GUID: {entry.Guid}";
+                SetStatus("このファイル形式は一覧で確認できます。画像・Prefab・FBX はプレビューできます。"); break;
+        }
+    }
+
+    private async Task PreviewAutomaticCandidateAsync(string sourceName, long requestId, CancellationToken cancellationToken)
+    {
+        if (!_previewRequests.IsCurrent(requestId) || _catalog is null) return;
+        var selected = AutomaticPreviewSelector.Select(_entries, sourceName);
+        _updatingSelection = true;
+        try { PrefabPicker.SelectedItem = (PrefabPicker.ItemsSource as IEnumerable<PrefabCandidate>)?.FirstOrDefault(x => Equals(x.Entry, selected)); }
+        finally { _updatingSelection = false; }
+        if (selected is null)
+        {
+            ClearDisplay();
+            DetailsText.Text = $"{Path.GetFileName(sourceName)}{Environment.NewLine}プレビューできるPrefab、FBX、画像がありません。";
+            SetStatus("自動表示できる素材はありません。");
+            return;
+        }
+        SelectEntryInTree(selected, requestId);
+        DetailsText.Text = $"自動選択: {selected.PathName}{Environment.NewLine}Prefab の階層と参照モデルを読み込んでいます…";
+        await PreviewEntryAsync(selected, requestId, cancellationToken);
+    }
+
+    private void RefreshPrefabCandidates()
+    {
+        var candidates = _entries.Where(x => x.HasAsset && x.Extension == ".prefab").OrderBy(x => x.PathName, StringComparer.OrdinalIgnoreCase)
+            .Select(x => new PrefabCandidate(x, GetCandidateDisplay(x))).ToArray();
+        PrefabPicker.ItemsSource = candidates;
+        PrefabCandidateCount.Text = candidates.Length == 0 ? "Prefab 0件" : $"Prefab {candidates.Length:N0}件";
+        PrefabPicker.IsEnabled = candidates.Length > 0;
+    }
+
+    private sealed record PrefabCandidate(UnityPackageEntry Entry, string Display);
+
+    private static string GetCandidateDisplay(UnityPackageEntry entry)
+    {
+        var relativePath = (entry.AssetPathName ?? entry.PathName).Replace('\\', '/');
+        var folders = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries).SkipLast(1).TakeLast(1);
+        var location = string.Join('/', folders);
+        return $"{Path.GetFileName(entry.PathName)}  ·  {location}  ·  {Path.GetFileName(entry.PackageMemberPath ?? "ZIP")}";
+    }
+
+    private async void PrefabPicker_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_updatingSelection || _isOpeningSource || PrefabPicker.SelectedItem is not PrefabCandidate candidate || _catalog is null) return;
+        var (requestId, cancellation) = BeginPreviewRequest();
+        var token = cancellation.Token;
+        SelectEntryInTree(candidate.Entry, requestId);
+        try { await PreviewEntryAsync(candidate.Entry, requestId, token); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) { if (_previewRequests.IsCurrent(requestId)) { ResetPreviewSelection(); SetStatus($"表示に失敗しました: {ex.Message}"); DetailsText.Text = ex.Message; } }
+        finally { Interlocked.CompareExchange(ref _previewCancellation, null, cancellation); cancellation.Dispose(); CompletePreviewRequest(requestId); if (_previewRequests.IsCurrent(requestId)) SetBusy(false); }
+    }
+
+    private void SelectEntryInTree(UnityPackageEntry entry, long requestId)
+    {
+        var treeItems = _treeItems;
+        _updatingSelection = true;
+        bool selected;
+        try { selected = AssetTreeItemView.SelectPath(treeItems, entry.PathName); }
+        finally { _updatingSelection = false; }
+        if (!selected) return;
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, new Action(() =>
+        {
+            if (!_previewRequests.IsCurrent(requestId) || !ReferenceEquals(_treeItems, treeItems)) return;
+            var view = AssetTreeItemView.FindPath(treeItems, entry.PathName);
+            if (view is null) return;
+            AssetTreeSelection.BringPathIntoView(AssetTree, view);
+        }));
     }
 
     private async Task LoadPrefabAsync(UnityPackageEntry? entry, string? externalPath, long requestId, CancellationToken cancellationToken)
@@ -1093,14 +1203,23 @@ public partial class MainWindow : Window
     private void SetBusy(bool busy, string? message = null)
     {
         _isBusy = busy;
-        OpenButton.IsEnabled = !busy;
+        OpenButton.IsEnabled = !_isOpeningSource;
         ExtractButton.IsEnabled = !busy && _packagePath is not null;
         MoveToCategoryButton.IsEnabled = !busy && CategoryPicker.SelectedItem is string;
         if (message is not null) SetStatus(message);
         Cursor = busy ? System.Windows.Input.Cursors.Wait : System.Windows.Input.Cursors.Arrow;
+        PreviewProgress.Visibility = busy && !_isOpeningSource ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void SetStatus(string message) => StatusLabel.Text = message;
+
+    private void ResetPreviewSelection()
+    {
+        _selectedPreviewEntry = null;
+        _updatingSelection = true;
+        try { PrefabPicker.SelectedItem = null; }
+        finally { _updatingSelection = false; }
+    }
 
     private async void OpenButton_Click(object sender, RoutedEventArgs e)
     {
@@ -1171,15 +1290,16 @@ public partial class MainWindow : Window
 
     private async void SearchBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
     {
-        if (_updatingFilter || _isOpeningSource) return;
+        if (_updatingFilter) return;
+        if (_isOpeningSource) { _filterChangedWhileOpening = true; return; }
         CancelActivePreview();
         await RefreshTreeAsync();
     }
 
     private async void KindFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        if (_isOpeningSource) return;
         if (KindFilter.SelectedItem is string kind) _selectedKind = kind;
+        if (_isOpeningSource) { if (!_updatingFilter) _filterChangedWhileOpening = true; return; }
         if (!_updatingFilter && IsLoaded)
         {
             CancelActivePreview();
