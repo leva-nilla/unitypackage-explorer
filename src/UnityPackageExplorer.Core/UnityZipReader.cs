@@ -7,9 +7,12 @@ public sealed record UnityZipMember(string FullName, long Length, long Compresse
 /// <summary>Reads ZIP metadata and individual members without extracting the archive.</summary>
 public sealed class UnityZipReader
 {
+    /// <summary>Maximum size for a ZIP member returned as a byte array.</summary>
     public const long MaximumMemberBytes = 512L * 1024 * 1024;
+    /// <summary>Maximum size for a ZIP member consumed incrementally as a stream.</summary>
+    public const long MaximumStreamedMemberBytes = 8L * 1024 * 1024 * 1024;
     private const int MaximumEntryCount = 100_000;
-    private const long MaximumDeclaredTotalBytes = 8L * 1024 * 1024 * 1024;
+    private const long MaximumDeclaredTotalBytes = MaximumStreamedMemberBytes;
     private string _path;
     private readonly Func<Stream>? _openStream;
 
@@ -41,7 +44,12 @@ public sealed class UnityZipReader
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!names.Add(entry.FullName)) throw new InvalidDataException($"ZIP contains a duplicate member name: {entry.FullName}");
-            if (entry.Length > MaximumMemberBytes) throw new InvalidDataException($"ZIP member exceeds the {MaximumMemberBytes / 1024 / 1024} MiB read limit: {entry.FullName}");
+            var maximumMemberBytes = entry.FullName.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase)
+                ? MaximumStreamedMemberBytes
+                : MaximumMemberBytes;
+            var limitDescription = maximumMemberBytes == MaximumMemberBytes ? "read" : "streaming";
+            if (entry.Length > maximumMemberBytes)
+                throw new InvalidDataException($"ZIP member exceeds the {maximumMemberBytes / 1024 / 1024} MiB {limitDescription} limit: {entry.FullName}");
             declaredTotal = checked(declaredTotal + entry.Length);
             if (declaredTotal > MaximumDeclaredTotalBytes) throw new InvalidDataException("ZIP declares more than 8 GiB of uncompressed content.");
             result.Add(new UnityZipMember(entry.FullName, entry.Length, entry.CompressedLength));
@@ -50,16 +58,19 @@ public sealed class UnityZipReader
     }
 
     public Stream OpenMember(string memberPath, long maximumBytes = MaximumMemberBytes)
+        => OpenMember(memberPath, maximumBytes, "streaming");
+
+    private Stream OpenMember(string memberPath, long maximumBytes, string limitDescription)
     {
-        if (maximumBytes is < 0 or > MaximumMemberBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+        if (maximumBytes is < 0 or > MaximumStreamedMemberBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
         var file = OpenFile();
         ZipArchive? archive = null;
         try
         {
             archive = new ZipArchive(file, ZipArchiveMode.Read, leaveOpen: false);
             var entry = archive.GetEntry(memberPath) ?? throw new FileNotFoundException($"ZIP member was not found: {memberPath}");
-            if (entry.Length > maximumBytes) throw new InvalidDataException($"ZIP member exceeds the {maximumBytes / 1024 / 1024} MiB read limit: {memberPath}");
-            return new OwnedZipMemberStream(entry.Open(), archive, file);
+            if (entry.Length > maximumBytes) throw new InvalidDataException($"ZIP member exceeds the {maximumBytes / 1024 / 1024} MiB {limitDescription} limit: {memberPath}");
+            return new OwnedZipMemberStream(entry.Open(), archive, file, maximumBytes, limitDescription);
         }
         catch
         {
@@ -75,7 +86,7 @@ public sealed class UnityZipReader
     public byte[] ReadMember(string memberPath, long maximumBytes, CancellationToken cancellationToken = default)
     {
         if (maximumBytes is < 0 or > MaximumMemberBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
-        using var input = OpenMember(memberPath, maximumBytes);
+        using var input = OpenMember(memberPath, maximumBytes, "read");
         using var output = new MemoryStream();
         var buffer = new byte[64 * 1024];
         int read;
@@ -103,8 +114,10 @@ public sealed class UnityZipReader
         return stream;
     }
 
-    private sealed class OwnedZipMemberStream(Stream member, ZipArchive archive, Stream file) : Stream
+    private sealed class OwnedZipMemberStream(Stream member, ZipArchive archive, Stream file, long maximumBytes, string limitDescription) : Stream
     {
+        private long _bytesRead;
+
         protected override void Dispose(bool disposing)
         {
             if (disposing)
@@ -122,11 +135,25 @@ public sealed class UnityZipReader
         public override long Length => throw new NotSupportedException();
         public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
         public override void Flush() => throw new NotSupportedException();
-        public override int Read(byte[] buffer, int offset, int count) => member.Read(buffer, offset, count);
-        public override int Read(Span<byte> buffer) => member.Read(buffer);
-        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) => member.ReadAsync(buffer, cancellationToken);
+        public override int Read(byte[] buffer, int offset, int count) => ValidateRead(member.Read(buffer, offset, count));
+        public override int Read(Span<byte> buffer) => ValidateRead(member.Read(buffer));
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            => ValidateRead(await member.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false));
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => ValidateRead(await member.ReadAsync(buffer, cancellationToken).ConfigureAwait(false));
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        private int ValidateRead(int read)
+        {
+            if (read > 0)
+            {
+                _bytesRead += read;
+                if (_bytesRead > maximumBytes)
+                    throw new InvalidDataException($"ZIP member exceeded its {maximumBytes / 1024 / 1024} MiB {limitDescription} limit while reading.");
+            }
+            return read;
+        }
     }
 }

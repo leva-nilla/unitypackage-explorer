@@ -74,6 +74,59 @@ public sealed class UnityZipReaderTests
     }
 
     [Fact]
+    public void OpensNestedUnityPackageLargerThanTheBufferedReadLimitWithoutExtractingIt()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"unitypackage-large-zip-member-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var zipPath = Path.Combine(root, "bundle.zip");
+        const string packageGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const long assetLength = UnityZipReader.MaximumMemberBytes + 1;
+        try
+        {
+            using (var file = File.Create(zipPath))
+            using (var archive = new ZipArchive(file, ZipArchiveMode.Create))
+            {
+                using (var member = archive.CreateEntry("Packages/large.unitypackage", CompressionLevel.Optimal).Open())
+                using (var gzip = new GZipStream(member, CompressionLevel.NoCompression, leaveOpen: true))
+                using (var tar = new TarWriter(gzip, TarEntryFormat.Pax, leaveOpen: true))
+                {
+                    tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, $"{packageGuid}/pathname")
+                    {
+                        DataStream = new MemoryStream(Encoding.UTF8.GetBytes("Assets/Materials/Large.mat"), writable: false)
+                    });
+                    tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, $"{packageGuid}/asset")
+                    {
+                        DataStream = new ZeroFilledReadStream(assetLength)
+                    });
+                }
+
+                using var looseAsset = archive.CreateEntry("Extras/Readme.txt").Open();
+                looseAsset.Write(Encoding.UTF8.GetBytes("still readable"));
+            }
+
+            var zipReader = new UnityZipReader(zipPath);
+            var indexedMember = Assert.Single(zipReader.ReadIndex(), x => x.FullName == "Packages/large.unitypackage");
+            Assert.True(indexedMember.Length > UnityZipReader.MaximumMemberBytes);
+
+            var catalog = UnityAssetCatalog.OpenZip(zipReader);
+            var nestedAsset = Assert.Single(catalog.Entries, x => x.PackageMemberPath == "Packages/large.unitypackage");
+            var looseAssetEntry = Assert.Single(catalog.Entries, x => x.ZipMemberPath == "Extras/Readme.txt");
+
+            Assert.Equal("Assets/Materials/Large.mat", nestedAsset.AssetPathName);
+            Assert.True(nestedAsset.HasAsset);
+            Assert.Equal("still readable", Encoding.UTF8.GetString(catalog.ReadAsset(looseAssetEntry)!));
+            var bufferedReadError = Assert.Throws<InvalidDataException>(() => zipReader.ReadMember(indexedMember.FullName));
+            Assert.Contains("read limit", bufferedReadError.Message);
+            Assert.Empty(catalog.Warnings);
+            Assert.Single(Directory.EnumerateFiles(root));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void KeepsLooseZipFilesAvailableWhenAnInnerUnityPackageIsCorrupt()
     {
         var root = Path.Combine(Path.GetTempPath(), $"unitypackage-bad-zip-test-{Guid.NewGuid():N}");
@@ -180,5 +233,50 @@ public sealed class UnityZipReaderTests
         }
         output.Position = 0;
         return output;
+    }
+
+    private sealed class ZeroFilledReadStream(long length) : Stream
+    {
+        private long _position;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => true;
+        public override bool CanWrite => false;
+        public override long Length => length;
+        public override long Position
+        {
+            get => _position;
+            set => _position = value is >= 0 && value <= length ? value : throw new ArgumentOutOfRangeException(nameof(value));
+        }
+
+        public override void Flush() { }
+
+        public override int Read(byte[] buffer, int offset, int count) => ReadZeroFilled(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer) => ReadZeroFilled(buffer);
+
+        private int ReadZeroFilled(Span<byte> buffer)
+        {
+            var read = (int)Math.Min(buffer.Length, length - _position);
+            buffer[..read].Clear();
+            _position += read;
+            return read;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            var position = origin switch
+            {
+                SeekOrigin.Begin => offset,
+                SeekOrigin.Current => _position + offset,
+                SeekOrigin.End => length + offset,
+                _ => throw new ArgumentOutOfRangeException(nameof(origin))
+            };
+            Position = position;
+            return _position;
+        }
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

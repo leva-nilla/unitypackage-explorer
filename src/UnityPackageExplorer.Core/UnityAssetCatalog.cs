@@ -108,7 +108,7 @@ public sealed class UnityAssetCatalog
                 warnings.Add($"{packageMemberPath}: unitypackage is empty and could not be read.");
                 continue;
             }
-            var reader = new UnityPackageReader(() => zip.OpenMember(packageMemberPath));
+            var reader = new UnityPackageReader(() => zip.OpenMember(packageMemberPath, UnityZipReader.MaximumStreamedMemberBytes));
             try
             {
                 var packageEntries = reader.ReadIndex(cancellationToken, nestedPackageBudget);
