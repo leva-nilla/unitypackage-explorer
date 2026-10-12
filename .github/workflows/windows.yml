@@ -7,6 +7,11 @@ on:
     branches: [main]
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version for a manually triggered setup build (x.y.z).'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -14,6 +19,8 @@ permissions:
 jobs:
   windows-release:
     runs-on: windows-2025
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -26,9 +33,16 @@ jobs:
       - name: Determine release version
         id: version
         shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -match '^v(\d+\.\d+\.\d+)$') {
             $version = $Matches[1]
+          } elseif ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and -not [string]::IsNullOrWhiteSpace($env:REQUESTED_VERSION)) {
+            if ($env:REQUESTED_VERSION -notmatch '^\d+\.\d+\.\d+$') {
+              throw 'Manual setup version must use the x.y.z format.'
+            }
+            $version = $env:REQUESTED_VERSION
           } else {
             $version = '0.1.0'
           }
@@ -83,8 +97,10 @@ jobs:
 
       - name: Install, launch without .NET on PATH, validate Explorer commands, and uninstall
         shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ needs.windows-release.outputs.version }}
         run: |
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -match '^v(\d+\.\d+\.\d+)$') { $Matches[1] } else { '0.1.0' }
+          $version = $env:PACKAGE_VERSION
           $setup = Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'setup-artifact') -Filter "UnityPackageExplorer-Setup-$version-x64.exe" -File -Recurse | Select-Object -First 1
           if (-not $setup) { throw 'Setup EXE is missing from the downloaded artifact.' }
           $installDirectory = Join-Path $env:RUNNER_TEMP 'UnityPackageExplorer-IsolatedInstall'
