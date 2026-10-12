@@ -1,5 +1,6 @@
 using System.Reflection;
 using HelixToolkit.SharpDX.Model;
+using HelixToolkit.SharpDX.Model.Scene;
 using UnityPackageExplorer.App;
 using UnityPackageExplorer.Core;
 
@@ -57,5 +58,41 @@ public sealed class TexturePreviewMaterialTests
         Assert.Equal(0.4f, material.DiffuseColor.Green, 3);
         Assert.Equal(0.2f, material.DiffuseColor.Blue, 3);
         Assert.Equal(1f, material.DiffuseColor.Alpha, 3);
+    }
+
+    [Fact]
+    public void PrefabWithoutUnityMaterialBindingsMakesInvisibleImportedMaterialVisible()
+    {
+        var mesh = new MeshNode { Name = "N7 Leather Jacket" };
+        mesh.Material = new PhongMaterialCore
+        {
+            Name = "Material",
+            DiffuseColor = new HelixToolkit.Maths.Color4(0.8f, 0.8f, 0.8f, 0f),
+            RenderDiffuseMap = true,
+            DiffuseMap = null
+        };
+        var materialBindingType = typeof(MainWindow).GetNestedType("MaterialBinding", BindingFlags.NonPublic);
+        var applyMaterials = typeof(MainWindow).GetMethod("ApplyUnityMaterials", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(materialBindingType);
+        Assert.NotNull(applyMaterials);
+
+        var warnings = applyMaterials!.Invoke(null,
+        [
+            mesh,
+            Array.CreateInstance(materialBindingType!, 0),
+            Array.Empty<UnityAssetReference>(),
+            Array.Empty<PrefabRendererMaterialAssignment>(),
+            true,
+            false,
+            CancellationToken.None,
+            null
+        ]);
+
+        var previewMaterial = Assert.IsType<PhongMaterialCore>(mesh.Material);
+        Assert.NotNull(warnings);
+        Assert.False(previewMaterial.RenderDiffuseMap);
+        Assert.Null(previewMaterial.DiffuseMap);
+        Assert.Equal(1f, previewMaterial.DiffuseColor.Alpha, 3);
+        Assert.False(mesh.IsTransparent);
     }
 }
