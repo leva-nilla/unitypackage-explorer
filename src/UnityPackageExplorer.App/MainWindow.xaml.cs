@@ -866,11 +866,17 @@ public partial class MainWindow : Window
         IDictionary<string, string>? alphaTextureCache = null)
     {
         if (materialBindings.Count == 0)
-            return isPrefabPreview
-                ? [hasUnappliedMaterialOverrides
-                    ? "Nested Prefab material override textures were inspected for diagnostics but not applied because their FBX submesh targets could not be identified safely."
-                    : UnityMaterialPreviewDiagnostics.GetMissingSupportedTextureWarning(materialReferences.Count)]
-                : [];
+        {
+            if (!isPrefabPreview) return [];
+            foreach (var mesh in EnumerateSceneNodes(root).OfType<HelixToolkit.SharpDX.Model.Scene.MeshNode>())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ReplaceInvisibleImportedMaterial(mesh);
+            }
+            return [hasUnappliedMaterialOverrides
+                ? "Nested Prefab material override textures were inspected for diagnostics but not applied because their FBX submesh targets could not be identified safely."
+                : UnityMaterialPreviewDiagnostics.GetMissingSupportedTextureWarning(materialReferences.Count)];
+        }
         var meshNodes = EnumerateSceneNodes(root).OfType<HelixToolkit.SharpDX.Model.Scene.MeshNode>().ToArray();
         var warnings = new List<string>();
         var applied = new HashSet<MaterialBinding>();
@@ -923,6 +929,15 @@ public partial class MainWindow : Window
         foreach (var binding in materialBindings.Except(applied).DistinctBy(x => x.MaterialGuid, StringComparer.OrdinalIgnoreCase))
             warnings.Add($"Material '{binding.MaterialName}' could not be matched to an FBX material and was left unused.");
         return warnings;
+    }
+
+    private static void ReplaceInvisibleImportedMaterial(HelixToolkit.SharpDX.Model.Scene.MeshNode mesh)
+    {
+        if (mesh.Material is HelixToolkit.SharpDX.Model.PhongMaterialCore imported
+            && imported.RenderDiffuseMap
+            && imported.DiffuseMap is null
+            && imported.DiffuseColor.Alpha <= 0f)
+            SetPreviewMaterial(mesh, null, null, UnityMaterialRenderMode.Opaque, null);
     }
 
     private static string PrepareTextureAlphaForPreview(string path, MaterialBinding binding, IDictionary<string, string> cache, ICollection<string> warnings, CancellationToken cancellationToken)
