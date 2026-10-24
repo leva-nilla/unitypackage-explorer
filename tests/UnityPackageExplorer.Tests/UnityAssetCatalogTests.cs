@@ -172,7 +172,7 @@ public sealed class UnityAssetCatalogTests
     {
         var root = Path.Combine(Path.GetTempPath(), $"unitypackage-unknown-shader-{Guid.NewGuid():N}");
         var prefabPath = Path.Combine(root, "Assets", "Item.prefab");
-        var shaderPath = Path.Combine(root, "Assets", "lilToon", "Shader", "ltsmulti.shader");
+        var shaderPath = Path.Combine(root, "Assets", "lilToon", "Shader", "ltsfuronly.shader");
         var materialPath = Path.Combine(root, "Assets", "Item.mat");
         const string shaderGuid = "66666666666666666666666666666666";
         const string materialGuid = "77777777777777777777777777777777";
@@ -180,20 +180,88 @@ public sealed class UnityAssetCatalogTests
         {
             Directory.CreateDirectory(Path.GetDirectoryName(shaderPath)!);
             File.WriteAllText(prefabPath, "prefab");
-            File.WriteAllText(shaderPath, "Shader \"lilToonMulti\" {}\n");
+            File.WriteAllText(shaderPath, "Shader \"lilToonFurOnly\" {}\n");
             File.WriteAllText(shaderPath + ".meta", $"fileFormatVersion: 2\nguid: {shaderGuid}\n");
             File.WriteAllText(materialPath, $"Material:\n  m_Name: Unknown\n  m_Shader: {{fileID: 4800000, guid: {shaderGuid}, type: 3}}\n  stringTagMap: {{RenderType: Opaque}}\n  m_SavedProperties:\n    m_Floats:\n    - _TransparentMode: 1\n    - _Cutoff: 0.4\n");
             File.WriteAllText(materialPath + ".meta", $"fileFormatVersion: 2\nguid: {materialGuid}\n");
 
             var info = UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo(materialGuid);
             Assert.NotNull(info);
-            Assert.Equal("ltsmulti", info.ShaderName);
+            Assert.Equal("ltsfuronly", info.ShaderName);
             Assert.True(info.IsLilToonShaderAsset);
             Assert.Equal(UnityMaterialRenderMode.Unknown, info.RenderMode);
+            Assert.Null(info.LilToon);
         }
         finally
         {
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
     }
+
+    [Fact]
+    public void ParsesLilToonPropertiesTexturesAndKnownRenderVariantsWithoutClampingColors()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"unitypackage-liltoon-data-{Guid.NewGuid():N}");
+        var prefabPath = Path.Combine(root, "Assets", "Item.prefab");
+        var shaderPath = Path.Combine(root, "Assets", "lilToon", "Shader", "lts.shader");
+        var materialPath = Path.Combine(root, "Assets", "Item.mat");
+        const string materialGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string mainGuid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const string normalGuid = "cccccccccccccccccccccccccccccccc";
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(shaderPath)!);
+            File.WriteAllText(prefabPath, "prefab");
+            File.WriteAllText(shaderPath, "Shader \"lilToon\" {}\n");
+            File.WriteAllText(shaderPath + ".meta", "fileFormatVersion: 2\nguid: df12117ecd77c31469c224178886498e\n");
+            File.WriteAllText(materialPath, $"Material:\n  m_Name: Surface\n  m_Shader: {{fileID: 4800000, guid: df12117ecd77c31469c224178886498e, type: 3}}\n  m_SavedProperties:\n    m_TexEnvs:\n    - _MainTex:\n        m_Texture: {{fileID: 2800000, guid: {mainGuid}, type: 3}}\n        m_Scale: {{x: 2, y: 3}}\n        m_Offset: {{x: 0.25, y: -0.5}}\n    - _BumpMap:\n        m_Texture: {{fileID: 2800000, guid: {normalGuid}, type: 3}}\n        m_Scale: {{x: 1, y: 1}}\n        m_Offset: {{x: 0, y: 0}}\n    m_Ints:\n    - _FeatureFlag: 2\n    m_Floats:\n    - _UseMatCap: 1\n    - _UseEmission: 1\n    - _Cutoff: 0.5\n    - _BadValue: Infinity\n    m_Colors:\n    - _Color: {{r: 1.5, g: 0.5, b: 0.25, a: 0.8}}\n    - _EmissionColor: {{x: 2, y: 0.3, z: 0.4, w: 1}}\n");
+            File.WriteAllText(materialPath + ".meta", $"fileFormatVersion: 2\nguid: {materialGuid}\n");
+
+            var info = UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo(materialGuid)!;
+            var data = Assert.IsType<LilToonMaterialData>(info.LilToon);
+            Assert.Equal("opaque", data.RenderMode);
+            Assert.Equal(1.5f, Assert.IsType<float[]>(data.Properties["_Color"])[0]);
+            Assert.Equal(0.8f, Assert.IsType<float[]>(data.Properties["_Color"])[3]);
+            Assert.Equal(2f, Assert.IsType<float[]>(data.Properties["_EmissionColor"])[0]);
+            Assert.Equal(1f, Assert.IsType<float>(data.Properties["_UseMatCap"]));
+            Assert.Equal(2, Assert.IsType<int>(data.Properties["_FeatureFlag"]));
+            Assert.False(data.Properties.ContainsKey("_BadValue"));
+            Assert.Equal(new[] { 2f, 3f, 0.25f, -0.5f }, Assert.IsType<float[]>(data.Properties["_MainTex_ST"]));
+            Assert.Equal(new[] { "_MainTex", "_BumpMap" }, data.Textures.Select(x => x.Property));
+            Assert.Equal(mainGuid, data.Textures[0].Guid);
+
+            var cutoutPath = Path.Combine(root, "Assets", "Cutout.mat");
+            File.WriteAllText(cutoutPath, "Material:\n  m_Name: Cutout\n  m_Shader: {fileID: 4800000, guid: 85d6126cae43b6847aff4b13f4adb8ec, type: 3}\n  m_SavedProperties:\n    m_Floats:\n    - _Cutoff: 0.5\n");
+            File.WriteAllText(cutoutPath + ".meta", "fileFormatVersion: 2\nguid: dddddddddddddddddddddddddddddddd\n");
+            var cutout = UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo("dddddddddddddddddddddddddddddddd")!;
+            Assert.Equal(UnityMaterialRenderMode.Cutout, cutout.RenderMode);
+            Assert.Equal("cutout", cutout.LilToon?.RenderMode);
+            Assert.Null(cutout.LilToon?.ShaderVariant);
+
+            var nonLilPath = Path.Combine(root, "Assets", "Other.mat");
+            File.WriteAllText(nonLilPath, "Material:\n  m_Name: Other\n  m_Shader: {fileID: 4800000, guid: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee, type: 3}\n  m_SavedProperties:\n    m_Floats:\n    - _UseEmission: 1\n");
+            File.WriteAllText(nonLilPath + ".meta", "fileFormatVersion: 2\nguid: ffffffffffffffffffffffffffffffff\n");
+            Assert.Null(UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo("ffffffffffffffffffffffffffffffff")!.LilToon);
+
+            var unrelatedShader = Path.Combine(root, "Assets", "Other", "lts.shader");
+            Directory.CreateDirectory(Path.GetDirectoryName(unrelatedShader)!);
+            File.WriteAllText(unrelatedShader, "Shader \"Unrelated/Surface\" {}\n");
+            File.WriteAllText(unrelatedShader + ".meta", "guid: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n");
+            var unrelatedInfo = UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo("ffffffffffffffffffffffffffffffff")!;
+            Assert.Null(unrelatedInfo.LilToon);
+            Assert.Equal(UnityMaterialRenderMode.Unknown, unrelatedInfo.RenderMode);
+
+            File.WriteAllText(nonLilPath, "Material:\n  m_Name: Multi\n  m_Shader: {fileID: 4800000, guid: 51b2dee0ab07bd84d8147601ff89e511, type: 3}\n  m_SavedProperties:\n    m_Floats:\n    - _TransparentMode: 1\n    - _UseMatCap: 1\n");
+            var multi = UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo("ffffffffffffffffffffffffffffffff")!;
+            Assert.Equal("cutout", multi.LilToon?.RenderMode);
+            Assert.Equal("multi-outline", multi.LilToon?.ShaderVariant);
+            File.WriteAllText(nonLilPath, File.ReadAllText(nonLilPath).Replace("_TransparentMode: 1", "_TransparentMode: 3", StringComparison.Ordinal));
+            Assert.Null(UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo("ffffffffffffffffffffffffffffffff")!.LilToon);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
 }

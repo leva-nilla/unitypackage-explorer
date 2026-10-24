@@ -46,7 +46,22 @@ public sealed record UnityMaterialInfo(
     public UnityMaterialRenderMode RenderMode { get; init; }
     public float? Cutoff { get; init; }
     public IReadOnlyList<string> EnabledUnsupportedFeatures { get; init; } = [];
+    public LilToonMaterialData? LilToon { get; init; }
 }
+
+public sealed record LilToonMaterialData(
+    string RenderMode,
+    string? ShaderVariant,
+    IReadOnlyDictionary<string, object> Properties,
+    IReadOnlyList<LilToonTextureReference> Textures);
+
+public sealed record LilToonTextureReference(
+    string Property,
+    string Guid,
+    float ScaleX,
+    float ScaleY,
+    float OffsetX,
+    float OffsetY);
 
 public readonly record struct UnityMaterialColor(float R, float G, float B, float A);
 

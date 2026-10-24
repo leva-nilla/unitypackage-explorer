@@ -127,6 +127,7 @@
                             <hx:DirectionalLight3D Direction="-1,-1,-1" Color="#FFFFFFFF" />
                             <hx:SceneNodeGroupModel3D x:Name="SceneModels" />
                         </hx:Viewport3DX>
+                        <Grid x:Name="LilToonHostContainer" Visibility="Collapsed" />
                         <Border x:Name="ImagePanel" Visibility="Collapsed" Background="#14191F" CornerRadius="6">
                             <Image x:Name="AssetImage" Stretch="Uniform" Margin="8" />
                         </Border>
@@ -134,6 +135,12 @@
                         <ProgressBar x:Name="PreviewProgress" Height="3" VerticalAlignment="Top" Margin="12,8" IsIndeterminate="True" Visibility="Collapsed" />
                         <Border x:Name="CameraHelp" Visibility="Collapsed" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12" Padding="8,5" CornerRadius="4" Background="#B814191F" IsHitTestVisible="False">
                             <TextBlock Text="右ドラッグ 見回し　·　WASD 移動　·　Q/E 上下　·　Shift 加速　·　ホイール ズーム（右ドラッグ中は速度）" FontSize="11" Foreground="#D5DCE5" />
+                        </Border>
+                        <Border x:Name="PreviewModePanel" Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12" Padding="4" CornerRadius="5" Background="#B814191F">
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="LightweightModeButton" Content="軽量" Click="LightweightModeButton_Click" Padding="10,5" Margin="1" />
+                                <Button x:Name="LilToonModeButton" Content="lilToon" Click="LilToonModeButton_Click" Padding="10,5" Margin="1" />
+                            </StackPanel>
                         </Border>
                     </Grid>
                     <Grid Grid.Row="2" Margin="0,10,0,0">

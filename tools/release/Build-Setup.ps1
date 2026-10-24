@@ -34,6 +34,8 @@ $applicationProject = Join-Path $repoRoot 'src\UnityPackageExplorer.App\UnityPac
 $assetsFile = Join-Path $repoRoot 'src\UnityPackageExplorer.App\obj\project.assets.json'
 $packageCache = if ([string]::IsNullOrWhiteSpace($env:NUGET_PACKAGES)) { Join-Path $env:USERPROFILE '.nuget\packages' } else { $env:NUGET_PACKAGES }
 
+& (Join-Path $PSScriptRoot 'Build-WebViewer.ps1')
+
 if (Test-Path -LiteralPath $releaseRoot) {
     $resolvedArtifacts = $artifactRoot.TrimEnd('\') + '\'
     if (-not ([IO.Path]::GetFullPath($releaseRoot).StartsWith($resolvedArtifacts, [StringComparison]::OrdinalIgnoreCase))) {
@@ -64,6 +66,9 @@ if (-not [string]::IsNullOrWhiteSpace($env:UPX_TARGET_PLATFORM_SDK_ROOT_OVERRIDE
 }
 & $dotnetPathResolved @publishArguments
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
+if (-not (Test-Path -LiteralPath (Join-Path $publishDirectory 'WebViewer\index.html') -PathType Leaf)) {
+    throw 'The lilToon web viewer was not included in the published application.'
+}
 
 $requiredCrtFiles = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
 $vswhereCandidates = @(

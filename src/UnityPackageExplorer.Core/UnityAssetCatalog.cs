@@ -18,28 +18,6 @@ public sealed class UnityAssetCatalog
     private static readonly Regex ShaderKeywordsPattern = new("(?m)^[ \\t]*m_ShaderKeywords:\\s*(?<value>[^\\r\\n]*)", RegexOptions.Compiled);
     private static readonly Regex ValidKeywordsPattern = new("(?ms)^[ \\t]*m_ValidKeywords:[ \\t]*(?<value>.*?)(?=^[ \\t]*[A-Za-z][A-Za-z0-9_]*:|\\z)", RegexOptions.Compiled);
     private static readonly HashSet<string> SupportedMaterialTextureSlots = new(["_MainTex", "_BaseMap", "_BaseColorMap", "_BaseColorTexture"], StringComparer.OrdinalIgnoreCase);
-    // GUIDs were verified at the lilToon 1.3.7 tag (36ff295b41cc4c398b95419d513adeecb0b322d4) and the current tag (72fc09625b24c9a750591c286e9192512a5177a).
-    private static readonly IReadOnlyDictionary<string, UnityMaterialRenderMode> KnownLilToonShaderModes = new Dictionary<string, UnityMaterialRenderMode>(StringComparer.OrdinalIgnoreCase)
-    {
-        ["df12117ecd77c31469c224178886498e"] = UnityMaterialRenderMode.Opaque,
-        ["efa77a80ca0344749b4f19fdd5891cbe"] = UnityMaterialRenderMode.Opaque,
-        ["381af8ba8e1740a41b9768ccfb0416c2"] = UnityMaterialRenderMode.Opaque,
-        ["583a88005abb81a4ebbce757b4851a0d"] = UnityMaterialRenderMode.Opaque,
-        ["85d6126cae43b6847aff4b13f4adb8ec"] = UnityMaterialRenderMode.Cutout,
-        ["3b4aa19949601f046a20ca8bdaee929f"] = UnityMaterialRenderMode.Cutout,
-        ["b957dce3d03ff5445ac989f8de643c7f"] = UnityMaterialRenderMode.Cutout,
-        ["8cf5267d397b04846856f6d3d9561da0"] = UnityMaterialRenderMode.Cutout,
-        ["165365ab7100a044ca85fc8c33548a62"] = UnityMaterialRenderMode.Transparent,
-        ["3c79b10c7e0b2784aaa4c2f8dd17d55e"] = UnityMaterialRenderMode.Transparent,
-        ["0e3ece1bd59542743bccadb21f68318e"] = UnityMaterialRenderMode.Transparent,
-        ["1c12a37046f07ac4486881deaf0187ea"] = UnityMaterialRenderMode.Transparent
-    };
-    private static readonly HashSet<string> KnownLilToonOutlineShaderGuids = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "efa77a80ca0344749b4f19fdd5891cbe", "583a88005abb81a4ebbce757b4851a0d",
-        "3b4aa19949601f046a20ca8bdaee929f", "8cf5267d397b04846856f6d3d9561da0",
-        "3c79b10c7e0b2784aaa4c2f8dd17d55e", "1c12a37046f07ac4486881deaf0187ea"
-    };
     private readonly UnityPackageReader? _package;
     private readonly Dictionary<string, List<UnityPackageEntry>> _byGuid;
     private readonly Dictionary<string, UnityPackageEntry> _byPath;
@@ -317,12 +295,15 @@ public sealed class UnityAssetCatalog
         if (validKeywords.Success)
             foreach (Match keyword in Regex.Matches(validKeywords.Groups["value"].Value, "[A-Za-z0-9_]+", RegexOptions.CultureInvariant))
                 keywords.Add(keyword.Value);
-        var isLilToonShaderAsset = shaderPath?.Contains("lilToon", StringComparison.OrdinalIgnoreCase) == true;
+        var isLilToonShaderAsset = shaderPath?.Replace('\\', '/').Split('/').Any(segment =>
+            segment.Equals("lilToon", StringComparison.OrdinalIgnoreCase)
+            || segment.Equals("jp.lilxyzw.liltoon", StringComparison.OrdinalIgnoreCase)
+            || segment.StartsWith("jp.lilxyzw.liltoon@", StringComparison.OrdinalIgnoreCase)) == true;
         var renderMode = ResolveRenderMode(renderTag, keywords, shaderGuid, shaderName, isLilToonShaderAsset, text);
         var enabledFeatures = new[] { "_AlphaMaskMode", "_UseMatCap", "_UseMatCap2nd", "_UseOutline", "_UseEmission" }
             .Where(feature => HasEnabledMaterialFloat(text, feature) || keywords.Contains(feature.ToUpperInvariant()))
             .ToArray();
-        if (shaderGuid is not null && KnownLilToonOutlineShaderGuids.Contains(shaderGuid) && !enabledFeatures.Contains("outline shader variant", StringComparer.Ordinal))
+        if (UnityLilToonMaterialParser.IsOutline(shaderGuid, isLilToonShaderAsset ? shaderName : null) && !enabledFeatures.Contains("outline shader variant", StringComparer.Ordinal))
             enabledFeatures = [.. enabledFeatures, "outline shader variant"];
         return new UnityMaterialInfo(name, supported, unsupported, supportedBlocks)
         {
@@ -333,7 +314,8 @@ public sealed class UnityAssetCatalog
             RenderTypeTag = renderTag,
             RenderMode = renderMode,
             Cutoff = cutoff,
-            EnabledUnsupportedFeatures = enabledFeatures
+            EnabledUnsupportedFeatures = enabledFeatures,
+            LilToon = UnityLilToonMaterialParser.Parse(text, renderMode, shaderGuid, shaderName, isLilToonShaderAsset)
         };
     }
 
@@ -355,7 +337,8 @@ public sealed class UnityAssetCatalog
 
     private static UnityMaterialRenderMode ResolveRenderMode(string? tag, HashSet<string> keywords, string? shaderGuid, string? shaderName, bool isLilToonShaderAsset, string text)
     {
-        if (shaderGuid is not null && KnownLilToonShaderModes.TryGetValue(shaderGuid, out var knownMode)) return knownMode;
+        if (UnityLilToonMaterialParser.TryGetMultiRenderMode(text, shaderGuid, shaderName, isLilToonShaderAsset, out var multiMode)) return multiMode;
+        if (UnityLilToonMaterialParser.TryGetRenderMode(shaderGuid, shaderName, out var knownMode, isLilToonShaderAsset)) return knownMode;
         if (isLilToonShaderAsset) return UnityMaterialRenderMode.Unknown;
         if (string.Equals(tag, "Transparent", StringComparison.OrdinalIgnoreCase)) return UnityMaterialRenderMode.Transparent;
         if (string.Equals(tag, "TransparentCutout", StringComparison.OrdinalIgnoreCase) || string.Equals(tag, "Cutout", StringComparison.OrdinalIgnoreCase)) return UnityMaterialRenderMode.Cutout;
