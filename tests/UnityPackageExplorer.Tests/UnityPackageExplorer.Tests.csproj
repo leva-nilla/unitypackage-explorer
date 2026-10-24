@@ -20,6 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="TestData\Rar5.solid.rar" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tools\context-menu\AppxManifest.xml" Link="TestData\AppxManifest.xml" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\src\UnityPackageExplorer.ShellExtension\UnityPackageExplorerShellCommand.cpp" Link="TestData\UnityPackageExplorerShellCommand.cpp" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\Install-UnityPackageExplorerContextMenu.ps1" Link="TestData\Install-UnityPackageExplorerContextMenu.ps1" CopyToOutputDirectory="PreserveNewest" />

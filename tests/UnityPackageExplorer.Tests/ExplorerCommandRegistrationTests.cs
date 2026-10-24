@@ -30,7 +30,7 @@ public sealed class ExplorerCommandRegistrationTests
             .Select(match => match.Groups["extension"].Value)
             .Order(StringComparer.Ordinal)
             .ToArray();
-        Assert.Equal(new[] { ".prefab", ".unitypackage", ".zip" }, extensions);
+        Assert.Equal(new[] { ".prefab", ".rar", ".unitypackage", ".zip" }, extensions);
         Assert.Contains("GetFileAttributesW(path)", filter, StringComparison.Ordinal);
         Assert.Contains("FILE_ATTRIBUTE_DIRECTORY", filter, StringComparison.Ordinal);
     }
@@ -131,6 +131,7 @@ public sealed class ExplorerCommandRegistrationTests
         Assert.Contains("SystemFileAssociations\\.unitypackage\\shell\\UnityPackageExplorer.Open", installer, StringComparison.Ordinal);
         Assert.Contains("SystemFileAssociations\\.prefab\\shell\\UnityPackageExplorer.Open", installer, StringComparison.Ordinal);
         Assert.Contains("SystemFileAssociations\\.zip\\shell\\UnityPackageExplorer.Open", installer, StringComparison.Ordinal);
+        Assert.Contains("SystemFileAssociations\\.rar\\shell\\UnityPackageExplorer.Open", installer, StringComparison.Ordinal);
         Assert.False(installer.Contains("{code:GetAssociationProgId", StringComparison.Ordinal),
             "ProgID keys must not be automatically deleted by Inno because that could erase a later third-party edit.");
 

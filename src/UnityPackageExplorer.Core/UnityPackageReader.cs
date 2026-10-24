@@ -10,21 +10,26 @@ public sealed class UnityPackageReader
     private const int MaximumPathNameBytes = 1024 * 1024;
     public const long MaximumAssetBytes = 512L * 1024 * 1024;
     public const long MaximumExpandedArchiveBytes = 2L * 1024 * 1024 * 1024;
+    public const int MaximumEntryCount = UnityArchiveLimits.MaximumEntryCount;
     private readonly Func<Stream> _openStream;
     private readonly long _maximumExpandedArchiveBytes;
+    private readonly int _maximumEntryCount;
 
     public UnityPackageReader(string packagePath)
     {
         var fullPath = Path.GetFullPath(packagePath);
         _openStream = () => new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024, FileOptions.SequentialScan);
         _maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes;
+        _maximumEntryCount = MaximumEntryCount;
     }
 
-    public UnityPackageReader(Func<Stream> openStream, long maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes)
+    public UnityPackageReader(Func<Stream> openStream, long maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes, int maximumEntryCount = MaximumEntryCount)
     {
         _openStream = openStream ?? throw new ArgumentNullException(nameof(openStream));
         if (maximumExpandedArchiveBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maximumExpandedArchiveBytes));
+        if (maximumEntryCount <= 0) throw new ArgumentOutOfRangeException(nameof(maximumEntryCount));
         _maximumExpandedArchiveBytes = maximumExpandedArchiveBytes;
+        _maximumEntryCount = maximumEntryCount;
     }
 
     public IReadOnlyList<UnityPackageEntry> ReadIndex(CancellationToken cancellationToken = default, ArchiveExpansionBudget? expansionBudget = null)
@@ -33,10 +38,13 @@ public sealed class UnityPackageReader
         using var archive = OpenArchive(expansionBudget);
         using var reader = new TarReader(archive, leaveOpen: false);
 
+        var entryCount = 0;
         TarEntry? entry;
         while ((entry = reader.GetNextEntry(copyData: false)) is not null)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (++entryCount > _maximumEntryCount)
+                throw new InvalidDataException($"UnityPackage contains more than {_maximumEntryCount:N0} entries.");
             var archiveName = entry.Name.Replace('\\', '/').TrimEnd('/');
             var pieces = archiveName.Split('/', 2);
             if (pieces.Length == 2 && IsGuid(pieces[0]))

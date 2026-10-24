@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- ZIP内の512 MiB超のUnityPackageを、メモリへ全量展開せずに読み込むよう修正。
+- RAR4/RAR5とソリッドRARの閲覧、ドラッグ＆ドロップ、分類、右クリック登録に対応。
+- 内包UnityPackageの項目数上限と、破損・大容量アーカイブの回帰テストを追加。
+
 ## 0.1.0 — preview
 
 - ZIPを展開せずに内包するUnityPackageとPrefabを確認。

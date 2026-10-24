@@ -82,7 +82,7 @@
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                 <StackPanel x:Name="CategoryPanel" Orientation="Horizontal" Visibility="Collapsed">
                     <ComboBox x:Name="CategoryPicker" Width="170" Margin="4,0" Padding="8,5" SelectionChanged="CategoryPicker_SelectionChanged" ToolTip="分類先のフォルダー" />
-                    <Button x:Name="MoveToCategoryButton" Content="分類先へ移動" Click="MoveToCategoryButton_Click" Margin="4,0" Padding="14,7" IsEnabled="False" ToolTip="内容を確認したあと、選択中の分類フォルダーへZIP本体を移動" />
+                    <Button x:Name="MoveToCategoryButton" Content="分類先へ移動" Click="MoveToCategoryButton_Click" Margin="4,0" Padding="14,7" IsEnabled="False" ToolTip="内容を確認したあと、選択中の分類フォルダーへアーカイブ本体を移動" />
                 </StackPanel>
                 <Button x:Name="OpenButton" Content="ファイルを開く" Click="OpenButton_Click" Margin="4,0" Padding="14,7" />
                 <Button x:Name="ExtractButton" Content="展開して開く" Click="ExtractButton_Click" Margin="4,0" Padding="14,7" IsEnabled="False" />

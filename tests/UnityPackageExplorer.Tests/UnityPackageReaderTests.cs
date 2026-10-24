@@ -84,6 +84,25 @@ public sealed class UnityPackageReaderTests
     }
 
     [Fact]
+    public void RejectsPackagesThatExceedTheEntryCountLimit()
+    {
+        var guid = "a".PadLeft(32, '0');
+        using var package = TemporaryPackage.Create([
+            ($"{guid}/pathname", "Assets/Props/Item.prefab"),
+            ($"{guid}/asset", "prefab payload"),
+            ("ignored/readme.txt", "third entry")
+        ]);
+        var reader = new UnityPackageReader(
+            () => new FileStream(package.Path, FileMode.Open, FileAccess.Read, FileShare.Read),
+            maximumEntryCount: 2);
+
+        var exception = Assert.Throws<InvalidDataException>(() => reader.ReadIndex());
+
+        Assert.Contains("more than 2 entries", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(package.Path));
+    }
+
+    [Fact]
     public void CancelsWhileDrainingAnUnselectedLargeTarEntry()
     {
         var guid = "a".PadLeft(32, '0');

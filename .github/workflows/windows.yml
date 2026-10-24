@@ -124,14 +124,14 @@ jobs:
           }
 
           $expectedCommand = '"{0}" "%1"' -f $app
-          foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
+          foreach ($extension in @('.unitypackage', '.prefab', '.zip', '.rar')) {
             $key = "Software\Classes\SystemFileAssociations\$extension\shell\UnityPackageExplorer.Open\command"
             $actualCommand = (Get-Item -LiteralPath "Registry::HKEY_CURRENT_USER\$key" -ErrorAction Stop).GetValue('')
             if ($actualCommand -ne $expectedCommand) { throw "Context menu command for $extension did not match the installed app." }
           }
 
           $ownedProgIdVerbPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-          foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
+          foreach ($extension in @('.unitypackage', '.prefab', '.zip', '.rar')) {
             $userChoicePath = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$extension\UserChoice"
             $progId = $null
             if (Test-Path -LiteralPath $userChoicePath) {
@@ -156,7 +156,8 @@ jobs:
           $fixtures = @(
             (Join-Path $fixtureDirectory '素材 sample.unitypackage'),
             (Join-Path $fixtureDirectory 'Prefab sample.prefab'),
-            (Join-Path $fixtureDirectory 'Archive sample.zip')
+            (Join-Path $fixtureDirectory 'Archive sample.zip'),
+            (Join-Path $fixtureDirectory 'Archive sample.rar')
           )
           Set-Content -LiteralPath $fixtures[0] -Value 'invalid test package' -Encoding UTF8
           Set-Content -LiteralPath $fixtures[1] -Value 'invalid test prefab' -Encoding UTF8
@@ -164,6 +165,7 @@ jobs:
           Set-Content -LiteralPath $zipSource -Value 'fixture' -Encoding UTF8
           Compress-Archive -LiteralPath $zipSource -DestinationPath $fixtures[2] -Force
           Remove-Item -LiteralPath $zipSource -Force
+          [IO.File]::WriteAllBytes($fixtures[3], [byte[]](0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00))
 
           $childEnvironment = @{
             PATH = (Join-Path $env:SystemRoot 'System32')
@@ -189,7 +191,7 @@ jobs:
           if ($uninstallProcess.ExitCode -ne 0) { throw "Uninstaller exited with code $($uninstallProcess.ExitCode)." }
           if (Test-Path -LiteralPath $sendToShortcut) { throw 'Send To shortcut remained after uninstall.' }
           if (Test-Path -LiteralPath $doubleExtensionShortcut) { throw 'Double-extension Send To shortcut remained after uninstall.' }
-          foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
+          foreach ($extension in @('.unitypackage', '.prefab', '.zip', '.rar')) {
             $key = "Registry::HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\$extension\shell\UnityPackageExplorer.Open"
             if (Test-Path -LiteralPath $key) { throw "Context menu registration for $extension remained after uninstall." }
           }
