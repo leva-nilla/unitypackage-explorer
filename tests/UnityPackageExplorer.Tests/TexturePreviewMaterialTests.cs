@@ -83,6 +83,7 @@ public sealed class TexturePreviewMaterialTests
             Array.Empty<UnityAssetReference>(),
             Array.Empty<PrefabRendererMaterialAssignment>(),
             true,
+            Activator.CreateInstance(typeof(Dictionary<,>).MakeGenericType(typeof(MeshNode), materialBindingType!)),
             false,
             CancellationToken.None,
             null

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Numerics;
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -11,6 +12,7 @@ using HelixToolkit.SharpDX;
 using HelixToolkit.SharpDX.Assimp;
 using HelixToolkit.Wpf.SharpDX;
 using Microsoft.Win32;
+using Microsoft.Web.WebView2.Core;
 using UnityPackageExplorer.Core;
 
 namespace UnityPackageExplorer.App;
@@ -20,7 +22,9 @@ public partial class MainWindow : Window
     private readonly string? _initialPath;
     private readonly PreviewRequestGate _previewRequests = new();
     private readonly DefaultEffectsManager _effectsManager = new();
+    private readonly LilToonViewportHost _lilToonHost = new();
     private CancellationTokenSource? _previewCancellation;
+    private CancellationTokenSource? _lilToonCancellation;
     private CancellationTokenSource? _treeRefreshCancellation;
     private long _treeRefreshVersion;
     private UnityAssetCatalog? _catalog;
@@ -40,25 +44,48 @@ public partial class MainWindow : Window
     private readonly List<HelixToolkitScene> _currentScenes = [];
     private readonly Dictionary<long, PreviewTemporaryState> _requestTemporaryRoots = [];
     private long? _activeSceneRequestId;
+    private string? _activeLilToonScenePath;
+    private long? _activeLilToonRequestId;
+    private long _lilToonLoadVersion;
+    private bool _activeHasLilToonMaterial;
+    private bool _isLilToonMode;
     private Point _lastLookPoint;
     private bool _looking;
     private double _flightSpeed = 12;
     private long _lastMovementTimestamp;
 
-    private sealed record MaterialBinding(string MaterialGuid, string MaterialName, string TextureName, string Slot, string? AssetPath, UnityMaterialColor? Color, UnityMaterialRenderMode RenderMode, float? Cutoff);
-    private sealed record ModelLoadResult(HelixToolkitScene Scene, IReadOnlyList<string> Warnings);
+    private sealed record MaterialBinding(string MaterialGuid, string MaterialName, string TextureName, string Slot, string? AssetPath, UnityMaterialColor? Color, UnityMaterialRenderMode RenderMode, float? Cutoff)
+    {
+        public LilToonMaterialData? LilToon { get; init; }
+        public IReadOnlyDictionary<string, string> LilToonTexturePaths { get; init; } = new Dictionary<string, string>();
+    }
+    private sealed record LilToonScenePreparation(string ScenePath, IReadOnlyList<string> Warnings);
+    private sealed record ModelLoadResult(
+        HelixToolkitScene Scene,
+        IReadOnlyList<string> Warnings,
+        bool HasLilToonMaterial,
+        Func<CancellationToken, LilToonScenePreparation>? PrepareLilToon);
     private sealed record PrefabPreviewData(PrefabParseResult Parse, IReadOnlyList<PrefabNodeView> Tree, IReadOnlyList<PrefabModelPlacement> Models);
     private sealed class PreviewTemporaryState(string path)
     {
         public string Path { get; } = path;
         public bool InFlight { get; set; } = true;
         public Dictionary<string, string> AlphaTextureCache { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string?> LilToonTextureCache { get; } = new(StringComparer.Ordinal);
+        public List<Func<CancellationToken, LilToonScenePreparation>> LilToonPreparationPlans { get; } = [];
+        public HashSet<string> LilToonWarningsDisplayed { get; } = new(StringComparer.Ordinal);
+        public SemaphoreSlim LilToonPreparationGate { get; } = new(1, 1);
+        public string? LilToonScenePath { get; set; }
+        public int LilToonOperations { get; set; }
+        public IReadOnlyList<string> LilToonPreparationWarnings { get; set; } = [];
     }
     private static readonly string[] Categories = ["アクセサリー", "アバター", "その他", "ツール", "テクスチャ", "ワールド", "衣装", "小物", "髪型"];
 
     public MainWindow(string? initialPath = null)
     {
         InitializeComponent();
+        LilToonHostContainer.Children.Add(_lilToonHost);
+        _lilToonHost.Warning += (_, warning) => SetStatus(warning);
         Viewport.EffectsManager = _effectsManager;
         _initialPath = initialPath;
         KindFilter.ItemsSource = new[] { "すべて" };
@@ -70,14 +97,18 @@ public partial class MainWindow : Window
         Closed += (_, _) =>
         {
             CancelPendingOperations();
+            _activeSceneRequestId = null;
             CleanupTemporaryFiles();
             StopCameraInput();
             _effectsManager.Dispose();
+            _ = _lilToonHost.DisposeAsync();
         };
     }
 
     private (long RequestId, CancellationTokenSource Cancellation) BeginPreviewRequest()
     {
+        CancelLilToonLoad();
+        _lilToonLoadVersion++;
         var cancellation = new CancellationTokenSource();
         var previous = Interlocked.Exchange(ref _previewCancellation, cancellation);
         previous?.Cancel();
@@ -86,6 +117,8 @@ public partial class MainWindow : Window
 
     private void CancelActivePreview()
     {
+        CancelLilToonLoad();
+        _lilToonLoadVersion++;
         _previewRequests.BeginRequest();
         ResetPreviewSelection();
         var cancellation = Interlocked.Exchange(ref _previewCancellation, null);
@@ -98,11 +131,18 @@ public partial class MainWindow : Window
 
     private void CancelPendingOperations()
     {
+        CancelLilToonLoad();
         var preview = Interlocked.Exchange(ref _previewCancellation, null);
         preview?.Cancel();
 
         var tree = Interlocked.Exchange(ref _treeRefreshCancellation, null);
         tree?.Cancel();
+    }
+
+    private void CancelLilToonLoad()
+    {
+        var cancellation = Interlocked.Exchange(ref _lilToonCancellation, null);
+        cancellation?.Cancel();
     }
 
     private void Window_DragEnter(object sender, DragEventArgs e)
@@ -524,27 +564,37 @@ public partial class MainWindow : Window
         var preview = await Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var bytes = externalPath is null
-                ? entry is null ? null : catalog.ReadAsset(entry, cancellationToken: cancellationToken)
-                : File.ReadAllBytes(externalPath);
-            if (bytes is null) throw new InvalidDataException("Prefab の内容を読み取れません。");
-            var rootTransformIds = new Dictionary<string, long?>(StringComparer.OrdinalIgnoreCase);
-            var result = UnityPrefabParser.Parse(Encoding.UTF8.GetString(bytes), sourceGuid =>
+            byte[]? bytes;
+            if (externalPath is null)
+                bytes = entry is null ? null : catalog.ReadAsset(entry, cancellationToken: cancellationToken, maximumBytes: UnityPrefabParser.MaximumResolvedPrefabFileBytes);
+            else
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (rootTransformIds.TryGetValue(sourceGuid, out var cached)) return cached;
-                long? rootTransformId = null;
-                try
-                {
-                    var sourceBytes = catalog.ReadAssetByGuid(sourceGuid, cancellationToken: cancellationToken, packageMemberPath: entry?.PackageMemberPath, referenceEntry: entry);
-                    if (sourceBytes is not null)
-                        rootTransformId = UnityPrefabParser.FindRootTransformFileId(Encoding.UTF8.GetString(sourceBytes));
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception) { }
-                rootTransformIds[sourceGuid] = rootTransformId;
-                return rootTransformId;
-            });
+                using var stream = File.OpenRead(externalPath);
+                if (stream.Length > UnityPrefabParser.MaximumResolvedPrefabFileBytes)
+                    throw new InvalidDataException("Prefab のテキストが読み込み上限を超えています。");
+                bytes = new byte[checked((int)stream.Length)];
+                stream.ReadExactly(bytes);
+            }
+            if (bytes is null) throw new InvalidDataException("Prefab の内容を読み取れません。");
+            if (bytes.LongLength > UnityPrefabParser.MaximumResolvedPrefabFileBytes)
+                throw new InvalidDataException("Prefab のテキストが読み込み上限を超えています。");
+            var prefabSources = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            long prefabBytes = bytes.LongLength;
+            var result = UnityPrefabParser.ParseResolved(Encoding.UTF8.GetString(bytes), entry?.Guid, (sourceGuid, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                if (prefabSources.TryGetValue(sourceGuid, out var cached)) return cached;
+                var sourceEntry = catalog.FindByGuid(sourceGuid, entry?.PackageMemberPath, entry);
+                if (sourceEntry is null || sourceEntry.Extension != ".prefab")
+                    return prefabSources[sourceGuid] = null;
+                var remaining = UnityPrefabParser.MaximumResolvedPrefabBytes - prefabBytes;
+                if (remaining <= 0) throw new InvalidDataException("参照Prefabの読み込み合計が上限を超えています。");
+                var sourceBytes = catalog.ReadAsset(sourceEntry, cancellationToken: token,
+                    maximumBytes: Math.Min(remaining, UnityPrefabParser.MaximumResolvedPrefabFileBytes));
+                if (sourceBytes is null) return prefabSources[sourceGuid] = null;
+                prefabBytes += sourceBytes.LongLength;
+                return prefabSources[sourceGuid] = Encoding.UTF8.GetString(sourceBytes);
+            }, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             var tree = result.Roots.Select(x => new PrefabNodeView(x, cancellationToken: cancellationToken)).ToArray();
             // Importer loads the entire FBX scene. A skinned renderer's leaf transform often
@@ -560,6 +610,8 @@ public partial class MainWindow : Window
         ViewerEmpty.Text = modelsToLoad.Count == 0 ? "FBX 参照がありません。Prefab の階層を表示しています" : "FBX モデルを読み込み中…";
 
         var models = new List<HelixToolkitScene>();
+        var lilToonPlans = new List<Func<CancellationToken, LilToonScenePreparation>>();
+        var hasLilToonMaterial = false;
         var materialInfoCache = new Dictionary<string, UnityMaterialInfo?>(StringComparer.OrdinalIgnoreCase);
         var displayedModelGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var index = 0; index < modelsToLoad.Count; index++)
@@ -600,6 +652,8 @@ public partial class MainWindow : Window
                 if (!_previewRequests.IsCurrent(requestId)) return;
                 displayedModelGuids.Add(guid);
                 models.Add(loaded.Scene);
+                if (loaded.PrepareLilToon is not null) lilToonPlans.Add(loaded.PrepareLilToon);
+                hasLilToonMaterial |= loaded.HasLilToonMaterial;
                 HideSkeletonHelpers(loaded.Scene.Root);
                 _currentScenes.Add(loaded.Scene);
                 SceneModels.AddNode(loaded.Scene.Root);
@@ -618,7 +672,10 @@ public partial class MainWindow : Window
             .AppendLine($"Prefab 階層: {CountNodes(preview.Parse.Roots):N0} 個")
             .AppendLine($"FBX 参照: {CountModelReferences(preview.Parse.Roots):N0} 個")
             .AppendLine($"FBX モデル表示: {models.Count:N0} 個");
-        if (models.Count > 0) details.AppendLine("材質表示: 基本色・明示された透過モードを近似。シェーダー固有の描画は省略します。");
+        if (models.Count > 0)
+            details.AppendLine(hasLilToonMaterial
+                ? "材質表示: 軽量表示中。lilToon描画は省略しています。"
+                : "材質表示: 軽量表示中。基本色・明示された透過モードを近似しています。");
         var distinctWarnings = warnings.Distinct(StringComparer.Ordinal).ToArray();
         if (distinctWarnings.Length > 0)
             details.AppendLine($"確認できない内容: {distinctWarnings.Length:N0} 件").AppendLine().AppendLine("詳細").AppendLine(string.Join(Environment.NewLine, distinctWarnings));
@@ -631,7 +688,13 @@ public partial class MainWindow : Window
         }
         else ViewerEmpty.Text = "表示できる FBX がありません。Prefab の階層と確認できない内容を表示しています";
         DetailsText.Text = details.ToString();
-        SetStatus(models.Count > 0 ? "参照 FBX を表示しました。材質色・透過は近似表示です。" : "Prefab の構造を読み込みました。");
+        SetStatus(models.Count > 0 ? "軽量表示です。" : "Prefab の構造を読み込みました。");
+        var temporaryState = _requestTemporaryRoots.GetValueOrDefault(requestId);
+        if (temporaryState is not null) temporaryState.LilToonPreparationPlans.AddRange(lilToonPlans);
+        _activeLilToonRequestId = requestId;
+        _activeLilToonScenePath = temporaryState?.LilToonScenePath;
+        _activeHasLilToonMaterial = hasLilToonMaterial;
+        SetPreviewModeSelection(lilToon: false);
     }
 
     private async Task LoadPackageModelAsync(UnityPackageEntry entry, Matrix4x4 transform, IReadOnlyList<UnityAssetReference> materials, long requestId, CancellationToken cancellationToken)
@@ -648,10 +711,18 @@ public partial class MainWindow : Window
         CameraHelp.Visibility = Visibility.Visible;
         ViewerEmpty.Visibility = Visibility.Collapsed;
         FrameModels([loaded.Scene]);
+        _activeLilToonRequestId = requestId;
+        var temporaryState = _requestTemporaryRoots.GetValueOrDefault(requestId);
+        if (loaded.PrepareLilToon is not null) temporaryState?.LilToonPreparationPlans.Add(loaded.PrepareLilToon);
+        _activeLilToonScenePath = temporaryState?.LilToonScenePath;
+        _activeHasLilToonMaterial = loaded.HasLilToonMaterial;
+        SetPreviewModeSelection(lilToon: false);
         PrefabTree.ItemsSource = null;
         DetailsText.Text = $"{entry.PathName}{Environment.NewLine}種類: Model{Environment.NewLine}GUID: {entry.Guid}";
+        if (loaded.HasLilToonMaterial) DetailsText.Text += Environment.NewLine + "材質表示: 軽量表示中。lilToon描画は省略しています。";
+        else DetailsText.Text += Environment.NewLine + "材質表示: 軽量表示中。";
         if (loaded.Warnings.Count > 0) DetailsText.Text += Environment.NewLine + Environment.NewLine + "確認できない内容" + Environment.NewLine + string.Join(Environment.NewLine, loaded.Warnings);
-        SetStatus(loaded.Warnings.Count == 0 ? "FBX を表示しています。" : "FBX を表示しました。一部の参照は確認できませんでした。");
+        SetStatus(loaded.Warnings.Count == 0 ? "軽量表示です。" : "軽量表示を読み込みました。一部の参照は確認できませんでした。");
     }
 
     private async Task<ModelLoadResult> LoadPackageModelAsyncCore(
@@ -671,6 +742,7 @@ public partial class MainWindow : Window
         var catalog = _catalog ?? throw new InvalidOperationException("Asset catalog is not open.");
         var temp = EnsureTemporaryRoot(requestId);
         var alphaTextureCache = _requestTemporaryRoots[requestId].AlphaTextureCache;
+        var lilToonTextureCache = _requestTemporaryRoots[requestId].LilToonTextureCache;
         return await Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -712,13 +784,14 @@ public partial class MainWindow : Window
                 }
 
                 var materialName = materialInfo.Name ?? Path.GetFileNameWithoutExtension(materialPath);
-                foreach (var feature in materialInfo.EnabledUnsupportedFeatures)
+                var lilToonTexturePaths = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (var feature in materialInfo.LilToon is null ? materialInfo.EnabledUnsupportedFeatures : [])
                     warnings.Add($"Material '{materialName}' enables {feature}, which is not included in the simplified material preview.");
-                if (materialInfo.RenderMode == UnityMaterialRenderMode.Cutout)
+                if (materialInfo.LilToon is null && materialInfo.RenderMode == UnityMaterialRenderMode.Cutout)
                     warnings.Add(materialInfo.Cutoff is null
                         ? $"Material '{materialName}' uses alpha cutout but has no readable cutoff; the texture alpha is not masked."
                         : $"Material '{materialName}' uses alpha cutout. It is shown with a binary texture-alpha approximation; depth and sorting may differ from Unity.");
-                foreach (var textureGuid in materialInfo.UnsupportedTextureGuids)
+                foreach (var textureGuid in materialInfo.LilToon is null ? materialInfo.UnsupportedTextureGuids : [])
                 {
                     var unsupportedPath = catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
                     warnings.Add(unsupportedPath is null
@@ -760,10 +833,18 @@ public partial class MainWindow : Window
                         texturePath,
                         materialInfo.Color,
                         materialInfo.RenderMode,
-                        materialInfo.Cutoff));
+                        materialInfo.Cutoff)
+                    {
+                        LilToon = materialInfo.LilToon,
+                        LilToonTexturePaths = lilToonTexturePaths
+                    });
                 }
                 if (materialBindings.Count == bindingCountBeforeMaterial)
-                    materialBindings.Add(new MaterialBinding(material.Guid, materialName, string.Empty, string.Empty, null, materialInfo.Color, materialInfo.RenderMode, materialInfo.Cutoff));
+                    materialBindings.Add(new MaterialBinding(material.Guid, materialName, string.Empty, string.Empty, null, materialInfo.Color, materialInfo.RenderMode, materialInfo.Cutoff)
+                    {
+                        LilToon = materialInfo.LilToon,
+                        LilToonTexturePaths = lilToonTexturePaths
+                    });
                 if (materialInfo.RenderMode == UnityMaterialRenderMode.Unknown && materialInfo.Color is { A: < 1f })
                     warnings.Add($"Material '{materialName}' has alpha color but no explicit transparent mode; it remains opaque in this preview.");
                 else if (materialInfo.RenderMode == UnityMaterialRenderMode.Unknown && materialInfo.IsLilToonShaderAsset)
@@ -832,9 +913,24 @@ public partial class MainWindow : Window
                 cancellationToken.ThrowIfCancellationRequested();
                 scene.Root.ModelMatrix *= transform;
                 scene.Root.UpdateAllTransformMatrix();
-                warnings.AddRange(ApplyUnityMaterials(scene.Root, materialBindings, materials, rendererAssignments ?? [], isPrefabPreview, materialOverrides?.Count > 0, cancellationToken, alphaTextureCache));
+                var exportBindings = new Dictionary<HelixToolkit.SharpDX.Model.Scene.MeshNode, MaterialBinding>();
+                warnings.AddRange(ApplyUnityMaterials(scene.Root, materialBindings, materials, rendererAssignments ?? [], isPrefabPreview, exportBindings, materialOverrides?.Count > 0, cancellationToken, alphaTextureCache));
+                var capturedBindings = new Dictionary<HelixToolkit.SharpDX.Model.Scene.MeshNode, MaterialBinding>(exportBindings);
+                var hasLilToonMaterial = capturedBindings.Values.Any(x => x.LilToon is not null);
+                Func<CancellationToken, LilToonScenePreparation>? prepareLilToon = capturedBindings.Count == 0 ? null
+                    : prepareToken => PrepareLilToonScene(
+                        catalog,
+                        requestId,
+                        guid,
+                        temp,
+                        packageMemberPath,
+                        referenceEntry,
+                        scene,
+                        capturedBindings,
+                        lilToonTextureCache,
+                        prepareToken);
                 cancellationToken.ThrowIfCancellationRequested();
-                return new ModelLoadResult(scene, warnings);
+                return new ModelLoadResult(scene, warnings, hasLilToonMaterial, prepareLilToon);
             }
             catch
             {
@@ -842,6 +938,72 @@ public partial class MainWindow : Window
                 throw;
             }
         }, cancellationToken);
+    }
+
+    private LilToonScenePreparation PrepareLilToonScene(
+        UnityAssetCatalog catalog,
+        long requestId,
+        string guid,
+        string temporaryRoot,
+        string? packageMemberPath,
+        UnityPackageEntry? referenceEntry,
+        HelixToolkitScene scene,
+        IReadOnlyDictionary<HelixToolkit.SharpDX.Model.Scene.MeshNode, MaterialBinding> exportBindings,
+        IDictionary<string, string?> textureCache,
+        CancellationToken cancellationToken)
+    {
+        var warnings = new List<string>();
+        var preparedBindings = new Dictionary<string, MaterialBinding>(StringComparer.OrdinalIgnoreCase);
+        foreach (var binding in exportBindings.Values.Where(x => x.LilToon is not null).DistinctBy(x => x.MaterialGuid, StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var texturePaths = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var textureReference in binding.LilToon!.Textures)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var sourcePath = catalog.ResolvePath(textureReference.Guid, packageMemberPath, referenceEntry);
+                if (sourcePath is null)
+                {
+                    warnings.Add($"Texture GUID {textureReference.Guid} referenced by lilToon property '{textureReference.Property}' was not found.");
+                    continue;
+                }
+                var textureKey = $"{packageMemberPath}\0{textureReference.Guid}";
+                if (!textureCache.TryGetValue(textureKey, out var stagedPath))
+                {
+                    var scope = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(textureKey)));
+                    var stagingRoot = Path.Combine(temporaryRoot, "liltoon-textures", scope);
+                    stagedPath = catalog.StageImage(textureReference.Guid, stagingRoot, cancellationToken, packageMemberPath, referenceEntry);
+                    if (stagedPath is not null && Path.GetExtension(stagedPath).Equals(".tga", StringComparison.OrdinalIgnoreCase))
+                        stagedPath = ConvertTgaToPng(stagedPath);
+                    textureCache[textureKey] = stagedPath;
+                }
+                if (stagedPath is null)
+                {
+                    warnings.Add($"Texture data is missing: {sourcePath}");
+                    continue;
+                }
+                var extension = Path.GetExtension(stagedPath);
+                if (!new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff" }.Contains(extension, StringComparer.OrdinalIgnoreCase))
+                {
+                    warnings.Add($"Texture format is not supported for lilToon display: {sourcePath}");
+                    continue;
+                }
+                texturePaths[textureReference.Property] = stagedPath;
+            }
+            preparedBindings[binding.MaterialGuid] = binding with { LilToonTexturePaths = texturePaths };
+        }
+
+        var scenePath = LilToonSceneExporter.Export(
+            scene.Root,
+            requestId,
+            guid,
+            temporaryRoot,
+            (mesh, _) => exportBindings.TryGetValue(mesh, out var binding)
+                ? CreateLilToonExportMaterial(preparedBindings.TryGetValue(binding.MaterialGuid, out var prepared) ? prepared : binding, requestId, temporaryRoot)
+                : null,
+            warnings,
+            cancellationToken);
+        return new LilToonScenePreparation(scenePath, warnings);
     }
 
     private static void StageSiblingImages(UnityAssetCatalog catalog, string temporaryRoot, string modelGuid, string? packageMemberPath, UnityPackageEntry? referenceEntry, UnityPackageEntry? modelEntry, CancellationToken cancellationToken)
@@ -864,10 +1026,12 @@ public partial class MainWindow : Window
         IReadOnlyList<UnityAssetReference> materialReferences,
         IReadOnlyList<PrefabRendererMaterialAssignment> rendererAssignments,
         bool isPrefabPreview,
+        IDictionary<HelixToolkit.SharpDX.Model.Scene.MeshNode, MaterialBinding> exportBindings,
         bool hasUnappliedMaterialOverrides = false,
         CancellationToken cancellationToken = default,
         IDictionary<string, string>? alphaTextureCache = null)
     {
+        exportBindings.Clear();
         if (materialBindings.Count == 0)
         {
             if (!isPrefabPreview) return [];
@@ -907,6 +1071,7 @@ public partial class MainWindow : Window
                     var path = paths.Length == 1 ? paths[0] : null;
                     if (path is not null) path = PrepareTextureAlphaForPreview(path, binding, alphaTextureCache, warnings, cancellationToken);
                     SetPreviewMaterial(mesh, path, binding.Color, binding.RenderMode, binding.Cutoff);
+                    exportBindings[mesh] = binding;
                     foreach (var item in bindings) applied.Add(item);
                 }
                 else warnings.Add($"Several main textures match FBX material '{mesh.Name}'; no material settings were applied.");
@@ -925,7 +1090,11 @@ public partial class MainWindow : Window
             var binding = materialBindings[0];
             var path = distinctFallbackPaths.SingleOrDefault();
             if (path is not null) path = PrepareTextureAlphaForPreview(path, binding, alphaTextureCache, warnings, cancellationToken);
-            foreach (var mesh in meshNodes) SetPreviewMaterial(mesh, path, binding.Color, binding.RenderMode, binding.Cutoff);
+            foreach (var mesh in meshNodes)
+            {
+                SetPreviewMaterial(mesh, path, binding.Color, binding.RenderMode, binding.Cutoff);
+                exportBindings[mesh] = binding;
+            }
             foreach (var item in materialBindings) applied.Add(item);
         }
 
@@ -941,6 +1110,29 @@ public partial class MainWindow : Window
             && imported.DiffuseMap is null
             && imported.DiffuseColor.Alpha <= 0f)
             SetPreviewMaterial(mesh, null, null, UnityMaterialRenderMode.Opaque, null);
+    }
+
+    private static LilToonExportMaterial CreateLilToonExportMaterial(MaterialBinding binding, long requestId, string temporaryRoot)
+    {
+        var properties = binding.LilToon?.Properties is { } existing
+            ? existing.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
+            : new Dictionary<string, object>(StringComparer.Ordinal);
+        if (binding.Color is { } color && !properties.ContainsKey("_Color"))
+            properties["_Color"] = new[] { color.R, color.G, color.B, color.A };
+        var textures = binding.LilToonTexturePaths.ToDictionary(
+            pair => pair.Key,
+            pair => LilToonSceneExporter.ToAssetUrl(requestId, temporaryRoot, pair.Value),
+            StringComparer.Ordinal);
+        if (binding.AssetPath is { } mainTexture && !textures.ContainsKey(binding.Slot.Length == 0 ? "_MainTex" : binding.Slot))
+            textures[binding.Slot.Length == 0 ? "_MainTex" : binding.Slot] = LilToonSceneExporter.ToAssetUrl(requestId, temporaryRoot, mainTexture);
+        var renderMode = binding.LilToon?.RenderMode ?? binding.RenderMode switch
+        {
+            UnityMaterialRenderMode.Transparent => "transparent",
+            UnityMaterialRenderMode.Cutout => "cutout",
+            _ => "opaque"
+        };
+        return new LilToonExportMaterial(binding.MaterialGuid, binding.MaterialName, renderMode,
+            binding.LilToon?.ShaderVariant, properties, textures, binding.LilToon is not null);
     }
 
     private static string PrepareTextureAlphaForPreview(string path, MaterialBinding binding, IDictionary<string, string> cache, ICollection<string> warnings, CancellationToken cancellationToken)
@@ -1071,6 +1263,164 @@ public partial class MainWindow : Window
         ViewerEmpty.Visibility = Visibility.Visible;
         ViewerEmpty.Text = "FBX・Prefab・画像を選択すると、ここに表示される";
         PrefabTree.ItemsSource = null;
+    }
+
+    private async void LilToonModeButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_activeLilToonRequestId is not { } requestId) return;
+        if (_lilToonCancellation is not null) return;
+        await ShowLilToonAsync(requestId);
+    }
+
+    private async void LightweightModeButton_Click(object sender, RoutedEventArgs e)
+    {
+        _lilToonLoadVersion++;
+        CancelLilToonLoad();
+        LilToonHostContainer.Visibility = Visibility.Collapsed;
+        await _lilToonHost.ClearAsync();
+        Viewport.Visibility = Visibility.Visible;
+        CameraHelp.Visibility = Visibility.Visible;
+        SetPreviewModeSelection(lilToon: false);
+        SetMaterialModeDetails(lilToon: false);
+        SetStatus("軽量表示です。");
+    }
+
+    private async Task ShowLilToonAsync(long requestId)
+    {
+        if (_activeLilToonRequestId != requestId || !_activeHasLilToonMaterial
+            || !_requestTemporaryRoots.TryGetValue(requestId, out var temporaryState)
+            || temporaryState.LilToonPreparationPlans.Count == 0) return;
+        var cancellation = new CancellationTokenSource();
+        var previousCancellation = Interlocked.Exchange(ref _lilToonCancellation, cancellation);
+        previousCancellation?.Cancel();
+        var loadVersion = ++_lilToonLoadVersion;
+        temporaryState.LilToonOperations++;
+        temporaryState.InFlight = true;
+        SetPreviewModeSelection(lilToon: false, lilToonLoading: true);
+        SetStatus("lilToon表示を準備しています…");
+        try
+        {
+            var token = cancellation.Token;
+            await temporaryState.LilToonPreparationGate.WaitAsync(token);
+            try
+            {
+                if (temporaryState.LilToonScenePath is null)
+                {
+                    var plans = temporaryState.LilToonPreparationPlans.ToArray();
+                    var preparations = await Task.Run(() =>
+                    {
+                        var results = new List<LilToonScenePreparation>(plans.Length);
+                        foreach (var plan in plans)
+                        {
+                            token.ThrowIfCancellationRequested();
+                            results.Add(plan(token));
+                        }
+                        return results;
+                    }, token);
+                    token.ThrowIfCancellationRequested();
+                    var files = preparations.Select(x => x.ScenePath).ToArray();
+                    if (files.Length == 0) throw new InvalidOperationException("lilToon用のsceneを準備できませんでした。");
+                    temporaryState.LilToonScenePath = files.Length == 1
+                        ? files[0]
+                        : await Task.Run(() => LilToonSceneExporter.Combine(requestId, files, temporaryState.Path), token);
+                    temporaryState.LilToonPreparationWarnings = preparations.SelectMany(x => x.Warnings).Distinct(StringComparer.Ordinal).ToArray();
+                }
+            }
+            finally { temporaryState.LilToonPreparationGate.Release(); }
+
+            token.ThrowIfCancellationRequested();
+            if (loadVersion != _lilToonLoadVersion || _activeLilToonRequestId != requestId || !_previewRequests.IsCurrent(requestId)) return;
+            _activeLilToonScenePath = temporaryState.LilToonScenePath;
+            if (_activeLilToonScenePath is null) throw new InvalidOperationException("lilToon用のsceneがありません。");
+            LilToonHostContainer.Visibility = Visibility.Visible;
+            var result = await _lilToonHost.LoadSceneAsync(requestId, _activeLilToonScenePath, temporaryState.Path, token);
+            if (loadVersion != _lilToonLoadVersion || _activeLilToonRequestId != requestId || !_previewRequests.IsCurrent(requestId)) return;
+            var type = result.GetProperty("type").GetString();
+            if (type == "sceneError")
+                throw new InvalidDataException(result.TryGetProperty("message", out var message) ? message.GetString() : "WebGL scene could not be loaded.");
+            IEnumerable<string> rendererWarnings = result.TryGetProperty("warnings", out var warnings) && warnings.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? warnings.EnumerateArray().Select(x => x.GetString()).Where(x => !string.IsNullOrWhiteSpace(x)).Cast<string>()
+                : Array.Empty<string>();
+            var allWarnings = temporaryState.LilToonPreparationWarnings.Concat(rendererWarnings).Distinct(StringComparer.Ordinal).ToArray();
+            var newWarnings = allWarnings.Where(temporaryState.LilToonWarningsDisplayed.Add).ToArray();
+            if (newWarnings.Length > 0)
+            {
+                DetailsText.Text += Environment.NewLine + Environment.NewLine + "lilToon表示で確認できない内容" + Environment.NewLine + string.Join(Environment.NewLine, newWarnings);
+            }
+            LilToonHostContainer.Visibility = Visibility.Visible;
+            Viewport.Visibility = Visibility.Collapsed;
+            CameraHelp.Visibility = Visibility.Collapsed;
+            ViewerEmpty.Visibility = Visibility.Collapsed;
+            SetPreviewModeSelection(lilToon: true);
+            SetMaterialModeDetails(lilToon: true);
+            SetStatus(allWarnings.Length == 0 ? "lilToon風表示です。" : $"lilToon風表示です。確認できない内容: {allWarnings.Length} 件");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            if (loadVersion != _lilToonLoadVersion || _activeLilToonRequestId != requestId || !_previewRequests.IsCurrent(requestId)) return;
+            await _lilToonHost.ClearAsync();
+            LilToonHostContainer.Visibility = Visibility.Collapsed;
+            Viewport.Visibility = Visibility.Visible;
+            CameraHelp.Visibility = Visibility.Visible;
+            SetPreviewModeSelection(lilToon: false);
+            SetMaterialModeDetails(lilToon: false);
+            SetStatus($"lilToon表示を使えないため、軽量表示に戻しました: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _lilToonCancellation, null, cancellation);
+            cancellation.Dispose();
+            temporaryState.LilToonOperations = Math.Max(0, temporaryState.LilToonOperations - 1);
+            temporaryState.InFlight = temporaryState.LilToonOperations > 0;
+            if (temporaryState.LilToonOperations == 0 && _activeSceneRequestId != requestId)
+                CleanupRequestTemporaryFiles(requestId, temporaryState);
+        }
+    }
+
+    private void SetPreviewModeSelection(bool lilToon, bool lilToonLoading = false)
+    {
+        _isLilToonMode = lilToon;
+        var modelAvailable = _activeSceneRequestId.HasValue && !_isBusy && !_isOpeningSource;
+        var canUseLilToon = modelAvailable && !lilToonLoading && _activeHasLilToonMaterial
+            && _activeLilToonRequestId is { } requestId
+            && _requestTemporaryRoots.TryGetValue(requestId, out var state)
+            && state.LilToonPreparationPlans.Count > 0;
+        LilToonModeButton.Background = new SolidColorBrush(lilToon ? Color.FromRgb(49, 91, 102) : Color.FromRgb(32, 40, 51));
+        LilToonModeButton.Foreground = lilToon ? Brushes.White : new SolidColorBrush(Color.FromRgb(229, 233, 239));
+        LilToonModeButton.BorderBrush = new SolidColorBrush(lilToon ? Color.FromRgb(117, 213, 194) : Color.FromRgb(57, 70, 86));
+        LilToonModeButton.FontWeight = lilToon ? FontWeights.SemiBold : FontWeights.Normal;
+        LilToonModeButton.IsEnabled = canUseLilToon && !lilToon;
+        LilToonModeButton.ToolTip = lilToonLoading || _isBusy || _isOpeningSource
+            ? "読み込み中"
+            : !modelAvailable ? "3Dモデルを選択"
+            : !_activeHasLilToonMaterial ? "対応材質なし"
+            : !canUseLilToon ? "lilToon表示不可"
+            : "lilToon風表示に切り替え";
+        LightweightModeButton.Background = new SolidColorBrush(lilToon ? Color.FromRgb(32, 40, 51) : Color.FromRgb(49, 91, 102));
+        LightweightModeButton.Foreground = lilToon ? new SolidColorBrush(Color.FromRgb(229, 233, 239)) : Brushes.White;
+        LightweightModeButton.BorderBrush = new SolidColorBrush(lilToon ? Color.FromRgb(57, 70, 86) : Color.FromRgb(117, 213, 194));
+        LightweightModeButton.FontWeight = lilToon ? FontWeights.Normal : FontWeights.SemiBold;
+        LightweightModeButton.IsEnabled = modelAvailable && (lilToon || lilToonLoading);
+        LightweightModeButton.ToolTip = lilToonLoading && modelAvailable
+            ? "準備を取り消して軽量表示に戻る"
+            : _isBusy || _isOpeningSource ? "読み込み中"
+            : !modelAvailable ? "3Dモデルを選択"
+            : lilToon ? "軽量表示に切り替え"
+            : "現在は軽量表示です";
+    }
+
+    private void SetMaterialModeDetails(bool lilToon)
+    {
+        const string light = "材質表示: 軽量表示中。lilToon描画は省略しています。";
+        const string full = "材質表示: three-liltoon による非公式の近似表示です。";
+        if (!_activeHasLilToonMaterial) return;
+        if (DetailsText.Text.Contains(light, StringComparison.Ordinal))
+            DetailsText.Text = DetailsText.Text.Replace(light, lilToon ? full : light, StringComparison.Ordinal);
+        else if (DetailsText.Text.Contains(full, StringComparison.Ordinal))
+            DetailsText.Text = DetailsText.Text.Replace(full, lilToon ? full : light, StringComparison.Ordinal);
+        else
+            DetailsText.Text += Environment.NewLine + (lilToon ? full : light);
     }
 
     private void FrameModels(IEnumerable<HelixToolkitScene> scenes)
@@ -1226,6 +1576,13 @@ public partial class MainWindow : Window
 
     private void ClearSceneModels()
     {
+        _lilToonLoadVersion++;
+        CancelLilToonLoad();
+        _ = _lilToonHost.ClearAsync();
+        LilToonHostContainer.Visibility = Visibility.Collapsed;
+        _activeLilToonScenePath = null;
+        _activeLilToonRequestId = null;
+        _activeHasLilToonMaterial = false;
         var previousRequestId = _activeSceneRequestId;
         _activeSceneRequestId = null;
         SceneModels.Clear();
@@ -1235,6 +1592,7 @@ public partial class MainWindow : Window
         CameraHelp.Visibility = Visibility.Collapsed;
         ImagePanel.Visibility = Visibility.Collapsed;
         ViewerEmpty.Visibility = Visibility.Visible;
+        SetPreviewModeSelection(lilToon: false);
         if (previousRequestId is long requestId
             && _requestTemporaryRoots.TryGetValue(requestId, out var state)
             && !state.InFlight)
@@ -1270,19 +1628,22 @@ public partial class MainWindow : Window
     private void CleanupTemporaryFiles()
     {
         foreach (var (requestId, state) in _requestTemporaryRoots.ToArray())
-            CleanupRequestTemporaryFiles(requestId, state);
+            if (!state.InFlight && state.LilToonOperations == 0)
+                CleanupRequestTemporaryFiles(requestId, state);
     }
 
     private void CompletePreviewRequest(long requestId)
     {
         if (!_requestTemporaryRoots.TryGetValue(requestId, out var state)) return;
-        state.InFlight = false;
-        if (_activeSceneRequestId != requestId) CleanupRequestTemporaryFiles(requestId, state);
+        state.InFlight = state.LilToonOperations > 0;
+        if (_activeSceneRequestId != requestId && !state.InFlight) CleanupRequestTemporaryFiles(requestId, state);
     }
 
     private void CleanupRequestTemporaryFiles(long requestId, PreviewTemporaryState state)
     {
+        if (state.InFlight || state.LilToonOperations > 0) return;
         if (!_requestTemporaryRoots.Remove(requestId)) return;
+        state.LilToonPreparationGate.Dispose();
         if (Directory.Exists(state.Path))
         {
             try { Directory.Delete(state.Path, recursive: true); }
@@ -1300,6 +1661,7 @@ public partial class MainWindow : Window
         if (message is not null) SetStatus(message);
         Cursor = busy ? System.Windows.Input.Cursors.Wait : System.Windows.Input.Cursors.Arrow;
         PreviewProgress.Visibility = busy && !_isOpeningSource ? Visibility.Visible : Visibility.Collapsed;
+        SetPreviewModeSelection(_isLilToonMode, lilToonLoading: busy || _isOpeningSource || _lilToonCancellation is not null);
     }
 
     private void SetStatus(string message) => StatusLabel.Text = message;

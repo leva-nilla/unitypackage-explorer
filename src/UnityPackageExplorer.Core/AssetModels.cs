@@ -46,7 +46,22 @@ public sealed record UnityMaterialInfo(
     public UnityMaterialRenderMode RenderMode { get; init; }
     public float? Cutoff { get; init; }
     public IReadOnlyList<string> EnabledUnsupportedFeatures { get; init; } = [];
+    public LilToonMaterialData? LilToon { get; init; }
 }
+
+public sealed record LilToonMaterialData(
+    string RenderMode,
+    string? ShaderVariant,
+    IReadOnlyDictionary<string, object> Properties,
+    IReadOnlyList<LilToonTextureReference> Textures);
+
+public sealed record LilToonTextureReference(
+    string Property,
+    string Guid,
+    float ScaleX,
+    float ScaleY,
+    float OffsetX,
+    float OffsetY);
 
 public readonly record struct UnityMaterialColor(float R, float G, float B, float A);
 
@@ -71,6 +86,12 @@ public sealed class PrefabNode
     public required long FileId { get; init; }
     public required string Name { get; set; }
     public long ParentFileId { get; set; }
+    public long TransformFileId { get; set; }
+    public bool HasRootTransformOverrides { get; set; }
+    public long? RootTransformTargetFileId { get; set; }
+    public IReadOnlyDictionary<string, string> RootTransformOverrides { get; set; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    public List<long> RendererComponentFileIds { get; } = [];
+    public List<PrefabSourceObjectIdentity> RendererSourceIdentities { get; } = [];
     public Vector3Value Position { get; set; } = Vector3Value.Zero;
     public QuaternionValue Rotation { get; set; } = QuaternionValue.Identity;
     public Vector3Value Scale { get; set; } = Vector3Value.One;
@@ -81,6 +102,8 @@ public sealed class PrefabNode
     public UnityAssetReference? SourcePrefab { get; set; }
     public List<PrefabNode> Children { get; } = [];
 }
+
+public sealed record PrefabSourceObjectIdentity(string Guid, long FileId);
 
 public sealed record PrefabModelPlacement(
     string Guid,

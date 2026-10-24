@@ -2,7 +2,6 @@ name: Windows build and setup
 
 on:
   pull_request:
-    branches: [main]
   push:
     branches: [main]
     tags: ['v*']
@@ -29,6 +28,20 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+
+      - name: Install Node.js for the local viewer build
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build and test local lilToon viewer
+        shell: pwsh
+        run: |
+          .\tools\release\Build-WebViewer.ps1 -Test
+          $env:BROWSER_EXECUTABLE = Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'
+          if (-not (Test-Path -LiteralPath $env:BROWSER_EXECUTABLE)) { throw 'The runner Chrome installation is required for renderer regression tests.' }
+          npm.cmd --prefix .\src\UnityPackageExplorer.App\WebViewer run test:render
+          if ($LASTEXITCODE -ne 0) { throw 'The lilToon WebGL render regression failed.' }
 
       - name: Determine release version
         id: version

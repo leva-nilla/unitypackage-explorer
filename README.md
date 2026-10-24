@@ -8,6 +8,7 @@ Unityを起動せずに、ダウンロードしたZIP/RARの中のUnityPackage�
 - `.zip` と `.rar` は展開せずに中身を調べ、内包するUnityPackageとアーカイブ直下の素材を表示。
 - ZIP/RAR/UnityPackageを開くとDemoや副次パーツより本体Prefabを優先して自動表示。候補欄から切り替えでき、自動表示は次回以降のために画面で切り替え可能（次期版予定）。
 - `.prefab` の階層、FBX参照、基本的なテクスチャを表示。
+- 初期表示は軽量モード。lilToon対応材質は「lilToon」ボタンで、toon影・輪郭線・ノーマル・MatCap・発光・アルファマスクを使う互換ビューへ切り替えられます。追加の読込みは切替時だけ行います。
 - 3D画面をマウスで回転・拡大でき、Unityに近いフライスルー操作で移動。
 - ファイルを画面へドラッグ＆ドロップ、またはエクスプローラーの右クリックから開く。
 - ZIP/RARの分類はプレビュー後にアプリから実行。元アーカイブを展開せず、移動先で同名ファイルがある場合も上書きしません。
@@ -30,18 +31,22 @@ Unityを起動せずに、ダウンロードしたZIP/RARの中のUnityPackage�
 
 .NETとVisual C++ランタイムはアプリと一緒に配置され、システム全体にはインストールされません。これらのランタイム更新は新しいアプリ版に含めて配布するため、修正を受け取るにはUnityPackage Explorerを最新版に更新してください。
 
+lilToon互換ビューにはMicrosoft Edge WebView2 Runtimeが必要です。Windows 11の既存ランタイムを使用し、利用できない場合は軽量表示に戻ります。必要な場合は[Microsoft公式の配布ページ](https://developer.microsoft.com/microsoft-edge/webview2/)からEvergreen Runtimeを導入してください。モデル・材質・描画用コードはPC内で処理し、外部サイトへ送信しません。
+
 旧PowerShell版が同じユーザーの標準インストール先にある場合は、その場所へ更新します。旧版のPreview Handler登録は削除し、ほかのファイル関連付けやユーザーファイルには触れません。
 
 ## Prefab表示の制約
 
-画面は素材整理用の近似表示です。Unityのシェーダー、ライティング、物理、独自コンポーネントやUnity上の完成形は再現しません。
+画面は素材整理用の近似表示です。lilToon互換ビューは非公式の `three-liltoon` 移植を使います。Unityの実行環境やライティング、物理、独自コンポーネント、全シェーダーの完成形との一致は保証しません。
 
 - Unityのテキスト形式Prefabの階層とTransformを読みます。バイナリPrefabや解析できない部分は警告を表示します。
 - 参照FBXはファイル単位で読み込みます。UnityのMesh fileIDからFBX内の個別メッシュを特定できない場合は、FBX全体を近似表示します。
-- 同じFBXの別メッシュを分けられない参照やネストPrefabは、重複配置を避けて省略し、画面に理由を表示します。
+- 参照元が見つかるテキスト形式のPrefab Variant・ネストPrefabは、階層とFBX参照をたどります。GUID・fileID・材質スロットを特定できる上書きを適用します。循環・深さ・読込み量の上限や未解決の参照は警告します。
+- 同じFBXの別メッシュを分けられない参照は、重複配置を避けて省略し、画面に理由を表示します。
 - スキン付きメッシュのFBX全体を表示するときはPrefabのルート位置・回転・大きさを使います。個別ボーンの配置や変形は再現しません。
-- 基本の色テクスチャだけをマテリアル名とスロットから対応付けます。シェーダー固有の表現、未対応スロット、見つからない素材は表示しません。
-- 次期開発版では、材質の `_Color` と識別できる opaque / transparent / cutout を読み、Helix上の簡易表示へ反映します。これは lilToon 本体の描画ではありません。未知のshader variantは不透明の近似に留めます。opaque の alpha、MatCap、outline、alpha mask などは省略し、cutout は texture alpha を二値化する近似のため深度・描画順が Unity と異なる場合があります。
+- マテリアル名とrendererスロットから対応が特定できた材質を適用します。曖昧な対応や欠けたテクスチャは、読み込み結果へ警告します。
+- 既知の通常・Liteのopaque / cutout / transparentと輪郭線variantは、`.mat`の数値・色・テクスチャ・UV設定を互換ビューへ渡します。既知MultiのOpaque・Cutout・Transparentも公式のモード値に従って通常描画へ変換し、Multi独自部分が異なることを警告します。Fur・屈折・Gem・Tessellationなどの未対応familyを通常材質へ推測で変換しません。
+- 軽量表示は基本色と透過をHelixで近似します。MatCap・輪郭線・発光などは省略します。互換ビューでも、移植の対応範囲やGPUの制限により省略される表現があります。
 - FBXの参照対応表が空、またはUnityの材質名とFBXの材質名が対応しない場合は、Prefabに色の指定があっても反映できないことがあります。ネストPrefabのRendererとスロットを特定できない上書き指定も警告し、元のFBXの材質で表示します。
 - 未対応の形式、欠けた参照、循環・深すぎる階層は、確認できる範囲を表示して警告します。
 
@@ -59,9 +64,10 @@ Windowsの「設定」→「アプリ」→「インストールされている�
 
 ## 開発
 
-必要なものは.NET 10 SDK、Windows 11 x64、Inno Setup 6です。セットアップ作成ではVisual Studioのx64 Visual C++再配布ファイルを使います。
+必要なものは.NET 10 SDK、Node.js 24、Windows 11 x64、Inno Setup 6です。セットアップ作成ではVisual Studioのx64 Visual C++再配布ファイルを使います。Node.jsはローカル描画コードのビルド時だけ使用し、利用者には要求しません。
 
 ```powershell
+.\tools\release\Build-WebViewer.ps1 -Test
 dotnet test .\UnityPackageExplorer.sln -c Release
 .\tools\release\Build-Setup.ps1 -Version 0.1.0
 ```
