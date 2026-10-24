@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { LilToonMaterial, enableLilToon, LILTOON_TEXTURE_SEMANTICS, LILTOON_PROPERTIES } from "@mochiya/three-liltoon";
-import { buildScenePayload, toLinearColor, isTextureSemanticColor, fromHostMatrix } from "./viewer-core.js";
+import { buildScenePayload, toLinearColor, isTextureSemanticColor, fromHostMatrix, resolveLilToonShaderVariant } from "./viewer-core.js";
 
 const canvas = document.querySelector("#viewer");
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: "high-performance" });
@@ -163,10 +163,9 @@ async function loadScene(url, requestId) {
         const multi = item.shaderVariant === "multi" || item.shaderVariant === "multi-outline";
         const outline = item.shaderVariant === "outline" || item.shaderVariant === "multi-outline";
         if (outline) props._UseOutline = 1;
-        const shaderVariant = outline ? "Hidden/lilToonOutline" : multi ? null : item.shaderVariant;
+        const shaderVariant = resolveLilToonShaderVariant(item.renderMode ?? "opaque", item.shaderVariant);
         if (multi) warnings.push(`${item.name}: lilToon Multi is converted to the corresponding regular mode; Multi-specific behavior may differ.`);
-        const materialOptions = { name: item.name, renderMode: item.renderMode ?? "opaque", properties: props, textures: textureMap };
-        if (typeof shaderVariant === "string" && shaderVariant.length > 0) materialOptions.shaderVariant = shaderVariant;
+        const materialOptions = { name: item.name, renderMode: item.renderMode ?? "opaque", shaderVariant, properties: props, textures: textureMap };
         const mat = new LilToonMaterial(materialOptions);
         warnings.push(...mat.getWarnings().map((warning) => `${item.name}: ${warning.message}`));
         materials.add(mat); return mat;

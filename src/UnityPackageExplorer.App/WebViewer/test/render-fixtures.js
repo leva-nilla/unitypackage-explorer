@@ -40,8 +40,10 @@ export function createEffectScene(requestId, baseUrl) {
     { id: "matcap", name: "MatCap", properties: { _Color: [0.78, 0.9, 1, 1], _UseMatCap: 1, _MatCapColor: [1, 1, 1, 1] }, textures: { _MainTex: main, _MatCapTex: matcap } },
     { id: "emission", name: "Emission", properties: { _Color: [0.75, 0.52, 0.35, 1], _UseEmission: 1, _EmissionColor: [1, 0.62, 0.16, 1] }, textures: { _MainTex: main, _EmissionMap: emission } },
     { id: "alpha-mask", name: "Alpha mask", renderMode: "cutout", properties: { _Color: [0.8, 0.9, 1, 1], _Cutoff: 0.5, _AlphaMaskMode: 1, _AlphaMaskScale: 1, _AlphaMaskValue: 0 }, textures: { _MainTex: main, _AlphaMask: mask } },
+    { id: "cutout-outline-multi", name: "Cutout outline Multi", renderMode: "cutout", shaderVariant: "multi-outline", properties: { _Color: [0.9, 0.72, 0.42, 1], _Cutoff: 0.5, _UseOutline: 1, _OutlineWidth: 0.04, _OutlineColor: [0.04, 0.03, 0.02, 1] }, textures: { _MainTex: main } },
+    { id: "transparent-outline-multi", name: "Transparent outline Multi", renderMode: "transparent", shaderVariant: "multi-outline", properties: { _Color: [0.6, 0.85, 1, 0.72], _UseOutline: 1, _OutlineWidth: 0.04, _OutlineColor: [0.02, 0.04, 0.08, 1] }, textures: { _MainTex: main } },
   ];
-  const positions = [[-1.9, 0.95, 0], [0, 0.95, 0], [1.9, 0.95, 0], [-1.9, -0.95, 0], [0, -0.95, 0], [1.9, -0.95, 0]];
+  const positions = [[-1.9, 1.65, 0], [0, 1.65, 0], [1.9, 1.65, 0], [-1.9, 0, 0], [0, 0, 0], [1.9, 0, 0], [-0.95, -1.65, 0], [0.95, -1.65, 0]];
   return {
     requestId,
     background: "#14191F",

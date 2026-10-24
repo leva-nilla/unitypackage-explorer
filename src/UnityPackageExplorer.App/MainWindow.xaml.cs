@@ -48,6 +48,7 @@ public partial class MainWindow : Window
     private long? _activeLilToonRequestId;
     private long _lilToonLoadVersion;
     private bool _activeHasLilToonMaterial;
+    private bool _isLilToonMode;
     private Point _lastLookPoint;
     private bool _looking;
     private double _flightSpeed = 12;
@@ -683,7 +684,6 @@ public partial class MainWindow : Window
         _activeLilToonRequestId = requestId;
         _activeLilToonScenePath = temporaryState?.LilToonScenePath;
         _activeHasLilToonMaterial = hasLilToonMaterial;
-        PreviewModePanel.Visibility = hasLilToonMaterial && lilToonPlans.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         SetPreviewModeSelection(lilToon: false);
     }
 
@@ -706,7 +706,6 @@ public partial class MainWindow : Window
         if (loaded.PrepareLilToon is not null) temporaryState?.LilToonPreparationPlans.Add(loaded.PrepareLilToon);
         _activeLilToonScenePath = temporaryState?.LilToonScenePath;
         _activeHasLilToonMaterial = loaded.HasLilToonMaterial;
-        PreviewModePanel.Visibility = loaded.HasLilToonMaterial && loaded.PrepareLilToon is not null ? Visibility.Visible : Visibility.Collapsed;
         SetPreviewModeSelection(lilToon: false);
         PrefabTree.ItemsSource = null;
         DetailsText.Text = $"{entry.PathName}{Environment.NewLine}種類: Model{Environment.NewLine}GUID: {entry.Guid}";
@@ -1254,7 +1253,6 @@ public partial class MainWindow : Window
         ViewerEmpty.Visibility = Visibility.Visible;
         ViewerEmpty.Text = "FBX・Prefab・画像を選択すると、ここに表示される";
         PrefabTree.ItemsSource = null;
-        PreviewModePanel.Visibility = Visibility.Collapsed;
     }
 
     private async void LilToonModeButton_Click(object sender, RoutedEventArgs e)
@@ -1372,16 +1370,34 @@ public partial class MainWindow : Window
 
     private void SetPreviewModeSelection(bool lilToon, bool lilToonLoading = false)
     {
+        _isLilToonMode = lilToon;
+        var modelAvailable = _activeSceneRequestId.HasValue && !_isBusy && !_isOpeningSource;
+        var canUseLilToon = modelAvailable && !lilToonLoading && _activeHasLilToonMaterial
+            && _activeLilToonRequestId is { } requestId
+            && _requestTemporaryRoots.TryGetValue(requestId, out var state)
+            && state.LilToonPreparationPlans.Count > 0;
         LilToonModeButton.Background = new SolidColorBrush(lilToon ? Color.FromRgb(49, 91, 102) : Color.FromRgb(32, 40, 51));
         LilToonModeButton.Foreground = lilToon ? Brushes.White : new SolidColorBrush(Color.FromRgb(229, 233, 239));
         LilToonModeButton.BorderBrush = new SolidColorBrush(lilToon ? Color.FromRgb(117, 213, 194) : Color.FromRgb(57, 70, 86));
         LilToonModeButton.FontWeight = lilToon ? FontWeights.SemiBold : FontWeights.Normal;
-        LilToonModeButton.IsEnabled = !lilToon && !lilToonLoading;
+        LilToonModeButton.IsEnabled = canUseLilToon && !lilToon;
+        LilToonModeButton.ToolTip = lilToonLoading || _isBusy || _isOpeningSource
+            ? "読み込み中"
+            : !modelAvailable ? "3Dモデルを選択"
+            : !_activeHasLilToonMaterial ? "対応材質なし"
+            : !canUseLilToon ? "lilToon表示不可"
+            : "lilToon風表示に切り替え";
         LightweightModeButton.Background = new SolidColorBrush(lilToon ? Color.FromRgb(32, 40, 51) : Color.FromRgb(49, 91, 102));
         LightweightModeButton.Foreground = lilToon ? new SolidColorBrush(Color.FromRgb(229, 233, 239)) : Brushes.White;
         LightweightModeButton.BorderBrush = new SolidColorBrush(lilToon ? Color.FromRgb(57, 70, 86) : Color.FromRgb(117, 213, 194));
         LightweightModeButton.FontWeight = lilToon ? FontWeights.Normal : FontWeights.SemiBold;
-        LightweightModeButton.IsEnabled = lilToon || lilToonLoading;
+        LightweightModeButton.IsEnabled = modelAvailable && (lilToon || lilToonLoading);
+        LightweightModeButton.ToolTip = lilToonLoading && modelAvailable
+            ? "準備を取り消して軽量表示に戻る"
+            : _isBusy || _isOpeningSource ? "読み込み中"
+            : !modelAvailable ? "3Dモデルを選択"
+            : lilToon ? "軽量表示に切り替え"
+            : "現在は軽量表示です";
     }
 
     private void SetMaterialModeDetails(bool lilToon)
@@ -1566,6 +1582,7 @@ public partial class MainWindow : Window
         CameraHelp.Visibility = Visibility.Collapsed;
         ImagePanel.Visibility = Visibility.Collapsed;
         ViewerEmpty.Visibility = Visibility.Visible;
+        SetPreviewModeSelection(lilToon: false);
         if (previousRequestId is long requestId
             && _requestTemporaryRoots.TryGetValue(requestId, out var state)
             && !state.InFlight)
@@ -1634,6 +1651,7 @@ public partial class MainWindow : Window
         if (message is not null) SetStatus(message);
         Cursor = busy ? System.Windows.Input.Cursors.Wait : System.Windows.Input.Cursors.Arrow;
         PreviewProgress.Visibility = busy && !_isOpeningSource ? Visibility.Visible : Visibility.Collapsed;
+        SetPreviewModeSelection(_isLilToonMode, lilToonLoading: busy || _isOpeningSource || _lilToonCancellation is not null);
     }
 
     private void SetStatus(string message) => StatusLabel.Text = message;

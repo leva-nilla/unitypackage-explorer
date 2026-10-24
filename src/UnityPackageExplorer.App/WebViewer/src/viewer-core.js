@@ -12,6 +12,19 @@ export function isTextureSemanticColor(semantics, slot) {
   return semantics?.[slot] === "color";
 }
 
+const lilToonShaderVariantsByMode = Object.freeze({
+  opaque: Object.freeze({ regular: "lilToon", outline: "Hidden/lilToonOutline" }),
+  cutout: Object.freeze({ regular: "Hidden/lilToonCutout", outline: "Hidden/lilToonCutoutOutline" }),
+  transparent: Object.freeze({ regular: "Hidden/lilToonTransparent", outline: "Hidden/lilToonTransparentOutline" }),
+});
+
+export function resolveLilToonShaderVariant(renderMode, shaderVariant) {
+  const mode = typeof renderMode === "string" ? renderMode.toLowerCase() : "opaque";
+  const variants = lilToonShaderVariantsByMode[mode] ?? lilToonShaderVariantsByMode.opaque;
+  const outline = shaderVariant === "outline" || shaderVariant === "multi-outline";
+  return outline ? variants.outline : variants.regular;
+}
+
 export function buildScenePayload(scene) {
   if (!scene || !Number.isSafeInteger(scene.requestId) || !Array.isArray(scene.meshes) || !Array.isArray(scene.materials)) {
     throw new Error("Invalid scene payload");

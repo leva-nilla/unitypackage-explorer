@@ -105,20 +105,24 @@ try {
   await waitReady(201);
   const initialReady = await page.evaluate(() => window.__upeViewerTestState.messages.find((message) => message.requestId === 201));
   assert.equal(initialReady?.type, "sceneReady", `initial scene failed: ${JSON.stringify(initialReady)}`);
+  assert.ok(!initialReady.warnings.some((warning) => /render.?mode.*ignored|deprecated/i.test(warning)), `render-mode compatibility warning: ${JSON.stringify(initialReady.warnings)}`);
   await page.waitForFunction(() => window.__upeViewerTestState.scenes.some((scene) => scene.requestId === 201));
   await page.waitForFunction(() => window.__upeViewerTestState.frames.some((frame) => frame.calls > 0));
 
   const sceneState = await page.evaluate(() => window.__upeViewerTestState.scenes.find((scene) => scene.requestId === 201));
-  assert.equal(sceneState.meshCount, 6, "the effect fixture must load six meshes");
-  assert.equal(sceneState.materials.length, 6);
+  assert.equal(sceneState.meshCount, 8, "the effect fixture must load eight meshes");
+  assert.equal(sceneState.materials.length, 8);
   assert.ok(sceneState.materials.every((material) => material.isLilToon && material.shaderKey), "all fixture surfaces should use generated lilToon shader variants");
   assert.ok(new Set(sceneState.materials.map((material) => material.shaderKey)).size >= 5, "effect toggles should specialize the shader programs");
   const materialById = Object.fromEntries(sceneState.materials.map((material) => [material.id, material]));
-  for (const [id, property] of [["shadow", "_UseShadow"], ["outline", "_UseOutline"], ["normal", "_UseBumpMap"], ["matcap", "_UseMatCap"], ["emission", "_UseEmission"], ["alpha-mask", "_AlphaMaskMode"]]) {
+  for (const [id, property] of [["shadow", "_UseShadow"], ["outline", "_UseOutline"], ["normal", "_UseBumpMap"], ["matcap", "_UseMatCap"], ["emission", "_UseEmission"], ["alpha-mask", "_AlphaMaskMode"], ["cutout-outline-multi", "_UseOutline"], ["transparent-outline-multi", "_UseOutline"]]) {
     assert.ok(materialById[id], `missing ${id} fixture material`);
     assert.ok(materialById[id].properties[property], `${id} effect toggle was not retained`);
     assert.ok(Array.isArray(materialById[id].warnings), `${id} getWarnings() result was not collected`);
     assert.deepEqual(materialById[id].warnings, [], `${id} fixture has unsupported feature warnings`);
+  }
+  for (const id of ["outline", "cutout-outline-multi", "transparent-outline-multi"]) {
+    assert.deepEqual(materialById[id].warnings, [], `${id} outline variant should not emit render-mode compatibility warnings`);
   }
   for (const [id, slot] of [["normal", "_BumpMap"], ["matcap", "_MatCapTex"], ["emission", "_EmissionMap"], ["alpha-mask", "_AlphaMask"]]) {
     assert.equal(materialById[id].textures[slot], true, `${id} texture should be assigned`);
@@ -131,7 +135,7 @@ try {
     frameCount = await page.evaluate(() => window.__upeViewerTestState.frames.length);
   }
   const lastFrame = await page.evaluate(() => window.__upeViewerTestState.frames.at(-1));
-  assert.ok(lastFrame.calls >= 6, `expected actual WebGL draw calls for all surfaces, got ${lastFrame.calls}`);
+  assert.ok(lastFrame.calls >= 8, `expected actual WebGL draw calls for all surfaces, got ${lastFrame.calls}`);
   assert.ok(lastFrame.triangles > 100, `expected generated sphere triangles to render, got ${lastFrame.triangles}`);
   assert.ok(lastFrame.programCount >= 5, `expected specialized GPU programs, got ${lastFrame.programCount}`);
   assert.equal(await page.evaluate(() => document.querySelector("canvas").getContext("webgl2").getError()), 0, "WebGL reported a GL error");
