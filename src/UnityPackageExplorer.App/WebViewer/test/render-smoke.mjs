@@ -154,16 +154,30 @@ try {
   await page.mouse.wheel(0, -120);
   const spedCamera = await page.evaluate(() => window.__upeViewerTestState.cameras.at(-1));
   assert.ok(spedCamera.movementSpeedScale > speedBeforeWheel, "wheel while holding RMB should increase camera movement speed");
-  const beforeMove = spedCamera.position;
-  await page.keyboard.down("w"); await page.waitForTimeout(180); await page.keyboard.up("w");
-  const normalMoveCamera = await page.evaluate(() => window.__upeViewerTestState.cameras.at(-1));
-  const normalDistance = Math.hypot(...normalMoveCamera.position.map((value, index) => value - beforeMove[index]));
-  assert.ok(normalDistance > 0.02, "W should move camera while RMB is held");
-  const beforeFastMove = normalMoveCamera.position;
-  await page.keyboard.down("Shift"); await page.keyboard.down("w"); await page.waitForTimeout(180); await page.keyboard.up("w"); await page.keyboard.up("Shift");
-  const fastMoveCamera = await page.evaluate(() => window.__upeViewerTestState.cameras.at(-1));
-  const fastDistance = Math.hypot(...fastMoveCamera.position.map((value, index) => value - beforeFastMove[index]));
-  assert.ok(fastDistance > normalDistance * 1.8, "Shift should accelerate held-W camera movement");
+  const measureMovementSpeed = async (fast) => {
+    const firstFrame = await page.evaluate(() => window.__upeViewerTestState.frames.length);
+    if (fast) await page.keyboard.down("Shift");
+    await page.keyboard.down("w");
+    await page.waitForFunction(({ firstFrame, fast }) => window.__upeViewerTestState.frames
+      .slice(firstFrame)
+      .filter((frame) => frame.movingForward && frame.fast === fast && frame.deltaSeconds > 0).length >= 3,
+    { firstFrame, fast });
+    await page.keyboard.up("w");
+    if (fast) await page.keyboard.up("Shift");
+    return page.evaluate(({ firstFrame, fast }) => {
+      const samples = window.__upeViewerTestState.frames
+        .slice(firstFrame)
+        .filter((frame) => frame.movingForward && frame.fast === fast && frame.deltaSeconds > 0);
+      const elapsed = samples.reduce((total, frame) => total + frame.deltaSeconds, 0);
+      const distance = samples.reduce((total, frame) => total + frame.movementDistance, 0);
+      return { speed: distance / elapsed, samples: samples.length, elapsed };
+    }, { firstFrame, fast });
+  };
+  const normalSpeed = await measureMovementSpeed(false);
+  assert.ok(normalSpeed.samples >= 3 && normalSpeed.elapsed > 0 && normalSpeed.speed > 0, "W should produce measurable camera movement while RMB is held");
+  const fastSpeed = await measureMovementSpeed(true);
+  assert.ok(fastSpeed.samples >= 3 && fastSpeed.elapsed > 0, "Shift+W should produce measurable camera movement while RMB is held");
+  assert.ok(fastSpeed.speed > normalSpeed.speed * 2.8, `Shift should provide close to 3x movement speed (normal=${normalSpeed.speed}, fast=${fastSpeed.speed})`);
   await page.mouse.up({ button: "right" });
   const afterLookRelease = await page.evaluate(() => window.__upeViewerTestState.cameras.at(-1));
   const beforeUnheldKey = afterLookRelease.position;

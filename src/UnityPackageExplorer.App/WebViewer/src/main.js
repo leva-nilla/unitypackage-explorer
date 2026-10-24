@@ -91,6 +91,8 @@ function render(time) {
   if (document.hidden) return;
   const dt = lastTime ? Math.min((time - lastTime) / 1000, 0.05) : 0;
   lastTime = time;
+  const renderedFrameHook = globalThis.__upeViewerTestHooks?.renderedFrame;
+  const frameStartPosition = renderedFrameHook ? camera.position.clone() : null;
   if (keys.size) {
     const fast = keys.has("Shift");
     const speed = sphere.radius * (fast ? 2.4 : 0.8) * movementSpeedScale * dt;
@@ -106,10 +108,14 @@ function render(time) {
     updateCamera(); needsFrame = true;
   }
   renderer.render(scene, camera);
-  globalThis.__upeViewerTestHooks?.renderedFrame?.({
+  renderedFrameHook?.({
     calls: renderer.info.render.calls,
     triangles: renderer.info.render.triangles,
     programCount: renderer.info.programs?.length ?? 0,
+    deltaSeconds: dt,
+    movingForward: keys.has("w"),
+    fast: keys.has("Shift"),
+    movementDistance: frameStartPosition ? camera.position.distanceTo(frameStartPosition) : 0,
   });
   if (needsFrame || keys.size || active?.animated) { needsFrame = false; raf = requestAnimationFrame(render); }
 }
