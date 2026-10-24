@@ -41,7 +41,8 @@ lilToon互換ビューにはMicrosoft Edge WebView2 Runtimeが必要です。Win
 
 - Unityのテキスト形式Prefabの階層とTransformを読みます。バイナリPrefabや解析できない部分は警告を表示します。
 - 参照FBXはファイル単位で読み込みます。UnityのMesh fileIDからFBX内の個別メッシュを特定できない場合は、FBX全体を近似表示します。
-- 同じFBXの別メッシュを分けられない参照やネストPrefabは、重複配置を避けて省略し、画面に理由を表示します。
+- 参照元が見つかるテキスト形式のPrefab Variant・ネストPrefabは、階層とFBX参照をたどります。GUID・fileID・材質スロットを特定できる上書きを適用します。循環・深さ・読込み量の上限や未解決の参照は警告します。
+- 同じFBXの別メッシュを分けられない参照は、重複配置を避けて省略し、画面に理由を表示します。
 - スキン付きメッシュのFBX全体を表示するときはPrefabのルート位置・回転・大きさを使います。個別ボーンの配置や変形は再現しません。
 - マテリアル名とrendererスロットから対応が特定できた材質を適用します。曖昧な対応や欠けたテクスチャは、読み込み結果へ警告します。
 - 既知の通常・Liteのopaque / cutout / transparentと輪郭線variantは、`.mat`の数値・色・テクスチャ・UV設定を互換ビューへ渡します。既知MultiのOpaque・Cutout・Transparentも公式のモード値に従って通常描画へ変換し、Multi独自部分が異なることを警告します。Fur・屈折・Gem・Tessellationなどの未対応familyを通常材質へ推測で変換しません。

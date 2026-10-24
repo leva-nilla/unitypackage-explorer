@@ -564,27 +564,37 @@ public partial class MainWindow : Window
         var preview = await Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var bytes = externalPath is null
-                ? entry is null ? null : catalog.ReadAsset(entry, cancellationToken: cancellationToken)
-                : File.ReadAllBytes(externalPath);
-            if (bytes is null) throw new InvalidDataException("Prefab の内容を読み取れません。");
-            var rootTransformIds = new Dictionary<string, long?>(StringComparer.OrdinalIgnoreCase);
-            var result = UnityPrefabParser.Parse(Encoding.UTF8.GetString(bytes), sourceGuid =>
+            byte[]? bytes;
+            if (externalPath is null)
+                bytes = entry is null ? null : catalog.ReadAsset(entry, cancellationToken: cancellationToken, maximumBytes: UnityPrefabParser.MaximumResolvedPrefabFileBytes);
+            else
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (rootTransformIds.TryGetValue(sourceGuid, out var cached)) return cached;
-                long? rootTransformId = null;
-                try
-                {
-                    var sourceBytes = catalog.ReadAssetByGuid(sourceGuid, cancellationToken: cancellationToken, packageMemberPath: entry?.PackageMemberPath, referenceEntry: entry);
-                    if (sourceBytes is not null)
-                        rootTransformId = UnityPrefabParser.FindRootTransformFileId(Encoding.UTF8.GetString(sourceBytes));
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception) { }
-                rootTransformIds[sourceGuid] = rootTransformId;
-                return rootTransformId;
-            });
+                using var stream = File.OpenRead(externalPath);
+                if (stream.Length > UnityPrefabParser.MaximumResolvedPrefabFileBytes)
+                    throw new InvalidDataException("Prefab のテキストが読み込み上限を超えています。");
+                bytes = new byte[checked((int)stream.Length)];
+                stream.ReadExactly(bytes);
+            }
+            if (bytes is null) throw new InvalidDataException("Prefab の内容を読み取れません。");
+            if (bytes.LongLength > UnityPrefabParser.MaximumResolvedPrefabFileBytes)
+                throw new InvalidDataException("Prefab のテキストが読み込み上限を超えています。");
+            var prefabSources = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            long prefabBytes = bytes.LongLength;
+            var result = UnityPrefabParser.ParseResolved(Encoding.UTF8.GetString(bytes), entry?.Guid, (sourceGuid, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                if (prefabSources.TryGetValue(sourceGuid, out var cached)) return cached;
+                var sourceEntry = catalog.FindByGuid(sourceGuid, entry?.PackageMemberPath, entry);
+                if (sourceEntry is null || sourceEntry.Extension != ".prefab")
+                    return prefabSources[sourceGuid] = null;
+                var remaining = UnityPrefabParser.MaximumResolvedPrefabBytes - prefabBytes;
+                if (remaining <= 0) throw new InvalidDataException("参照Prefabの読み込み合計が上限を超えています。");
+                var sourceBytes = catalog.ReadAsset(sourceEntry, cancellationToken: token,
+                    maximumBytes: Math.Min(remaining, UnityPrefabParser.MaximumResolvedPrefabFileBytes));
+                if (sourceBytes is null) return prefabSources[sourceGuid] = null;
+                prefabBytes += sourceBytes.LongLength;
+                return prefabSources[sourceGuid] = Encoding.UTF8.GetString(sourceBytes);
+            }, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             var tree = result.Roots.Select(x => new PrefabNodeView(x, cancellationToken: cancellationToken)).ToArray();
             // Importer loads the entire FBX scene. A skinned renderer's leaf transform often

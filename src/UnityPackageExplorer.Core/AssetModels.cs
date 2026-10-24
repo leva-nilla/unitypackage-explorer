@@ -86,6 +86,12 @@ public sealed class PrefabNode
     public required long FileId { get; init; }
     public required string Name { get; set; }
     public long ParentFileId { get; set; }
+    public long TransformFileId { get; set; }
+    public bool HasRootTransformOverrides { get; set; }
+    public long? RootTransformTargetFileId { get; set; }
+    public IReadOnlyDictionary<string, string> RootTransformOverrides { get; set; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    public List<long> RendererComponentFileIds { get; } = [];
+    public List<PrefabSourceObjectIdentity> RendererSourceIdentities { get; } = [];
     public Vector3Value Position { get; set; } = Vector3Value.Zero;
     public QuaternionValue Rotation { get; set; } = QuaternionValue.Identity;
     public Vector3Value Scale { get; set; } = Vector3Value.One;
@@ -96,6 +102,8 @@ public sealed class PrefabNode
     public UnityAssetReference? SourcePrefab { get; set; }
     public List<PrefabNode> Children { get; } = [];
 }
+
+public sealed record PrefabSourceObjectIdentity(string Guid, long FileId);
 
 public sealed record PrefabModelPlacement(
     string Guid,

@@ -8,10 +8,17 @@ namespace UnityPackageExplorer.Core;
 public static partial class UnityPrefabParser
 {
     private const int MaximumHierarchyDepth = 256;
+    public const int DefaultMaximumNestedPrefabDepth = 32;
+    public const int MaximumResolvedPrefabFileBytes = 32 * 1024 * 1024;
+    public const int MaximumResolvedPrefabBytes = 64 * 1024 * 1024;
+    public const int MaximumResolvedPrefabNodes = 100_000;
     private static readonly Regex DocumentHeader = new("(?m)^--- !u!(?<class>\\d+) &(?<id>-?\\d+)[^\\r\\n]*", RegexOptions.Compiled);
     private static readonly Regex FileReference = new("\\{\\s*fileID:\\s*(-?\\d+)(?:\\s*,\\s*guid:\\s*([0-9a-fA-F]{32}))?", RegexOptions.Compiled);
 
     public static PrefabParseResult Parse(string yaml, Func<string, long?>? rootTransformLookup = null)
+        => ParseCore(yaml, rootTransformLookup, CancellationToken.None);
+
+    private static PrefabParseResult ParseCore(string yaml, Func<string, long?>? rootTransformLookup, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(yaml);
         var warnings = new List<string>();
@@ -23,6 +30,7 @@ public static partial class UnityPrefabParser
 
         foreach (var document in docs)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             switch (document.ClassId)
             {
                 case 1:
@@ -52,8 +60,11 @@ public static partial class UnityPrefabParser
                         var materialOverrides = ReadPrefabMaterialOverrides(document.Body);
                         var rootTransformFileId = source.Guid is null ? null : rootTransformLookup?.Invoke(source.Guid);
                         var transformOverrides = SelectRootTransformOverrides(modifications, source.Guid, rootTransformFileId, warnings);
-                        prefabInstances[document.FileId] = new PrefabInstanceData(document.FileId, source, parent, transformOverrides, materialOverrides);
+                        prefabInstances[document.FileId] = new PrefabInstanceData(document.FileId, source, parent, transformOverrides, materialOverrides, rootTransformFileId);
+                        if (source.Guid is null)
+                            warnings.Add($"PrefabInstance {document.FileId} has no source asset GUID and cannot be expanded.");
                     }
+                    else warnings.Add($"PrefabInstance {document.FileId} has no readable m_SourcePrefab reference.");
                     break;
                 default:
                     components[document.FileId] = new ComponentData(document.FileId, document.ClassId, document.Body);
@@ -70,8 +81,9 @@ public static partial class UnityPrefabParser
 
         foreach (var gameObject in objects.Values)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             transformByGameObject.TryGetValue(gameObject.FileId, out var transform);
-            var node = new PrefabNode { FileId = gameObject.FileId, Name = gameObject.Name };
+            var node = new PrefabNode { FileId = gameObject.FileId, Name = gameObject.Name, TransformFileId = transform?.FileId ?? 0 };
             if (transform is not null)
             {
                 node.ParentFileId = transform.FatherFileId != 0 && transformIdToGameObject.TryGetValue(transform.FatherFileId, out var parentId) ? parentId : 0;
@@ -99,6 +111,7 @@ public static partial class UnityPrefabParser
                 }
                 if (component.ClassId is 23 or 137)
                 {
+                    node.RendererComponentFileIds.Add(componentId);
                     node.Materials.AddRange(ReadReferences(component.Body, "m_Materials", "m_Bits"));
                     if (node.Materials.Any(x => x.FileId != 0 && x.Guid is null))
                         warnings.Add($"'{node.Name}' has a material reference without a GUID; its texture cannot be resolved from the available assets.");
@@ -109,6 +122,9 @@ public static partial class UnityPrefabParser
             {
                 node.SourcePrefab = instance.SourcePrefab;
                 node.MaterialOverrides.AddRange(instance.MaterialOverrides);
+                node.HasRootTransformOverrides = instance.TransformOverrides.Count > 0;
+                node.RootTransformTargetFileId = instance.RootTransformFileId;
+                node.RootTransformOverrides = instance.TransformOverrides;
                 if (instance.MaterialOverrides.Count > 0)
                     warnings.Add($"'{node.Name}' has {instance.MaterialOverrides.Count} nested Prefab material override(s); target renderer and slot are retained for diagnostics but cannot be mapped safely to imported FBX submeshes.");
                 if (transform is not null && transform.FatherFileId == instance.ParentTransformFileId)
@@ -140,6 +156,9 @@ public static partial class UnityPrefabParser
                 Scale = ReadOverrideVector(instance.TransformOverrides, "m_LocalScale", Vector3Value.One),
                 SourcePrefab = instance.SourcePrefab
             };
+            instanceNode.HasRootTransformOverrides = instance.TransformOverrides.Count > 0;
+            instanceNode.RootTransformTargetFileId = instance.RootTransformFileId;
+            instanceNode.RootTransformOverrides = instance.TransformOverrides;
             instanceNode.MaterialOverrides.AddRange(instance.MaterialOverrides);
             if (instance.MaterialOverrides.Count > 0)
                 warnings.Add($"'{instanceNode.Name}' has {instance.MaterialOverrides.Count} nested Prefab material override(s); target renderer and slot are retained for diagnostics but cannot be mapped safely to imported FBX submeshes.");
@@ -150,6 +169,7 @@ public static partial class UnityPrefabParser
 
         foreach (var node in nodes.Values)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (node.ParentFileId == 0) continue;
             if (!nodes.TryGetValue(node.ParentFileId, out var parentNode))
             {
@@ -163,6 +183,325 @@ public static partial class UnityPrefabParser
         var roots = nodes.Values.Where(x => x.ParentFileId == 0).OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToArray();
         if (docs.Count == 0) warnings.Add("No Unity text-serialized Prefab documents were found.");
         return new PrefabParseResult(roots, warnings);
+    }
+
+    /// <summary>Parses a Prefab and expands nested Prefab instances using bounded, caller-provided asset resolution.</summary>
+    public static PrefabParseResult ParseResolved(
+        string yaml,
+        string? sourceGuid,
+        Func<string, CancellationToken, string?> resolvePrefabYaml,
+        CancellationToken cancellationToken = default,
+        int maximumNestedDepth = DefaultMaximumNestedPrefabDepth)
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        ArgumentNullException.ThrowIfNull(resolvePrefabYaml);
+        if (maximumNestedDepth < 0) throw new ArgumentOutOfRangeException(nameof(maximumNestedDepth));
+
+        var warnings = new List<string>();
+        var cache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var resolverFailures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var totalBytes = 0;
+        var totalNodes = 0;
+        var rootBytes = System.Text.Encoding.UTF8.GetByteCount(yaml);
+        if (rootBytes > MaximumResolvedPrefabFileBytes || rootBytes > MaximumResolvedPrefabBytes)
+            warnings.Add($"Prefab text exceeds the {MaximumResolvedPrefabFileBytes / (1024 * 1024)} MiB per-file resolution limit; nested Prefabs were not expanded.");
+        totalBytes = Math.Min(rootBytes, MaximumResolvedPrefabBytes);
+
+        string? ResolveYaml(string guid, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            if (cache.TryGetValue(guid, out var cached)) return cached;
+            string? resolved;
+            try { resolved = resolvePrefabYaml(guid, token); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception exception)
+            {
+                resolverFailures.Add(guid);
+                warnings.Add($"Nested Prefab {guid} could not be read: {exception.Message}");
+                cache[guid] = null;
+                return null;
+            }
+            token.ThrowIfCancellationRequested();
+            if (resolved is null) { cache[guid] = null; return null; }
+            var bytes = System.Text.Encoding.UTF8.GetByteCount(resolved);
+            if (bytes > MaximumResolvedPrefabFileBytes)
+            {
+                warnings.Add($"Nested Prefab {guid} exceeds the {MaximumResolvedPrefabFileBytes / (1024 * 1024)} MiB per-file limit and was not expanded.");
+                cache[guid] = null;
+                return null;
+            }
+            if ((long)totalBytes + bytes > MaximumResolvedPrefabBytes)
+            {
+                warnings.Add($"Nested Prefab expansion exceeds the {MaximumResolvedPrefabBytes / (1024 * 1024)} MiB total text budget; remaining instances were not expanded.");
+                cache[guid] = null;
+                return null;
+            }
+            totalBytes += bytes;
+            cache[guid] = resolved;
+            return resolved;
+        }
+
+        long? RootTransformLookup(string guid)
+        {
+            var source = ResolveYaml(guid, cancellationToken);
+            return source is null ? null : FindRootTransformFileId(source);
+        }
+
+        var parsed = ParseCore(yaml, RootTransformLookup, cancellationToken);
+        warnings.AddRange(parsed.Warnings.Where(x => !x.Contains("target renderer and slot are retained for diagnostics", StringComparison.Ordinal)));
+        totalNodes = CountNodes(parsed.Roots);
+        if (rootBytes > MaximumResolvedPrefabFileBytes || rootBytes > MaximumResolvedPrefabBytes)
+            return new PrefabParseResult(parsed.Roots, warnings);
+        if (totalNodes > MaximumResolvedPrefabNodes)
+        {
+            warnings.Add($"Prefab hierarchy exceeds the {MaximumResolvedPrefabNodes:N0} node resolution budget; nested Prefabs were not expanded.");
+            return new PrefabParseResult(parsed.Roots, warnings);
+        }
+        var ancestry = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(sourceGuid)) ancestry.Add(sourceGuid);
+        AddDirectRendererIdentities(parsed.Roots, sourceGuid);
+        ExpandInstances(parsed.Roots, sourceGuid, 0, 0, ancestry);
+        return new PrefabParseResult(parsed.Roots, warnings.Distinct(StringComparer.Ordinal).ToArray());
+
+        void ExpandInstances(IReadOnlyList<PrefabNode> roots, string? containingGuid, int depth, int hierarchyDepth, HashSet<string> activeGuids)
+        {
+            foreach (var node in roots)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (hierarchyDepth >= MaximumHierarchyDepth - 1)
+                {
+                    if (node.Children.Count > 0)
+                    {
+                        node.Children.Clear();
+                        warnings.Add($"Resolved Prefab hierarchy reached the {MaximumHierarchyDepth}-level combined depth budget at '{node.Name}'; deeper children were omitted.");
+                    }
+                }
+                else ExpandInstances(node.Children, containingGuid, depth, hierarchyDepth + 1, activeGuids);
+                if (node.SourcePrefab?.Guid is { Length: > 0 } referencedGuid)
+                {
+                    if (depth >= maximumNestedDepth)
+                    {
+                        warnings.Add($"Nested Prefab expansion reached the configured depth limit ({maximumNestedDepth}) at {referencedGuid}.");
+                    }
+                    else if (activeGuids.Contains(referencedGuid))
+                    {
+                        warnings.Add($"Nested Prefab cycle detected at {referencedGuid}; this instance was left as a reference.");
+                    }
+                    else if (ResolveYaml(referencedGuid, cancellationToken) is { } sourceText)
+                    {
+                        var sourceParse = ParseCore(sourceText, RootTransformLookup, cancellationToken);
+                        var sourceNodeCount = CountNodes(sourceParse.Roots);
+                        if ((long)totalNodes + sourceNodeCount > MaximumResolvedPrefabNodes)
+                        {
+                            warnings.Add($"Nested Prefab expansion exceeds the {MaximumResolvedPrefabNodes:N0} node budget at {referencedGuid}; this instance was left as a reference.");
+                        }
+                        else
+                        {
+                            totalNodes += sourceNodeCount;
+                            warnings.AddRange(sourceParse.Warnings.Where(x => !x.Contains("target renderer and slot are retained for diagnostics", StringComparison.Ordinal)));
+                            var isSingleRoot = sourceParse.Roots.Count == 1;
+                            var sourceRootDepth = hierarchyDepth + (isSingleRoot ? 0 : 1);
+                            var maximumRelativeDepth = MaximumHierarchyDepth - 1 - sourceRootDepth;
+                            if (maximumRelativeDepth < 0)
+                            {
+                                warnings.Add($"Nested Prefab {referencedGuid} would exceed the {MaximumHierarchyDepth}-level combined hierarchy depth budget; this instance was left as a reference.");
+                                continue;
+                            }
+                            TrimHierarchy(sourceParse.Roots, maximumRelativeDepth, warnings, referencedGuid);
+                            activeGuids.Add(referencedGuid);
+                            AddDirectRendererIdentities(sourceParse.Roots, referencedGuid);
+                            ExpandInstances(sourceParse.Roots, referencedGuid, depth + 1, sourceRootDepth, activeGuids);
+                            activeGuids.Remove(referencedGuid);
+                            AddRendererAliases(sourceParse.Roots, containingGuid, referencedGuid, node.FileId);
+                            ApplyMaterialOverrides(sourceParse.Roots, node.MaterialOverrides, warnings, cancellationToken);
+                            MergeResolvedPrefab(node, sourceParse.Roots, warnings);
+                        }
+                    }
+                    else if (!resolverFailures.Contains(referencedGuid))
+                    {
+                        warnings.Add($"Nested Prefab {referencedGuid} was not found or is not a text Prefab; its reference was retained.");
+                    }
+                }
+            }
+        }
+    }
+
+    private static int CountNodes(IEnumerable<PrefabNode> roots)
+    {
+        var count = 0;
+        var pending = new Stack<PrefabNode>(roots);
+        while (pending.Count > 0)
+        {
+            var node = pending.Pop();
+            count++;
+            foreach (var child in node.Children) pending.Push(child);
+        }
+        return count;
+    }
+
+    private static void TrimHierarchy(IReadOnlyList<PrefabNode> roots, int maximumRelativeDepth, ICollection<string> warnings, string sourceGuid)
+    {
+        var pending = new Stack<(PrefabNode Node, int Depth)>(roots.Select(x => (x, 0)));
+        var trimmed = false;
+        while (pending.Count > 0)
+        {
+            var (node, depth) = pending.Pop();
+            if (depth >= maximumRelativeDepth && node.Children.Count > 0)
+            {
+                node.Children.Clear();
+                trimmed = true;
+                continue;
+            }
+            foreach (var child in node.Children) pending.Push((child, depth + 1));
+        }
+        if (trimmed)
+            warnings.Add($"Nested Prefab {sourceGuid} was trimmed to keep the combined hierarchy within {MaximumHierarchyDepth} levels.");
+    }
+
+    private static void AddDirectRendererIdentities(IEnumerable<PrefabNode> roots, string? guid)
+    {
+        if (string.IsNullOrWhiteSpace(guid)) return;
+        var pending = new Stack<PrefabNode>(roots);
+        while (pending.Count > 0)
+        {
+            var node = pending.Pop();
+            foreach (var componentId in node.RendererComponentFileIds)
+                if (!node.RendererSourceIdentities.Any(x => x.Guid.Equals(guid, StringComparison.OrdinalIgnoreCase) && x.FileId == componentId))
+                    node.RendererSourceIdentities.Add(new PrefabSourceObjectIdentity(guid, componentId));
+            foreach (var child in node.Children) pending.Push(child);
+        }
+    }
+
+    private static void AddRendererAliases(IEnumerable<PrefabNode> roots, string? containingGuid, string referencedGuid, long instanceFileId)
+    {
+        if (string.IsNullOrWhiteSpace(containingGuid)) return;
+        var pending = new Stack<PrefabNode>(roots);
+        while (pending.Count > 0)
+        {
+            var node = pending.Pop();
+            foreach (var sourceIdentity in node.RendererSourceIdentities.Where(x => x.Guid.Equals(referencedGuid, StringComparison.OrdinalIgnoreCase)).ToArray())
+            {
+                var aliasId = (sourceIdentity.FileId ^ instanceFileId) & long.MaxValue;
+                if (!node.RendererSourceIdentities.Any(x => x.Guid.Equals(containingGuid, StringComparison.OrdinalIgnoreCase) && x.FileId == aliasId))
+                    node.RendererSourceIdentities.Add(new PrefabSourceObjectIdentity(containingGuid, aliasId));
+            }
+            foreach (var child in node.Children) pending.Push(child);
+        }
+    }
+
+    internal static void ApplyMaterialOverrides(
+        IEnumerable<PrefabNode> roots,
+        IReadOnlyList<PrefabMaterialOverride> overrides,
+        ICollection<string> warnings,
+        CancellationToken cancellationToken)
+    {
+        var rendererIndex = new Dictionary<(string Guid, long FileId), HashSet<PrefabNode>>();
+        var pending = new Stack<PrefabNode>(roots);
+        while (pending.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var node = pending.Pop();
+            if (node.RendererComponentFileIds.Count == 1)
+            {
+                foreach (var identity in node.RendererSourceIdentities)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var key = (identity.Guid.ToUpperInvariant(), identity.FileId);
+                    if (!rendererIndex.TryGetValue(key, out var candidates))
+                    {
+                        candidates = new HashSet<PrefabNode>();
+                        rendererIndex.Add(key, candidates);
+                    }
+                    candidates.Add(node);
+                }
+            }
+            foreach (var child in node.Children) pending.Push(child);
+        }
+
+        foreach (var materialOverride in overrides)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (materialOverride.TargetGuid is null)
+            {
+                warnings.Add($"Material override for source object {materialOverride.TargetFileId} has no source GUID and was not applied.");
+                continue;
+            }
+            if (!rendererIndex.TryGetValue((materialOverride.TargetGuid.ToUpperInvariant(), materialOverride.TargetFileId), out var matches)
+                || matches.Count != 1)
+            {
+                warnings.Add(matches is null || matches.Count == 0
+                    ? $"Material override target {materialOverride.TargetGuid}:{materialOverride.TargetFileId} could not be mapped safely and was not applied."
+                    : $"Material override target {materialOverride.TargetGuid}:{materialOverride.TargetFileId} matched multiple renderers and was not applied.");
+                continue;
+            }
+            var renderer = matches.Single();
+            if (materialOverride.MaterialSlot < 0 || materialOverride.MaterialSlot >= renderer.Materials.Count)
+            {
+                warnings.Add($"Material override target {materialOverride.TargetGuid}:{materialOverride.TargetFileId} slot {materialOverride.MaterialSlot} is outside the source renderer's material list and was not applied.");
+                continue;
+            }
+            renderer.Materials[materialOverride.MaterialSlot] = materialOverride.Material;
+        }
+    }
+
+    private static void MergeResolvedPrefab(PrefabNode instance, IReadOnlyList<PrefabNode> sourceRoots, ICollection<string> warnings)
+    {
+        if (sourceRoots.Count == 0)
+        {
+            warnings.Add($"Nested Prefab {instance.SourcePrefab?.Guid} contains no hierarchy; its instance node was retained.");
+            return;
+        }
+        instance.MaterialOverrides.Clear();
+        if (sourceRoots.Count == 1)
+        {
+            var source = sourceRoots[0];
+            instance.Name = source.Name;
+            if (instance.HasRootTransformOverrides) ApplyTransformOverrides(source, instance.RootTransformOverrides);
+            instance.Position = source.Position;
+            instance.Rotation = source.Rotation;
+            instance.Scale = source.Scale;
+            instance.TransformFileId = source.TransformFileId;
+            instance.Components.AddRange(source.Components);
+            instance.Mesh ??= source.Mesh;
+            instance.Materials.Clear();
+            instance.Materials.AddRange(source.Materials);
+            instance.RendererComponentFileIds.AddRange(source.RendererComponentFileIds);
+            foreach (var identity in source.RendererSourceIdentities)
+                if (!instance.RendererSourceIdentities.Contains(identity)) instance.RendererSourceIdentities.Add(identity);
+            instance.Children.AddRange(source.Children);
+            instance.SourcePrefab = source.SourcePrefab;
+            if (source.MaterialOverrides.Count > 0) instance.MaterialOverrides.AddRange(source.MaterialOverrides);
+        }
+        else
+        {
+            if (instance.HasRootTransformOverrides)
+            {
+                var root = sourceRoots.FirstOrDefault(x => x.TransformFileId == instance.RootTransformTargetFileId);
+                if (root is null) warnings.Add("Nested Prefab root transform override could not be matched to one source root; its transform remains approximate.");
+                else ApplyTransformOverrides(root, instance.RootTransformOverrides);
+                instance.Position = Vector3Value.Zero;
+                instance.Rotation = QuaternionValue.Identity;
+                instance.Scale = Vector3Value.One;
+            }
+            instance.Children.AddRange(sourceRoots);
+        }
+    }
+
+    private static void ApplyTransformOverrides(PrefabNode node, IReadOnlyDictionary<string, string> overrides)
+    {
+        node.Position = new Vector3Value(
+            ReadOverrideFloat(overrides, "m_LocalPosition.x", node.Position.X),
+            ReadOverrideFloat(overrides, "m_LocalPosition.y", node.Position.Y),
+            ReadOverrideFloat(overrides, "m_LocalPosition.z", node.Position.Z));
+        node.Rotation = new QuaternionValue(
+            ReadOverrideFloat(overrides, "m_LocalRotation.x", node.Rotation.X),
+            ReadOverrideFloat(overrides, "m_LocalRotation.y", node.Rotation.Y),
+            ReadOverrideFloat(overrides, "m_LocalRotation.z", node.Rotation.Z),
+            ReadOverrideFloat(overrides, "m_LocalRotation.w", node.Rotation.W));
+        node.Scale = new Vector3Value(
+            ReadOverrideFloat(overrides, "m_LocalScale.x", node.Scale.X),
+            ReadOverrideFloat(overrides, "m_LocalScale.y", node.Scale.Y),
+            ReadOverrideFloat(overrides, "m_LocalScale.z", node.Scale.Z));
     }
 
     public static string GetClassName(int classId) => classId switch
@@ -339,7 +678,7 @@ public static partial class UnityPrefabParser
 
     private static UnityAssetReference? ReadSingleReference(string body, string key)
     {
-        var match = Regex.Match(body, $"(?m)^\\s*{Regex.Escape(key)}:\\s*(?<ref>\\{{[^\\r\\n]*\\}})");
+        var match = Regex.Match(body, $"(?ms)^\\s*{Regex.Escape(key)}:\\s*(?<ref>\\{{.*?\\}})");
         if (!match.Success) return null;
         return ParseReference(match.Groups["ref"].Value);
     }
@@ -382,10 +721,10 @@ public static partial class UnityPrefabParser
     private static Dictionary<PrefabTransformTarget, Dictionary<string, string>> ReadPrefabTransformOverrides(string body)
     {
         var values = new Dictionary<PrefabTransformTarget, Dictionary<string, string>>();
-        var modifications = Regex.Matches(body, "(?ms)^\\s*-\\s*target:\\s*\\{[^\\r\\n]*\\}(?<block>.*?)(?=^\\s*-\\s*target:|\\z)");
+        var modifications = Regex.Matches(body, "(?ms)^\\s*-\\s*target:\\s*\\{(?<target>.*?)\\}(?<block>.*?)(?=^\\s*-\\s*target:|\\z)");
         foreach (Match modification in modifications)
         {
-            var target = Regex.Match(modification.Value, "target:\\s*\\{[^}]*fileID:\\s*(?<id>-?\\d+)(?:\\s*,\\s*guid:\\s*(?<guid>[0-9a-fA-F]{32}))?");
+            var target = Regex.Match(modification.Groups["target"].Value, "fileID:\\s*(?<id>-?\\d+)(?:\\s*,\\s*guid:\\s*(?<guid>[0-9a-fA-F]{32}))?");
             var propertyPath = Regex.Match(modification.Groups["block"].Value, "(?m)^\\s*propertyPath:\\s*(?<value>[^\\r\\n]+)");
             var value = Regex.Match(modification.Groups["block"].Value, "(?m)^\\s*value:\\s*(?<value>[^\\r\\n]+)");
             if (!target.Success || !propertyPath.Success || !value.Success) continue;
@@ -405,12 +744,12 @@ public static partial class UnityPrefabParser
     private static IReadOnlyList<PrefabMaterialOverride> ReadPrefabMaterialOverrides(string body)
     {
         var materials = new List<PrefabMaterialOverride>();
-        var modifications = Regex.Matches(body, "(?ms)^\\s*-\\s*target:\\s*\\{[^\\r\\n]*\\}(?<block>.*?)(?=^\\s*-\\s*target:|\\z)");
+        var modifications = Regex.Matches(body, "(?ms)^\\s*-\\s*target:\\s*\\{(?<target>.*?)\\}(?<block>.*?)(?=^\\s*-\\s*target:|\\z)");
         foreach (Match modification in modifications)
         {
             var propertyPath = Regex.Match(modification.Groups["block"].Value, "(?m)^\\s*propertyPath:\\s*m_Materials\\.Array\\.data\\[(?<slot>\\d+)\\]");
             if (!propertyPath.Success) continue;
-            var target = Regex.Match(modification.Value, "target:\\s*\\{[^}]*fileID:\\s*(?<id>-?\\d+)(?:\\s*,\\s*guid:\\s*(?<guid>[0-9a-fA-F]{32}))?");
+            var target = Regex.Match(modification.Groups["target"].Value, "fileID:\\s*(?<id>-?\\d+)(?:\\s*,\\s*guid:\\s*(?<guid>[0-9a-fA-F]{32}))?");
             if (!target.Success) continue;
             var reference = ReadSingleReference(modification.Groups["block"].Value, "objectReference");
             if (reference is { Guid: not null, FileId: not 0 })
@@ -483,5 +822,6 @@ public static partial class UnityPrefabParser
         UnityAssetReference SourcePrefab,
         long ParentTransformFileId,
         IReadOnlyDictionary<string, string> TransformOverrides,
-        IReadOnlyList<PrefabMaterialOverride> MaterialOverrides);
+        IReadOnlyList<PrefabMaterialOverride> MaterialOverrides,
+        long? RootTransformFileId);
 }
