@@ -6,6 +6,21 @@
         Title="UnityPackage Explorer" Icon="Assets/UnityPackageExplorer.ico" Height="780" Width="1280" MinHeight="560" MinWidth="860" Deactivated="Window_Deactivated"
         Background="#15191F" Foreground="#E5E9EF" WindowStartupLocation="CenterScreen" AllowDrop="True" DragEnter="Window_DragEnter" DragOver="Window_DragOver" Drop="Window_Drop">
     <Window.Resources>
+        <Style x:Key="PreviewModeButtonStyle" TargetType="Button">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="3" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.7" /></Trigger>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Opacity" Value="0.85" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#315B66" />
         <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFFFFF" />
         <HierarchicalDataTemplate DataType="{x:Type local:AssetTreeItemView}" ItemsSource="{Binding Children}">
@@ -120,8 +135,8 @@
                     </DockPanel>
                     <Border Grid.Row="1" Margin="0,0,0,8" HorizontalAlignment="Right" Background="#202833" CornerRadius="5" Padding="4">
                         <StackPanel Orientation="Horizontal">
-                            <Button x:Name="LightweightModeButton" Content="軽量" Click="LightweightModeButton_Click" Padding="10,5" Margin="1" IsEnabled="False" ToolTip="3Dモデルを選択" ToolTipService.ShowOnDisabled="True" />
-                            <Button x:Name="LilToonModeButton" Content="lilToon" Click="LilToonModeButton_Click" Padding="10,5" Margin="1" IsEnabled="False" ToolTip="対応材質なし" ToolTipService.ShowOnDisabled="True" />
+                            <Button x:Name="LightweightModeButton" Style="{StaticResource PreviewModeButtonStyle}" Content="軽量" Click="LightweightModeButton_Click" Padding="10,5" Margin="1" IsEnabled="False" ToolTip="3Dモデルを選択" ToolTipService.ShowOnDisabled="True" />
+                            <Button x:Name="LilToonModeButton" Style="{StaticResource PreviewModeButtonStyle}" Content="lilToon" Click="LilToonModeButton_Click" Padding="10,5" Margin="1" IsEnabled="False" ToolTip="対応材質なし" ToolTipService.ShowOnDisabled="True" />
                         </StackPanel>
                     </Border>
                     <Grid Grid.Row="2">
