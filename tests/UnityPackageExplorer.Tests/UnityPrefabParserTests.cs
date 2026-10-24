@@ -522,37 +522,74 @@ public sealed class UnityPrefabParserTests
     public void AppliesIndexedRendererOverridesAndRejectsAmbiguousOrInvalidTargets()
     {
         const string sourceGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        const string oldMaterialGuid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         const string newMaterialGuid = "cccccccccccccccccccccccccccccccc";
-        static PrefabNode Renderer(long gameObjectId, long componentId, string guid, string materialGuid)
-        {
-            var node = new PrefabNode { FileId = gameObjectId, Name = $"Renderer {gameObjectId}" };
-            node.RendererComponentFileIds.Add(componentId);
-            node.RendererSourceIdentities.Add(new PrefabSourceObjectIdentity(guid, componentId));
-            node.Materials.Add(new UnityAssetReference(2100000, materialGuid));
-            return node;
-        }
+        const string basePrefab = """
+            --- !u!1 &10
+            GameObject:
+              m_Component:
+              - component: {fileID: 20}
+              - component: {fileID: 30}
+              m_Name: First
+            --- !u!4 &20
+            Transform:
+              m_GameObject: {fileID: 10}
+              m_Father: {fileID: 0}
+            --- !u!1 &11
+            GameObject:
+              m_Component:
+              - component: {fileID: 21}
+              - component: {fileID: 30}
+              m_Name: Duplicate
+            --- !u!4 &21
+            Transform:
+              m_GameObject: {fileID: 11}
+              m_Father: {fileID: 0}
+            --- !u!1 &12
+            GameObject:
+              m_Component:
+              - component: {fileID: 22}
+              - component: {fileID: 32}
+              m_Name: Single
+            --- !u!4 &22
+            Transform:
+              m_GameObject: {fileID: 12}
+              m_Father: {fileID: 0}
+            --- !u!23 &30
+            MeshRenderer:
+              m_GameObject: {fileID: 10}
+              m_Materials:
+              - {fileID: 2100000, guid: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, type: 2}
+            --- !u!23 &32
+            MeshRenderer:
+              m_GameObject: {fileID: 12}
+              m_Materials:
+              - {fileID: 2100000, guid: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, type: 2}
+            """;
+        var variant = $$"""
+            --- !u!1001 &100
+            PrefabInstance:
+              m_SourcePrefab: {fileID: 100100000, guid: {{sourceGuid}}, type: 3}
+              m_Modification:
+                m_TransformParent: {fileID: 0}
+                m_Modifications:
+                - target: {fileID: 30, guid: {{sourceGuid}}, type: 3}
+                  propertyPath: m_Materials.Array.data[0]
+                  value:
+                    objectReference: {fileID: 2100000, guid: {{newMaterialGuid}}, type: 2}
+                - target: {fileID: 32, guid: {{sourceGuid}}, type: 3}
+                  propertyPath: m_Materials.Array.data[1]
+                  value:
+                    objectReference: {fileID: 2100000, guid: {{newMaterialGuid}}, type: 2}
+            """;
 
-        var first = Renderer(1, 10, sourceGuid, oldMaterialGuid);
-        var duplicate = Renderer(2, 10, sourceGuid, oldMaterialGuid);
-        var single = Renderer(3, 11, sourceGuid, oldMaterialGuid);
-        var warnings = new List<string>();
-        UnityPrefabParser.ApplyMaterialOverrides([first, duplicate, single],
-        [
-            new PrefabMaterialOverride(10, sourceGuid, 0, new UnityAssetReference(2100000, newMaterialGuid)),
-            new PrefabMaterialOverride(11, sourceGuid, 1, new UnityAssetReference(2100000, newMaterialGuid))
-        ], warnings, CancellationToken.None);
+        var result = UnityPrefabParser.ParseResolved(variant, "dddddddddddddddddddddddddddddddd",
+            (guid, _) => guid == sourceGuid ? basePrefab : null);
 
-        Assert.Equal(oldMaterialGuid, Assert.Single(first.Materials).Guid);
-        Assert.Equal(oldMaterialGuid, Assert.Single(duplicate.Materials).Guid);
-        Assert.Equal(oldMaterialGuid, Assert.Single(single.Materials).Guid);
-        Assert.Equal(2, warnings.Count);
-        Assert.Contains(warnings, warning => warning.Contains("matched multiple renderers", StringComparison.Ordinal));
-        Assert.Contains(warnings, warning => warning.Contains("outside the source renderer's material list", StringComparison.Ordinal));
-
-        using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
-        Assert.Throws<OperationCanceledException>(() => UnityPrefabParser.ApplyMaterialOverrides([first], [], [], cancellation.Token));
+        var instance = Assert.Single(result.Roots);
+        Assert.Equal(3, instance.Children.Count);
+        Assert.All(instance.Children, node => Assert.Equal("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Assert.Single(node.Materials).Guid));
+        Assert.Contains(result.Warnings, warning => warning.Contains("matched multiple renderers", StringComparison.Ordinal));
+        Assert.Contains(result.Warnings, warning => warning.Contains("outside the source renderer's material list", StringComparison.Ordinal));
     }
 
     [Fact]

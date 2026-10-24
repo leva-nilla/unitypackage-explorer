@@ -389,7 +389,7 @@ public static partial class UnityPrefabParser
         }
     }
 
-    internal static void ApplyMaterialOverrides(
+    private static void ApplyMaterialOverrides(
         IEnumerable<PrefabNode> roots,
         IReadOnlyList<PrefabMaterialOverride> overrides,
         ICollection<string> warnings,
