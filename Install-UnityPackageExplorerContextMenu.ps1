@@ -230,7 +230,7 @@ if ($existingContextHandler -and $existingContextHandler -ne "{$contextMenuClsid
 }
 
 $associationInfo = @{}
-foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
+foreach ($extension in @('.unitypackage', '.prefab', '.zip', '.rar')) {
     $extensionKey = $classesRoot.OpenSubKey($extension)
     $progId = if ($extensionKey) { [string]$extensionKey.GetValue('') } else { '' }
     if ($extensionKey) { $extensionKey.Dispose() }
@@ -277,7 +277,7 @@ $previewList = $reg.CreateSubKey('Software\Microsoft\Windows\CurrentVersion\Prev
 $previewList.SetValue("{$classId}", 'UnityPackage Explorer', [Microsoft.Win32.RegistryValueKind]::String)
 $previewList.Dispose()
 
-foreach ($extension in @('.unitypackage', '.prefab', '.zip')) {
+foreach ($extension in @('.unitypackage', '.prefab', '.zip', '.rar')) {
     Add-PreviewAssociation $extension $associationInfo[$extension]
 }
 
@@ -287,6 +287,7 @@ $state.SetValue('InstallDirectory', $installDirectory, [Microsoft.Win32.Registry
 $state.SetValue('UnityPackageProgId', $associationInfo['.unitypackage'], [Microsoft.Win32.RegistryValueKind]::String)
 $state.SetValue('PrefabProgId', $associationInfo['.prefab'], [Microsoft.Win32.RegistryValueKind]::String)
 $state.SetValue('ZipProgId', $associationInfo['.zip'], [Microsoft.Win32.RegistryValueKind]::String)
+$state.SetValue('RarProgId', $associationInfo['.rar'], [Microsoft.Win32.RegistryValueKind]::String)
 $state.Dispose()
 
 $state = $reg.CreateSubKey($statePath)
@@ -301,14 +302,14 @@ $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($sendToShortcutPath)
 $shortcut.TargetPath = $appPath
 $shortcut.WorkingDirectory = $installDirectory
-$shortcut.Description = 'ZIP、unitypackage、Prefab を UnityPackage Explorer で開く'
+$shortcut.Description = 'ZIP、RAR、unitypackage、Prefab を UnityPackage Explorer で開く'
 $shortcut.Save()
 
 $startMenuShell = New-Object -ComObject WScript.Shell
 $startMenuShortcut = $startMenuShell.CreateShortcut($startMenuShortcutPath)
 $startMenuShortcut.TargetPath = $appPath
 $startMenuShortcut.WorkingDirectory = $installDirectory
-$startMenuShortcut.Description = 'ZIP、unitypackage、Prefab を UnityPackage Explorer で開く'
+$startMenuShortcut.Description = 'ZIP、RAR、unitypackage、Prefab を UnityPackage Explorer で開く'
 $startMenuShortcut.Save()
 
 # Remove earlier static ZIP verbs only when their command points to this installation.
@@ -389,7 +390,7 @@ if ($matchingPackage) {
 
 [UnityPackageExplorerShellNotifications]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
 
-Write-Host '[OK] .unitypackage、.zip、.prefab の Explorer プレビューハンドラー関連付けを登録しました。'
+Write-Host '[OK] .unitypackage、.zip、.rar、.prefab の Explorer プレビューハンドラー関連付けを登録しました。'
 Write-Host '[OK] Send To に UnityPackage Explorer を登録しました。'
 Write-Host '[OK] Start Menu に UnityPackage Explorer を登録しました。'
 Write-Host "App: $appPath"

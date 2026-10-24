@@ -70,6 +70,9 @@ Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.prefab\shell\Unity
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: ""; ValueData: "UnityPackage Explorer で開く"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#ProductExe},0"; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#ProductExe}"" ""%1"""; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: ""; ValueData: "UnityPackage Explorer で開く"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#ProductExe},0"; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\UnityPackageExplorer.Open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#ProductExe}"" ""%1"""; Tasks: contextmenu
 [Run]
 Filename: "{app}\{#ProductExe}"; Description: "{cm:LaunchProgram,{#StringChange(ProductName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
@@ -151,11 +154,12 @@ var
   ProgId, Extension, StatePath: String;
 begin
   SetArrayLength(RegisteredProgIds, 0);
-  for Index := 0 to 2 do begin
+  for Index := 0 to 3 do begin
     case Index of
       0: Extension := '.unitypackage';
       1: Extension := '.prefab';
       2: Extension := '.zip';
+      3: Extension := '.rar';
     end;
     ProgId := GetAssociationProgId(Extension);
     if ProgId <> '' then begin
@@ -316,16 +320,18 @@ begin
   end;
 
   ExpectedCommand := '"' + ApplicationPath + '" "%1"';
-  SetArrayLength(ShellPaths, 3);
+  SetArrayLength(ShellPaths, 4);
   ShellPaths[0] := 'Software\Classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorer.Open\command';
   ShellPaths[1] := 'Software\Classes\SystemFileAssociations\.prefab\shell\UnityPackageExplorer.Open\command';
   ShellPaths[2] := 'Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open\command';
-  PathCount := 3;
-  for Index := 0 to 2 do begin
+  ShellPaths[3] := 'Software\Classes\SystemFileAssociations\.rar\shell\UnityPackageExplorer.Open\command';
+  PathCount := 4;
+  for Index := 0 to 3 do begin
     case Index of
       0: AssociationProgId := GetAssociationProgId('.unitypackage');
       1: AssociationProgId := GetAssociationProgId('.prefab');
       2: AssociationProgId := GetAssociationProgId('.zip');
+      3: AssociationProgId := GetAssociationProgId('.rar');
     end;
     if AssociationProgId <> '' then begin
       SetArrayLength(ShellPaths, PathCount + 1);

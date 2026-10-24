@@ -19,8 +19,9 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
         {
             ".unitypackage" => ReadPackage(Path.GetFileName(path), new UnityPackageReader(path)),
             ".zip" => ReadZip(path),
+            ".rar" => ReadRar(path),
             ".prefab" => ReadPrefab(path),
-            _ => Create(path, "Unity アセット", ["対応形式: .unitypackage / .zip / .prefab"], null)
+            _ => Create(path, "Unity アセット", ["対応形式: .unitypackage / .zip / .rar / .prefab"], null)
         };
     }
 
@@ -28,8 +29,17 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
         => ReadZip(Path.GetFileName(path), new UnityZipReader(path));
 
     internal static PreviewContent ReadZip(string title, UnityZipReader reader)
+        => ReadArchive(title, reader);
+
+    private static PreviewContent ReadRar(string path)
+        => ReadRar(Path.GetFileName(path), new UnityRarReader(path));
+
+    internal static PreviewContent ReadRar(string title, UnityRarReader reader)
+        => ReadArchive(title, reader);
+
+    private static PreviewContent ReadArchive(string title, IUnityArchiveReader reader)
     {
-        var catalog = UnityAssetCatalog.OpenZip(reader);
+        var catalog = UnityAssetCatalog.OpenArchive(reader);
         var assets = catalog.Entries.Where(x => x.HasAsset).ToArray();
         var packages = assets.Where(x => x.PackageMemberPath is not null).Select(x => x.PackageMemberPath!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var loose = assets.Where(x => x.ZipMemberPath is not null).ToArray();
@@ -50,7 +60,7 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
         var kindCounts = assets.GroupBy(x => x.Kind)
             .OrderBy(x => x.Key).Select(x => $"{x.Key}: {x.Count():N0}");
         lines.AddRange(kindCounts);
-        lines.AddRange(loose.Take(3).Select(x => $"ZIP直収録: {x.PathName}"));
+        lines.AddRange(loose.Take(3).Select(x => $"{reader.FormatName}直収録: {x.PathName}"));
         lines.AddRange(catalog.Warnings.Take(3).Select(x => $"注意: {x}"));
 
         Bitmap? image = null;
@@ -69,7 +79,7 @@ internal sealed record PreviewContent(Bitmap Image, string Summary) : IDisposabl
                 break;
             }
         }
-        return Create(Path.GetFileName(title), $"UnityPackage {packages.Length:N0} · assets {assets.Length:N0} · direct files {loose.Length:N0}", lines, image);
+        return Create(Path.GetFileName(title), $"{reader.FormatName} · UnityPackage {packages.Length:N0} · assets {assets.Length:N0} · direct files {loose.Length:N0}", lines, image);
     }
 
     internal static PreviewContent ReadPackage(string title, UnityPackageReader reader) => ReadPackage(reader, title);

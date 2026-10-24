@@ -45,7 +45,7 @@ public sealed class UnityAssetCatalog
     private readonly Dictionary<string, UnityPackageEntry> _byPath;
     private readonly Dictionary<string, string>? _externalGuidPaths;
     private readonly string? _projectRoot;
-    private readonly UnityZipReader? _zipReader;
+    private readonly IUnityArchiveReader? _archiveReader;
     private readonly IReadOnlyDictionary<string, UnityPackageReader> _zipPackages;
 
     private UnityAssetCatalog(
@@ -53,7 +53,7 @@ public sealed class UnityAssetCatalog
         IReadOnlyList<UnityPackageEntry> entries,
         Dictionary<string, string>? externalGuidPaths = null,
         string? assetRoot = null,
-        UnityZipReader? zipReader = null,
+        IUnityArchiveReader? archiveReader = null,
         IReadOnlyDictionary<string, UnityPackageReader>? zipPackages = null,
         IReadOnlyList<string>? warnings = null)
     {
@@ -63,7 +63,7 @@ public sealed class UnityAssetCatalog
         _byPath = entries.GroupBy(x => x.PathName, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
         _externalGuidPaths = externalGuidPaths;
         _projectRoot = assetRoot;
-        _zipReader = zipReader;
+        _archiveReader = archiveReader;
         _zipPackages = zipPackages ?? new Dictionary<string, UnityPackageReader>(StringComparer.OrdinalIgnoreCase);
         Warnings = warnings ?? [];
     }
@@ -72,7 +72,9 @@ public sealed class UnityAssetCatalog
     public IReadOnlyList<string> Warnings { get; }
     public bool IsPackage => _package is not null;
 
-    public void RebindZipPath(string path) => (_zipReader ?? throw new InvalidOperationException("This catalog is not reading a ZIP archive.")).RebindPath(path);
+    public void RebindArchivePath(string path) => (_archiveReader ?? throw new InvalidOperationException("This catalog is not reading an outer archive.")).RebindPath(path);
+
+    public void RebindZipPath(string path) => RebindArchivePath(path);
 
     public static UnityAssetCatalog OpenPackage(string path, CancellationToken cancellationToken = default)
     {
@@ -86,9 +88,18 @@ public sealed class UnityAssetCatalog
     }
 
     public static UnityAssetCatalog OpenZip(UnityZipReader zip, CancellationToken cancellationToken = default)
+        => OpenArchive(zip, cancellationToken);
+
+    public static UnityAssetCatalog OpenRar(string path, CancellationToken cancellationToken = default)
+        => OpenArchive(new UnityRarReader(path), cancellationToken);
+
+    public static UnityAssetCatalog OpenRar(UnityRarReader rar, CancellationToken cancellationToken = default)
+        => OpenArchive(rar, cancellationToken);
+
+    public static UnityAssetCatalog OpenArchive(IUnityArchiveReader archive, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(zip);
-        var members = zip.ReadIndex(cancellationToken);
+        ArgumentNullException.ThrowIfNull(archive);
+        var members = archive.ReadIndex(cancellationToken);
         var packageMembers = members.Where(x => x.FullName.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase)).ToArray();
         var packageReaders = new Dictionary<string, UnityPackageReader>(StringComparer.OrdinalIgnoreCase);
         var entries = new List<UnityPackageEntry>();
@@ -100,7 +111,7 @@ public sealed class UnityAssetCatalog
             var packageMemberPath = member.FullName;
             if (nestedPackageBudget.IsExhausted)
             {
-                warnings.Add("ZIP内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
+                warnings.Add($"{archive.FormatName}内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
                 break;
             }
             if (member.Length == 0)
@@ -108,7 +119,7 @@ public sealed class UnityAssetCatalog
                 warnings.Add($"{packageMemberPath}: unitypackage is empty and could not be read.");
                 continue;
             }
-            var reader = new UnityPackageReader(() => zip.OpenMember(packageMemberPath));
+            var reader = new UnityPackageReader(() => archive.OpenMember(packageMemberPath));
             try
             {
                 var packageEntries = reader.ReadIndex(cancellationToken, nestedPackageBudget);
@@ -125,7 +136,7 @@ public sealed class UnityAssetCatalog
                 warnings.Add($"{packageMemberPath}: 読み込めませんでした ({exception.Message})");
                 if (nestedPackageBudget.IsExhausted)
                 {
-                    warnings.Add("ZIP内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
+                    warnings.Add($"{archive.FormatName}内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
                     break;
                 }
             }
@@ -141,7 +152,7 @@ public sealed class UnityAssetCatalog
             string? guid = null;
             if (memberNames.Contains(metaName))
             {
-                try { guid = UnityPackageReader.ReadGuid(Encoding.UTF8.GetString(zip.ReadMember(metaName, MaximumMetaBytes, cancellationToken))); }
+                try { guid = UnityPackageReader.ReadGuid(Encoding.UTF8.GetString(archive.ReadMember(metaName, MaximumMetaBytes, cancellationToken))); }
                 catch (Exception exception) when (exception is IOException or InvalidDataException)
                 {
                     warnings.Add($"{metaName}: GUID metadata was ignored ({exception.Message})");
@@ -154,7 +165,7 @@ public sealed class UnityAssetCatalog
             });
         }
 
-        return new UnityAssetCatalog(null, entries, zipReader: zip, zipPackages: packageReaders, warnings: warnings);
+        return new UnityAssetCatalog(null, entries, archiveReader: archive, zipPackages: packageReaders, warnings: warnings);
     }
 
     public static UnityAssetCatalog OpenProjectPrefab(string prefabPath, CancellationToken cancellationToken = default)
@@ -195,10 +206,10 @@ public sealed class UnityAssetCatalog
         var readLimit = payload == "asset.meta" ? Math.Min(maximumBytes, MaximumMetaBytes) : maximumBytes;
         if (entry.PackageMemberPath is not null && _zipPackages.TryGetValue(entry.PackageMemberPath, out var zipPackage))
             return zipPackage.ReadAsset(entry.Guid, payload, cancellationToken, readLimit);
-        if (entry.ZipMemberPath is not null && _zipReader is not null)
+        if (entry.ZipMemberPath is not null && _archiveReader is not null)
         {
             var memberPath = payload == "asset.meta" ? entry.ZipMemberPath + ".meta" : entry.ZipMemberPath;
-            try { return _zipReader.ReadMember(memberPath, readLimit, cancellationToken); }
+            try { return _archiveReader.ReadMember(memberPath, readLimit, cancellationToken); }
             catch (FileNotFoundException) { return null; }
         }
         if (_package is not null) return _package.ReadAsset(entry.Guid, payload, cancellationToken, readLimit);

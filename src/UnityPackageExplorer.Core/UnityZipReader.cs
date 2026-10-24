@@ -2,16 +2,19 @@ using System.IO.Compression;
 
 namespace UnityPackageExplorer.Core;
 
-public sealed record UnityZipMember(string FullName, long Length, long CompressedLength);
+public sealed record UnityZipMember(string FullName, long Length, long CompressedLength)
+    : UnityArchiveMember(FullName, Length, CompressedLength);
 
 /// <summary>Reads ZIP metadata and individual members without extracting the archive.</summary>
-public sealed class UnityZipReader
+public sealed class UnityZipReader : IUnityArchiveReader
 {
-    public const long MaximumMemberBytes = 512L * 1024 * 1024;
-    private const int MaximumEntryCount = 100_000;
-    private const long MaximumDeclaredTotalBytes = 8L * 1024 * 1024 * 1024;
+    /// <summary>Maximum decompressed ZIP member that can be streamed into a nested UnityPackage.</summary>
+    public const long MaximumMemberBytes = UnityArchiveLimits.MaximumStreamedMemberBytes;
+    public const long MaximumBufferedMemberBytes = UnityArchiveLimits.MaximumBufferedMemberBytes;
     private string _path;
     private readonly Func<Stream>? _openStream;
+
+    public string FormatName => "ZIP";
 
     public UnityZipReader(string path) => _path = Path.GetFullPath(path);
 
@@ -31,8 +34,8 @@ public sealed class UnityZipReader
     {
         using var file = OpenFile();
         using var archive = new ZipArchive(file, ZipArchiveMode.Read, leaveOpen: false);
-        if (archive.Entries.Count > MaximumEntryCount)
-            throw new InvalidDataException($"ZIP contains more than {MaximumEntryCount:N0} entries.");
+        if (archive.Entries.Count > UnityArchiveLimits.MaximumEntryCount)
+            throw new InvalidDataException($"ZIP contains more than {UnityArchiveLimits.MaximumEntryCount:N0} entries.");
 
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         long declaredTotal = 0;
@@ -41,9 +44,8 @@ public sealed class UnityZipReader
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!names.Add(entry.FullName)) throw new InvalidDataException($"ZIP contains a duplicate member name: {entry.FullName}");
-            if (entry.Length > MaximumMemberBytes) throw new InvalidDataException($"ZIP member exceeds the {MaximumMemberBytes / 1024 / 1024} MiB read limit: {entry.FullName}");
             declaredTotal = checked(declaredTotal + entry.Length);
-            if (declaredTotal > MaximumDeclaredTotalBytes) throw new InvalidDataException("ZIP declares more than 8 GiB of uncompressed content.");
+            if (declaredTotal > UnityArchiveLimits.MaximumDeclaredTotalBytes) throw new InvalidDataException("ZIP declares more than 8 GiB of uncompressed content.");
             result.Add(new UnityZipMember(entry.FullName, entry.Length, entry.CompressedLength));
         }
         return result;
@@ -70,11 +72,11 @@ public sealed class UnityZipReader
     }
 
     public byte[] ReadMember(string memberPath, CancellationToken cancellationToken = default)
-        => ReadMember(memberPath, MaximumMemberBytes, cancellationToken);
+        => ReadMember(memberPath, MaximumBufferedMemberBytes, cancellationToken);
 
     public byte[] ReadMember(string memberPath, long maximumBytes, CancellationToken cancellationToken = default)
     {
-        if (maximumBytes is < 0 or > MaximumMemberBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+        if (maximumBytes is < 0 or > MaximumBufferedMemberBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
         using var input = OpenMember(memberPath, maximumBytes);
         using var output = new MemoryStream();
         var buffer = new byte[64 * 1024];
@@ -87,6 +89,9 @@ public sealed class UnityZipReader
         }
         return output.ToArray();
     }
+
+    IReadOnlyList<UnityArchiveMember> IUnityArchiveReader.ReadIndex(CancellationToken cancellationToken)
+        => ReadIndex(cancellationToken);
 
     private Stream OpenFile()
     {

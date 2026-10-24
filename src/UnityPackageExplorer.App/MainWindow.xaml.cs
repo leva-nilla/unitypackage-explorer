@@ -116,7 +116,7 @@ public partial class MainWindow : Window
         else
         {
             e.Effects = DragDropEffects.None;
-            SetStatus(paths.Length > 1 ? "一度に開けるファイルは1つだけです。" : paths.Length == 1 ? "対応形式は .zip、.unitypackage、.prefab です。" : "対応ファイルをドロップしてください。");
+            SetStatus(paths.Length > 1 ? "一度に開けるファイルは1つだけです。" : paths.Length == 1 ? "対応形式は .zip、.rar、.unitypackage、.prefab です。" : "対応ファイルをドロップしてください。");
         }
         e.Handled = true;
     }
@@ -139,7 +139,7 @@ public partial class MainWindow : Window
         }
         if (!IsSupportedDrop(paths[0]))
         {
-            SetStatus("対応形式は .zip、.unitypackage、.prefab です。元ファイルは変更していません。");
+            SetStatus("対応形式は .zip、.rar、.unitypackage、.prefab です。元ファイルは変更していません。");
             return;
         }
         if (_isOpeningSource)
@@ -154,7 +154,7 @@ public partial class MainWindow : Window
         e.Data.GetDataPresent(DataFormats.FileDrop) && e.Data.GetData(DataFormats.FileDrop) is string[] paths ? paths : [];
 
     private static bool IsSupportedDrop(string path) =>
-        new[] { ".zip", ".unitypackage", ".prefab" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+        new[] { ".zip", ".rar", ".unitypackage", ".prefab" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
     private async Task OpenPathAsync(string path)
     {
@@ -221,9 +221,11 @@ public partial class MainWindow : Window
                 if (AutoPreviewToggle.IsChecked == true && !suppressAutoPreview)
                     await PreviewAutomaticCandidateAsync(Path.GetFileName(path), requestId, cancellationToken);
             }
-            else if (extension == ".zip")
+            else if (extension is ".zip" or ".rar")
             {
-                var catalog = await Task.Run(() => UnityAssetCatalog.OpenZip(path, cancellationToken), cancellationToken);
+                var catalog = await Task.Run(() => extension == ".zip"
+                    ? UnityAssetCatalog.OpenZip(path, cancellationToken)
+                    : UnityAssetCatalog.OpenRar(path, cancellationToken), cancellationToken);
                 if (!_previewRequests.IsCurrent(requestId)) return;
                 _catalog = catalog;
                 _entries = _catalog.Entries;
@@ -235,14 +237,15 @@ public partial class MainWindow : Window
                 CategoryPicker.ItemsSource = availableCategories;
                 var warnings = _catalog.Warnings;
                 var zipPresentation = await Task.Run(() => (
-                    Summary: BuildZipSummary(_entries, Path.GetFileName(path), warnings, availableCategories.Length == 0),
+                    Summary: BuildArchiveSummary(_entries, Path.GetFileName(path), extension == ".rar" ? "RAR" : "ZIP", warnings, availableCategories.Length == 0),
                     Kinds: GetAvailableKinds(_entries)), cancellationToken);
                 if (!_previewRequests.IsCurrent(requestId)) return;
                 RefreshKindFilter(zipPresentation.Kinds);
                 DetailsText.Text = zipPresentation.Summary;
                 var warningsStatus = _catalog.Warnings.Count == 0 ? string.Empty : $" {_catalog.Warnings.Count:N0} 件の警告があります。";
                 var emptyStatus = _entries.Count == 0 ? " 対応する素材が見つかりません。" : string.Empty;
-                SetStatus($"ZIP内の素材を読み込みました。元ZIPは展開していません。{warningsStatus}{emptyStatus}");
+                var archiveLabel = extension == ".rar" ? "RAR" : "ZIP";
+                SetStatus($"{archiveLabel}内の素材を読み込みました。元{archiveLabel}は展開していません。{warningsStatus}{emptyStatus}");
                 RefreshPrefabCandidates();
                 var suppressAutoPreview = _filterChangedWhileOpening;
                 _filterChangedWhileOpening = false;
@@ -271,7 +274,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                throw new InvalidDataException("対応形式は .unitypackage、.zip、.prefab です。");
+                throw new InvalidDataException("対応形式は .unitypackage、.zip、.rar、.prefab です。");
             }
         }
         catch (Exception ex)
@@ -305,16 +308,16 @@ public partial class MainWindow : Window
         return text.ToString();
     }
 
-    private static string BuildZipSummary(IReadOnlyList<UnityPackageEntry> entries, string fileName, IReadOnlyList<string> warnings, bool noCategoriesAvailable)
+    private static string BuildArchiveSummary(IReadOnlyList<UnityPackageEntry> entries, string fileName, string archiveLabel, IReadOnlyList<string> warnings, bool noCategoriesAvailable)
     {
         var packages = entries.Where(x => x.PackageMemberPath is not null).Select(x => x.PackageMemberPath!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var looseAssets = entries.Where(x => x.PackageMemberPath is null).ToArray();
         var counts = entries.Where(x => x.HasAsset).GroupBy(x => x.Kind).OrderBy(x => x.Key).Select(x => $"{x.Key}: {x.Count():N0}");
-        var lines = new StringBuilder().AppendLine(fileName).AppendLine("ZIPを展開せずに読み取り").AppendLine($"確認できるファイル: {entries.Count:N0} 個");
+        var lines = new StringBuilder().AppendLine(fileName).AppendLine($"{archiveLabel}を展開せずに読み取り").AppendLine($"確認できるファイル: {entries.Count:N0} 個");
         if (packages.Length > 0) lines.AppendLine().AppendLine("同梱 UnityPackage").AppendLine(string.Join(Environment.NewLine, packages));
         if (looseAssets.Length > 0)
         {
-            lines.AppendLine().AppendLine("ZIP直収録").AppendLine(string.Join(Environment.NewLine, looseAssets.Take(12).Select(x => x.PathName)));
+            lines.AppendLine().AppendLine($"{archiveLabel}直収録").AppendLine(string.Join(Environment.NewLine, looseAssets.Take(12).Select(x => x.PathName)));
             if (looseAssets.Length > 12) lines.AppendLine($"ほか {looseAssets.Length - 12:N0} 個");
         }
         lines.AppendLine().AppendLine(string.Join("   ·   ", counts));
@@ -866,11 +869,17 @@ public partial class MainWindow : Window
         IDictionary<string, string>? alphaTextureCache = null)
     {
         if (materialBindings.Count == 0)
-            return isPrefabPreview
-                ? [hasUnappliedMaterialOverrides
-                    ? "Nested Prefab material override textures were inspected for diagnostics but not applied because their FBX submesh targets could not be identified safely."
-                    : UnityMaterialPreviewDiagnostics.GetMissingSupportedTextureWarning(materialReferences.Count)]
-                : [];
+        {
+            if (!isPrefabPreview) return [];
+            foreach (var mesh in EnumerateSceneNodes(root).OfType<HelixToolkit.SharpDX.Model.Scene.MeshNode>())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ReplaceInvisibleImportedMaterial(mesh);
+            }
+            return [hasUnappliedMaterialOverrides
+                ? "Nested Prefab material override textures were inspected for diagnostics but not applied because their FBX submesh targets could not be identified safely."
+                : UnityMaterialPreviewDiagnostics.GetMissingSupportedTextureWarning(materialReferences.Count)];
+        }
         var meshNodes = EnumerateSceneNodes(root).OfType<HelixToolkit.SharpDX.Model.Scene.MeshNode>().ToArray();
         var warnings = new List<string>();
         var applied = new HashSet<MaterialBinding>();
@@ -923,6 +932,15 @@ public partial class MainWindow : Window
         foreach (var binding in materialBindings.Except(applied).DistinctBy(x => x.MaterialGuid, StringComparer.OrdinalIgnoreCase))
             warnings.Add($"Material '{binding.MaterialName}' could not be matched to an FBX material and was left unused.");
         return warnings;
+    }
+
+    private static void ReplaceInvisibleImportedMaterial(HelixToolkit.SharpDX.Model.Scene.MeshNode mesh)
+    {
+        if (mesh.Material is HelixToolkit.SharpDX.Model.PhongMaterialCore imported
+            && imported.RenderDiffuseMap
+            && imported.DiffuseMap is null
+            && imported.DiffuseColor.Alpha <= 0f)
+            SetPreviewMaterial(mesh, null, null, UnityMaterialRenderMode.Opaque, null);
     }
 
     private static string PrepareTextureAlphaForPreview(string path, MaterialBinding binding, IDictionary<string, string> cache, ICollection<string> warnings, CancellationToken cancellationToken)
@@ -1299,7 +1317,7 @@ public partial class MainWindow : Window
         var dialog = new OpenFileDialog
         {
             Title = "Unity アセットを選択",
-            Filter = "Unity アセット|*.unitypackage;*.zip;*.prefab|UnityPackage|*.unitypackage|ZIP|*.zip|Prefab|*.prefab|すべてのファイル|*.*"
+            Filter = "Unity アセット|*.unitypackage;*.zip;*.rar;*.prefab|UnityPackage|*.unitypackage|ZIP|*.zip|RAR|*.rar|Prefab|*.prefab|すべてのファイル|*.*"
         };
         if (dialog.ShowDialog(this) == true) await OpenPathAsync(dialog.FileName);
     }
@@ -1330,7 +1348,7 @@ public partial class MainWindow : Window
                 SetStatus($"すでに「{category}」にあります。");
                 return;
             }
-            _catalog.RebindZipPath(destination);
+            _catalog.RebindArchivePath(destination);
             _sourcePath = destination;
             SourceLabel.Text = Path.GetFileName(destination);
             CategoryPanel.Visibility = Visibility.Collapsed;

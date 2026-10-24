@@ -40,6 +40,7 @@ function Remove-OurPreviewAssociation([string]$extension, [string]$progId) {
 $unityPackageProgId = if ($state) { [string]$state.GetValue('UnityPackageProgId') } else { '' }
 $prefabProgId = if ($state) { [string]$state.GetValue('PrefabProgId') } else { '' }
 $zipProgId = if ($state) { [string]$state.GetValue('ZipProgId') } else { '' }
+$rarProgId = if ($state) { [string]$state.GetValue('RarProgId') } else { '' }
 $appPath = if ($state) { [string]$state.GetValue('AppPath') } else { '' }
 $sendToShortcutPath = if ($state) { [string]$state.GetValue('SendToShortcutPath') } else { '' }
 $startMenuShortcutPath = if ($state) { [string]$state.GetValue('StartMenuShortcutPath') } else { '' }
@@ -59,6 +60,7 @@ if ($DevelopmentCertificateThumbprint) {
 Remove-OurPreviewAssociation '.unitypackage' $unityPackageProgId
 Remove-OurPreviewAssociation '.prefab' $prefabProgId
 Remove-OurPreviewAssociation '.zip' $zipProgId
+Remove-OurPreviewAssociation '.rar' $rarProgId
 
 if ($legacyContextMenuPath -and $legacyContextMenuClsid -eq '{1C490A47-4D85-4AA0-A2A3-4A7827B5DA79}') {
     $legacyVerb = $reg.OpenSubKey($legacyContextMenuPath)
