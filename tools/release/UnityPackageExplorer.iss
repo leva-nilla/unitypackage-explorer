@@ -48,12 +48,16 @@ Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 Name: "contextmenu"; Description: "従来の右クリックメニューに追加"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 Name: "startmenu"; Description: "スタートメニューに追加"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 Name: "sendto"; Description: "「送る」に追加"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
+Name: "explorerpreview"; Description: "エクスプローラーのプレビュー欄にZIP / UnityPackageを表示"; GroupDescription: "エクスプローラー連携:"; Flags: unchecked
 
 [Files]
 Source: "{#PublishRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.pdb"
 Source: "{#SourceRoot}\tools\release\Migrate-LegacyInstallFiles.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\Cleanup-LegacyExplorerRegistration.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\LegacyInstallSafety.psm1"; Flags: dontcopy
+Source: "{#SourceRoot}\tools\release\Register-ExplorerPreview.ps1"; Flags: dontcopy
+Source: "{#SourceRoot}\tools\release\Unregister-ExplorerPreview.ps1"; Flags: dontcopy
+Source: "{#SourceRoot}\tools\release\PreviewRegistration.Common.psm1"; Flags: dontcopy
 Source: "{#PublishRoot}\Tools\CurrentInstallFiles.txt"; Flags: dontcopy
 
 [Icons]
@@ -291,6 +295,9 @@ begin
   ExtractTemporaryFile('Migrate-LegacyInstallFiles.ps1');
   ExtractTemporaryFile('Cleanup-LegacyExplorerRegistration.ps1');
   ExtractTemporaryFile('LegacyInstallSafety.psm1');
+  ExtractTemporaryFile('Register-ExplorerPreview.ps1');
+  ExtractTemporaryFile('Unregister-ExplorerPreview.ps1');
+  ExtractTemporaryFile('PreviewRegistration.Common.psm1');
   ExtractTemporaryFile('CurrentInstallFiles.txt');
   PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   MigrationScript := ExpandConstant('{tmp}\Migrate-LegacyInstallFiles.ps1');
@@ -393,11 +400,20 @@ end;
 
 function InitializeUninstall(): Boolean;
 var
-  PowerShellPath, CleanupScript, ErrorLogPath, Parameters, ErrorText: String;
+  PowerShellPath, CleanupScript, ErrorLogPath, Parameters, ErrorText, PreviewScript, PreviewParameters: String;
   ExitCode: Integer;
 begin
   Result := True;
   PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  PreviewScript := ExpandConstant('{app}\Tools\Unregister-ExplorerPreview.ps1');
+  PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + ExpandConstant('{app}') + #34;
+  if FileExists(PreviewScript) then begin
+    if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then begin
+      MsgBox('エクスプローラーのプレビュー欄登録を復元できなかったため、アンインストールを中止しました。', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+  end;
   CleanupScript := ExpandConstant('{app}\Tools\Cleanup-LegacyExplorerRegistration.ps1');
   ErrorLogPath := ExpandConstant('{tmp}\UnityPackageExplorer-UninstallCleanupError.txt');
   DeleteFile(ErrorLogPath);
@@ -419,7 +435,8 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  InstallDirectory, ApplicationPath, EscapedDirectory, MarkerPath: String;
+  InstallDirectory, ApplicationPath, EscapedDirectory, MarkerPath, PowerShellPath, PreviewScript, PreviewParameters: String;
+  PreviewExitCode: Integer;
   MarkerText: AnsiString;
 begin
   if CurStep = ssPostInstall then begin
@@ -427,6 +444,26 @@ begin
     ApplicationPath := InstallDirectory + '\{#ProductExe}';
     if WizardIsTaskSelected('contextmenu') then
       RegisterCurrentAssociationProgIdVerbs(ApplicationPath);
+    PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    if WizardIsTaskSelected('explorerpreview') then begin
+      PreviewScript := ExpandConstant('{app}\Tools\Register-ExplorerPreview.ps1');
+      PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;
+      if Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) then begin
+        if PreviewExitCode = 3 then begin
+          PreviewScript := ExpandConstant('{app}\Tools\Unregister-ExplorerPreview.ps1');
+          PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;
+          if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) or (PreviewExitCode <> 0) then
+            RaiseException('プレビュー欄の既存登録を復元できませんでした。');
+          MsgBox('エクスプローラーのプレビュー欄は登録されませんでした。.NET 10 Desktop Runtime (x64) が必要です。専用アプリは引き続き使用できます。' + #13#10 + 'https://dotnet.microsoft.com/download/dotnet/10.0', mbInformation, MB_OK)
+        end else if PreviewExitCode <> 0 then
+          RaiseException('エクスプローラーのプレビュー欄を登録できませんでした。セットアップをやり直してください。');
+      end else RaiseException('プレビュー欄登録スクリプトを起動できませんでした。');
+    end else begin
+      PreviewScript := ExpandConstant('{app}\Tools\Unregister-ExplorerPreview.ps1');
+      PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;
+      if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) or (PreviewExitCode <> 0) then
+        RaiseException('エクスプローラーのプレビュー欄の登録を復元できませんでした。');
+    end;
     EscapedDirectory := InstallDirectory;
     StringChangeEx(EscapedDirectory, '\', '\\', True);
     MarkerPath := InstallDirectory + '\.unitypackage-explorer-inno-install.json';

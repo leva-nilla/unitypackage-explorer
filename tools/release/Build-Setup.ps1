@@ -31,6 +31,8 @@ $publishDirectory = Join-Path $releaseRoot 'publish'
 $buildOutputDirectory = [IO.Path]::GetFullPath((Join-Path $releaseRoot 'build')).TrimEnd('\') + '\'
 $setupScript = Join-Path $PSScriptRoot 'UnityPackageExplorer.iss'
 $applicationProject = Join-Path $repoRoot 'src\UnityPackageExplorer.App\UnityPackageExplorer.App.csproj'
+$previewHandlerProject = Join-Path $repoRoot 'src\UnityPackageExplorer.PreviewHandler\UnityPackageExplorer.PreviewHandler.csproj'
+$previewPublishDirectory = Join-Path $publishDirectory 'PreviewHandler'
 $assetsFile = Join-Path $repoRoot 'src\UnityPackageExplorer.App\obj\project.assets.json'
 $packageCache = if ([string]::IsNullOrWhiteSpace($env:NUGET_PACKAGES)) { Join-Path $env:USERPROFILE '.nuget\packages' } else { $env:NUGET_PACKAGES }
 
@@ -69,6 +71,18 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXIT
 if (-not (Test-Path -LiteralPath (Join-Path $publishDirectory 'WebViewer\index.html') -PathType Leaf)) {
     throw 'The lilToon web viewer was not included in the published application.'
 }
+if (-not (Test-Path -LiteralPath $previewHandlerProject -PathType Leaf)) { throw "Preview handler project is missing: $previewHandlerProject" }
+$previewPublishArguments = @('publish', $previewHandlerProject, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'false', '-o', $previewPublishDirectory, '-p:DebugType=None', '-p:DebugSymbols=false', "-p:Version=$Version", "-p:FileVersion=$Version.0", "-p:BaseOutputPath=$buildOutputDirectory")
+if (-not [string]::IsNullOrWhiteSpace($env:UPX_RESTORE_CONFIG_FILE)) { $previewPublishArguments += "-p:RestoreConfigFile=$env:UPX_RESTORE_CONFIG_FILE" }
+if (-not [string]::IsNullOrWhiteSpace($env:UPX_TARGET_PLATFORM_SDK_ROOT_OVERRIDE)) {
+    $previewPublishArguments += "-p:TargetPlatformSdkRootOverride=$env:UPX_TARGET_PLATFORM_SDK_ROOT_OVERRIDE"
+    $previewPublishArguments += '-p:TargetPlatformDisplayName=Windows'
+}
+& $dotnetPathResolved @previewPublishArguments
+if ($LASTEXITCODE -ne 0) { throw "Preview handler publish failed with exit code $LASTEXITCODE." }
+foreach ($required in @('UnityPackageExplorer.PreviewHandler.comhost.dll','UnityPackageExplorer.PreviewHandler.runtimeconfig.json')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $previewPublishDirectory $required) -PathType Leaf)) { throw "Preview handler publish output is missing: $required" }
+}
 
 $requiredCrtFiles = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
 $vswhereCandidates = @(
@@ -100,6 +114,7 @@ $crtCandidate = $crtCandidates |
 if (-not $crtCandidate) { throw 'The x64 Visual C++ runtime DLLs required by Assimp were not found.' }
 foreach ($file in $requiredCrtFiles) {
     Copy-Item -LiteralPath (Join-Path $crtCandidate.Path $file) -Destination $publishDirectory
+    Copy-Item -LiteralPath (Join-Path $crtCandidate.Path $file) -Destination $previewPublishDirectory
 }
 
 $licenseDirectory = Join-Path $publishDirectory 'Licenses'
@@ -146,7 +161,7 @@ Set-Content -LiteralPath (Join-Path $licenseDirectory 'Microsoft-Visual-Cpp-Redi
 
 $toolsDirectory = Join-Path $publishDirectory 'Tools'
 New-Item -ItemType Directory -Force -Path $toolsDirectory | Out-Null
-foreach ($toolScript in @('Cleanup-LegacyExplorerRegistration.ps1', 'Migrate-LegacyInstallFiles.ps1', 'LegacyInstallSafety.psm1')) {
+foreach ($toolScript in @('Cleanup-LegacyExplorerRegistration.ps1', 'Migrate-LegacyInstallFiles.ps1', 'LegacyInstallSafety.psm1', 'Register-ExplorerPreview.ps1', 'Unregister-ExplorerPreview.ps1', 'PreviewRegistration.Common.psm1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $toolScript) -Destination (Join-Path $toolsDirectory $toolScript) -Force
 }
 $currentFilesManifest = Join-Path $toolsDirectory 'CurrentInstallFiles.txt'
