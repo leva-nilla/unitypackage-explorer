@@ -182,7 +182,7 @@ public sealed class LightweightPreviewLoaderTests
 
     private static string CreateTemporaryDirectory()
     {
-        var path = Path.Combine(AppContext.BaseDirectory, $"lightweight-preview-test-{Guid.NewGuid():N}");
+        var path = Path.Combine(Environment.CurrentDirectory, ".artifacts", $"preview-test-{Guid.NewGuid():N}");
         Directory.CreateDirectory(path);
         return path;
     }

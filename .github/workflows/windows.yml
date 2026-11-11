@@ -271,4 +271,4 @@ jobs:
             if ($uninstalledClass.GetValueNames().Contains('AppID') -or $uninstalledClass.GetValueNames().Contains('')) { throw 'Owned Preview Handler CLSID values remained after uninstall.' }
           }
           $uninstalledInprocPath = "$uninstalledClassPath\InprocServer32"
-          if (Test-Path -LiteralPath $uninstalledInprocPath -and (Get-Item -LiteralPath $uninstalledInprocPath).GetValueNames().Count -gt 0) { throw 'Owned Preview Handler InprocServer32 values remained after uninstall.' }
+          if ((Test-Path -LiteralPath $uninstalledInprocPath) -and (Get-Item -LiteralPath $uninstalledInprocPath).GetValueNames().Count -gt 0) { throw 'Owned Preview Handler InprocServer32 values remained after uninstall.' }

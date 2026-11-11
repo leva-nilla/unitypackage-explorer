@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -31,6 +32,8 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
     private Task? _activeRequest;
     private readonly List<Task> _activeJobs = [];
     private readonly object _activeJobsGate = new();
+    private readonly object _selectionGate = new();
+    private PendingUiPayloadQueue _pendingUiPayloads = new();
 
     public int Initialize(string filePath, uint mode)
     {
@@ -89,11 +92,13 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
     public int DoPreview()
     {
         if (string.IsNullOrWhiteSpace(_path) && _stream is null) return unchecked((int)0x80070002);
+        var requestId = Interlocked.Increment(ref _generation);
+        var initialDeadline = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * 30d);
+        ResetPendingUiPayloads();
         _requestCancellation?.Cancel();
         _requestCancellation?.Dispose();
         _requestCancellation = new CancellationTokenSource();
-        _selectionCancellation?.Cancel();
-        _selectionCancellation?.Dispose();
+        CancelSelection();
         var previousRoot = _requestTempRoot;
         Task[] previousJobs;
         lock (_activeJobsGate) { previousJobs = _activeJobs.ToArray(); _activeJobs.Clear(); }
@@ -103,7 +108,6 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
             _ = Task.WhenAll(previousJobs).ContinueWith(_ => SafeDeleteOwnedTemp(previousRoot), TaskScheduler.Default);
         }
         _requestTempRoot = _stream is null ? null : CreateRequestTempRoot();
-        var requestId = Interlocked.Increment(ref _generation);
         _panel?.Dispose();
         _surface?.Dispose();
         _surface = new ExplorerPreviewSurface();
@@ -119,7 +123,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         var cancellationToken = _requestCancellation.Token;
         var path = _path;
         var stream = _stream;
-        _activeRequest = LoadRequestAsync(requestId, path, stream, _requestTempRoot, cancellationToken);
+        _activeRequest = LoadRequestAsync(requestId, path, stream, _requestTempRoot, initialDeadline, cancellationToken);
         TrackJob(_activeRequest);
         return 0;
     }
@@ -127,12 +131,11 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
     public int Unload()
     {
         Interlocked.Increment(ref _generation);
+        ResetPendingUiPayloads();
         _requestCancellation?.Cancel();
         _requestCancellation?.Dispose();
         _requestCancellation = null;
-        _selectionCancellation?.Cancel();
-        _selectionCancellation?.Dispose();
-        _selectionCancellation = null;
+        CancelSelection();
         Interlocked.Increment(ref _selectionGeneration);
         var requestRoot = _requestTempRoot;
         _requestTempRoot = null;
@@ -154,10 +157,10 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         return 0;
     }
 
-    private async Task LoadRequestAsync(long requestId, string? path, System.Runtime.InteropServices.ComTypes.IStream? stream, string? tempRoot, CancellationToken cancellationToken)
+    private async Task LoadRequestAsync(long requestId, string? path, System.Runtime.InteropServices.ComTypes.IStream? stream, string? tempRoot, long initialDeadline, CancellationToken cancellationToken)
     {
         using var loadBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        loadBudget.CancelAfter(TimeSpan.FromSeconds(30));
+        loadBudget.CancelAfter(RemainingBudget(initialDeadline));
         var loadToken = loadBudget.Token;
         try
         {
@@ -187,16 +190,22 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 throw;
             }
             var entries = catalog.Entries.Where(x => x.HasAsset && x.Extension == ".prefab").ToArray();
-            var selected = AutomaticPreviewSelector.Select(catalog.Entries, path);
+            var selected = AutomaticPreviewSelector.Select(GetPreviewableEntries(catalog.Entries), path);
             PostToUi(requestId, () =>
             {
                 var ordered = selected is not null && entries.Contains(selected) ? new[] { selected }.Concat(entries.Where(x => x != selected)) : entries;
-                if (_surface is not null) _surface.CandidateSelected += entry => StartSelected(requestId, path, catalog, entry, cancellationToken);
+                var initialSelection = true;
+                if (_surface is not null) _surface.CandidateSelected += entry =>
+                {
+                    var budget = initialSelection ? RemainingBudget(initialDeadline) : TimeSpan.FromSeconds(30);
+                    initialSelection = false;
+                    StartSelected(requestId, path, catalog, entry, cancellationToken, budget);
+                };
                 _surface?.SetCandidates(ordered);
                 if (selected is not null) _surface?.ShowStatus($"読み込み中: {selected.PathName}");
             });
-            if (selected is null) PostToUi(requestId, () => _surface?.ShowStatus(BuildSummary(path, catalog), catalog.Warnings));
-            else if (selected.Extension != ".prefab") StartSelected(requestId, path, catalog, selected, cancellationToken);
+            if (selected is null) PostToUi(requestId, () => _surface?.ShowContentList(BuildSummary(path, catalog), catalog.Entries.Where(x => x.HasAsset).Select(x => x.PathName).Take(25).ToArray(), catalog.Entries.Count(x => x.HasAsset), catalog.Warnings));
+            else if (selected.Extension != ".prefab") PostToUi(requestId, () => StartSelected(requestId, path, catalog, selected, cancellationToken, RemainingBudget(initialDeadline)));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (OperationCanceledException) { PostToUi(requestId, () => _surface?.ShowStatus($"{Path.GetFileName(path)} · 読み込みが30秒を超えました。", ["安全のため処理を取り消しました。"])); }
@@ -206,12 +215,11 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
     private void ResetForInitialize()
     {
         Interlocked.Increment(ref _generation);
+        ResetPendingUiPayloads();
         _requestCancellation?.Cancel();
         _requestCancellation?.Dispose();
         _requestCancellation = null;
-        _selectionCancellation?.Cancel();
-        _selectionCancellation?.Dispose();
-        _selectionCancellation = null;
+        CancelSelection();
         Interlocked.Increment(ref _selectionGeneration);
         var root = _requestTempRoot;
         _requestTempRoot = null;
@@ -230,17 +238,25 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         _stream = null;
     }
 
-    private void StartSelected(long requestId, string path, UnityAssetCatalog catalog, UnityPackageEntry entry, CancellationToken requestToken)
+    private void StartSelected(long requestId, string path, UnityAssetCatalog catalog, UnityPackageEntry entry, CancellationToken requestToken, TimeSpan? budget = null)
     {
-        _selectionCancellation?.Cancel();
-        _selectionCancellation?.Dispose();
-        _selectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(requestToken);
-        _selectionCancellation.CancelAfter(TimeSpan.FromSeconds(30));
-        var selectionId = Interlocked.Increment(ref _selectionGeneration);
-        var selectionSource = _selectionCancellation;
-        var task = RunSelectedAndReleaseAsync(requestId, selectionId, path, catalog, entry, selectionSource);
-        _activeRequest = task;
-        TrackJob(task);
+        lock (_selectionGate)
+        {
+            if (requestId != Volatile.Read(ref _generation) || requestToken.IsCancellationRequested) return;
+            if (_selectionCancellation is { } previous)
+            {
+                _selectionCancellation = null;
+                previous.Cancel();
+                previous.Dispose();
+            }
+            var selectionSource = CancellationTokenSource.CreateLinkedTokenSource(requestToken);
+            selectionSource.CancelAfter(budget ?? TimeSpan.FromSeconds(30));
+            _selectionCancellation = selectionSource;
+            var selectionId = Interlocked.Increment(ref _selectionGeneration);
+            var task = RunSelectedAndReleaseAsync(requestId, selectionId, path, catalog, entry, selectionSource);
+            _activeRequest = task;
+            TrackJob(task);
+        }
     }
 
     private async Task RunSelectedAndReleaseAsync(long requestId, long selectionId, string path, UnityAssetCatalog catalog, UnityPackageEntry entry, CancellationTokenSource selectionSource)
@@ -248,8 +264,25 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         try { await LoadSelectedAsync(requestId, selectionId, path, catalog, entry, selectionSource.Token).ConfigureAwait(false); }
         finally
         {
-            if (ReferenceEquals(_selectionCancellation, selectionSource)) _selectionCancellation = null;
-            selectionSource.Dispose();
+            lock (_selectionGate)
+            {
+                if (ReferenceEquals(_selectionCancellation, selectionSource))
+                {
+                    _selectionCancellation = null;
+                    selectionSource.Dispose();
+                }
+            }
+        }
+    }
+
+    private void CancelSelection()
+    {
+        lock (_selectionGate)
+        {
+            if (_selectionCancellation is not { } current) return;
+            _selectionCancellation = null;
+            current.Cancel();
+            current.Dispose();
         }
     }
 
@@ -274,12 +307,13 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                     SafeDeleteOwnedTemp(tempRoot);
                     throw;
                 }
-                PostToSelectionUi(requestId, selectionId,
-                    () => { if (_surface is { } surface) surface.ShowPrepared(prepared, $"{Path.GetFileName(path)} · {entry.PathName}", tempRoot); else { prepared.Dispose(); SafeDeleteOwnedTemp(tempRoot); } },
-                    () => { prepared.Dispose(); SafeDeleteOwnedTemp(tempRoot); });
+                var fallbackItems = catalog.Entries.Where(x => x.HasAsset).Select(x => x.PathName).Take(25).ToArray();
+                var preparedPayload = new PreparedScenePayload(prepared, tempRoot, fallbackItems, catalog.Entries.Count(x => x.HasAsset));
+                PostOwnedToSelectionUi(requestId, selectionId, preparedPayload,
+                    payload => { if (_surface is { } surface) payload.Attach(surface, $"{entry.PathName} · {BuildSummary(path, catalog)}"); else payload.Dispose(); });
                 if (prepared.Scenes.Count == 0)
                 {
-                    var fallback = AutomaticPreviewSelector.Select(catalog.Entries.Where(candidate => candidate.Kind == "Image"), path);
+                    var fallback = AutomaticPreviewSelector.Select(GetPreviewableEntries(catalog.Entries).Where(candidate => candidate.Kind == "Image"), path);
                     if (fallback is not null)
                     {
                         var fallbackTask = Task.Run(() => catalog.ReadAsset(fallback, cancellationToken: cancellationToken, maximumBytes: 64L * 1024 * 1024), cancellationToken);
@@ -290,9 +324,8 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                         if (fallbackImage is not null)
                         {
                             var previewBitmap = ScaleImage((Bitmap)fallbackImage.Clone(), 2048);
-                            PostToSelectionUi(requestId, selectionId,
-                                () => { if (_surface is { } surface) surface.ShowImage(previewBitmap, $"{Path.GetFileName(path)} · {fallback.PathName}", prepared.Warnings); else previewBitmap.Dispose(); },
-                                previewBitmap.Dispose);
+                            PostOwnedToSelectionUi(requestId, selectionId, previewBitmap,
+                                bitmap => { if (_surface is { } surface) surface.ShowImage(bitmap, $"{fallback.PathName} · {BuildSummary(path, catalog)}", prepared.Warnings); else bitmap.Dispose(); });
                         }
                     }
                 }
@@ -306,9 +339,8 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
             if (image is not null)
             {
                 var previewBitmap = ScaleImage((Bitmap)image.Clone(), 2048);
-                PostToSelectionUi(requestId, selectionId,
-                    () => { if (_surface is { } surface) surface.ShowImage(previewBitmap, $"{Path.GetFileName(path)} · {entry.PathName}", catalog.Warnings); else previewBitmap.Dispose(); },
-                    previewBitmap.Dispose);
+                PostOwnedToSelectionUi(requestId, selectionId, previewBitmap,
+                    bitmap => { if (_surface is { } surface) surface.ShowImage(bitmap, $"{entry.PathName} · {BuildSummary(path, catalog)}", catalog.Warnings); else bitmap.Dispose(); });
             }
             else PostToUi(requestId, () => _surface?.ShowStatus($"{Path.GetFileName(path)} · {entry.PathName}", catalog.Warnings));
         }
@@ -345,6 +377,46 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         catch (InvalidOperationException) { rejected(); }
     }
 
+    private void PostOwnedToSelectionUi<T>(long requestId, long selectionId, T payload, Action<T> consume) where T : class, IDisposable
+    {
+        if (requestId != Volatile.Read(ref _generation) || selectionId != Volatile.Read(ref _selectionGeneration))
+        {
+            payload.Dispose();
+            return;
+        }
+        var queue = Volatile.Read(ref _pendingUiPayloads);
+        var lease = queue.Enqueue(payload, consume);
+        if (!lease.IsPending) return;
+        if (requestId != Volatile.Read(ref _generation) || selectionId != Volatile.Read(ref _selectionGeneration))
+        {
+            lease.Dispose();
+            return;
+        }
+        var panel = _panel;
+        if (panel?.IsDisposed != false || !panel.IsHandleCreated)
+        {
+            lease.Dispose();
+            return;
+        }
+        try
+        {
+            panel.BeginInvoke((Action)(() =>
+            {
+                if (requestId == Volatile.Read(ref _generation)
+                    && selectionId == Volatile.Read(ref _selectionGeneration)
+                    && !panel.IsDisposed) lease.TryConsume();
+                else lease.Dispose();
+            }));
+        }
+        catch (InvalidOperationException) { lease.Dispose(); }
+    }
+
+    private void ResetPendingUiPayloads()
+    {
+        var previous = Interlocked.Exchange(ref _pendingUiPayloads, new PendingUiPayloadQueue());
+        previous.Dispose();
+    }
+
     private void TrackJob(Task job)
     {
         lock (_activeJobsGate) _activeJobs.Add(job);
@@ -356,6 +428,18 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         var kinds = catalog.Entries.Where(x => x.HasAsset).GroupBy(x => x.Kind).OrderBy(x => x.Key)
             .Select(x => $"{x.Key} {x.Count():N0}");
         return $"{Path.GetFileName(path)} · {catalog.Entries.Count(x => x.HasAsset):N0} assets · {string.Join(" / ", kinds)}";
+    }
+
+    private static TimeSpan RemainingBudget(long deadline)
+    {
+        var remaining = (deadline - Stopwatch.GetTimestamp()) / (double)Stopwatch.Frequency;
+        return TimeSpan.FromSeconds(Math.Max(0, remaining));
+    }
+
+    private static IEnumerable<UnityPackageEntry> GetPreviewableEntries(IEnumerable<UnityPackageEntry> entries)
+    {
+        var supportedImages = new HashSet<string>([".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff"], StringComparer.OrdinalIgnoreCase);
+        return entries.Where(entry => entry.Kind != "Image" || supportedImages.Contains(entry.Extension));
     }
 
     private static Bitmap ScaleImage(Bitmap source, int maximumSize)
@@ -443,7 +527,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                         : ".zip";
                 }
                 var path = Path.Combine(tempRoot, "source" + extension);
-                const long maximumSourceBytes = 1024L * 1024 * 1024;
+                const long maximumSourceBytes = 8L * 1024 * 1024 * 1024;
                 using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.SequentialScan);
                 var buffer = new byte[1024 * 1024];
                 long total = 0;
@@ -453,7 +537,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                     var count = input.Read(buffer, 0, buffer.Length);
                     if (count == 0) break;
                     total += count;
-                    if (total > maximumSourceBytes) throw new InvalidDataException("IStream source exceeds the 1 GiB bounded preview spool limit.");
+                    if (total > maximumSourceBytes) throw new InvalidDataException("IStream source exceeds the 8 GiB bounded preview spool limit.");
                     output.Write(buffer, 0, count);
                 }
                 return path;

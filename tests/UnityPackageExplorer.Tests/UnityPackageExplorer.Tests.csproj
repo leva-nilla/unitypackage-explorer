@@ -39,4 +39,8 @@
     <ProjectReference Include="..\..\src\UnityPackageExplorer.Rendering\UnityPackageExplorer.Rendering.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\..\src\UnityPackageExplorer.PreviewHandler\PendingUiPayloadQueue.cs" Link="PreviewHandler\PendingUiPayloadQueue.cs" />
+  </ItemGroup>
+
 </Project>
