@@ -257,6 +257,19 @@ public sealed class UnityAssetCatalogTests
             Assert.Equal("multi-outline", multi.LilToon?.ShaderVariant);
             File.WriteAllText(nonLilPath, File.ReadAllText(nonLilPath).Replace("_TransparentMode: 1", "_TransparentMode: 3", StringComparison.Ordinal));
             Assert.Null(UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo("ffffffffffffffffffffffffffffffff")!.LilToon);
+
+            File.WriteAllText(nonLilPath, "Material:\n  m_Name: Two Pass Transparent\n  m_Shader: {fileID: 4800000, guid: 6a77405f7dfdc1447af58854c7f43f39, type: 3}\n");
+            var twoPass = UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo("ffffffffffffffffffffffffffffffff")!;
+            Assert.False(twoPass.IsLilToonShaderAsset);
+            Assert.Equal(UnityMaterialRenderMode.Transparent, twoPass.RenderMode);
+            Assert.Equal("two-pass", twoPass.LilToon?.ShaderVariant);
+
+            var twoPassShaderPath = Path.Combine(root, "Assets", "lilToon", "Shader", "lts_twotrans.shader");
+            File.WriteAllText(twoPassShaderPath, "Shader \"Hidden/lilToonTwoPassTransparent\" {}\n");
+            File.WriteAllText(twoPassShaderPath + ".meta", "fileFormatVersion: 2\nguid: 11111111111111111111111111111111\n");
+            File.WriteAllText(nonLilPath, "Material:\n  m_Name: Two Pass By Shader Path\n  m_Shader: {fileID: 4800000, guid: 11111111111111111111111111111111, type: 3}\n");
+            var twoPassByPath = UnityAssetCatalog.OpenProjectPrefab(prefabPath).ReadMaterialInfo("ffffffffffffffffffffffffffffffff")!;
+            Assert.Equal("two-pass", twoPassByPath.LilToon?.ShaderVariant);
         }
         finally
         {

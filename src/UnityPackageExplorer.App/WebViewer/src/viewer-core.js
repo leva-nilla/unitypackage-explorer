@@ -21,6 +21,7 @@ const lilToonShaderVariantsByMode = Object.freeze({
 export function resolveLilToonShaderVariant(renderMode, shaderVariant) {
   const mode = typeof renderMode === "string" ? renderMode.toLowerCase() : "opaque";
   const variants = lilToonShaderVariantsByMode[mode] ?? lilToonShaderVariantsByMode.opaque;
+  if (shaderVariant === "two-pass") return "Hidden/lilToonTwoPassTransparent";
   const outline = shaderVariant === "outline" || shaderVariant === "multi-outline";
   return outline ? variants.outline : variants.regular;
 }

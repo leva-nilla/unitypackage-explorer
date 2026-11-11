@@ -79,6 +79,14 @@ public static class UnityMaterialPreviewPolicy
         mode == UnityMaterialRenderMode.Cutout && cutoff is { } value && float.IsFinite(value) ? Math.Clamp(value, 0f, 1f) : null;
 }
 
+public static class PreviewModePolicy
+{
+    /// <summary>Allows returning to the lightweight view during another preview load; opening a new source invalidates the active scene.</summary>
+    /// <param name="isPreviewBusy">Whether another preview operation is running; it does not block returning to the active scene.</param>
+    public static bool CanReturnToLightweight(bool hasActiveScene, bool isOpeningSource, bool isPreviewBusy, bool isLilToonMode, bool isLilToonLoading) =>
+        hasActiveScene && !isOpeningSource && (isLilToonMode || isLilToonLoading);
+}
+
 public sealed record UnityMaterialTextureReference(string Slot, string Guid);
 
 public sealed class PrefabNode

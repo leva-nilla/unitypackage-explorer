@@ -18,6 +18,10 @@ test("selects outline shader variants that match opaque, cutout, and transparent
   assert.equal(resolveLilToonShaderVariant("transparent", "outline"), "Hidden/lilToonTransparentOutline");
 });
 
+test("preserves the lilToon two-pass transparent shader variant", () => {
+  assert.equal(resolveLilToonShaderVariant("transparent", "two-pass"), "Hidden/lilToonTwoPassTransparent");
+});
+
 test("maps regular and Multi shader variants to the matching supported render mode", () => {
   assert.equal(resolveLilToonShaderVariant("opaque", null), "lilToon");
   assert.equal(resolveLilToonShaderVariant("cutout", null), "Hidden/lilToonCutout");

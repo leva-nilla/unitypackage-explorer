@@ -1277,12 +1277,13 @@ public partial class MainWindow : Window
         _lilToonLoadVersion++;
         CancelLilToonLoad();
         LilToonHostContainer.Visibility = Visibility.Collapsed;
-        await _lilToonHost.ClearAsync();
         Viewport.Visibility = Visibility.Visible;
         CameraHelp.Visibility = Visibility.Visible;
         SetPreviewModeSelection(lilToon: false);
         SetMaterialModeDetails(lilToon: false);
         SetStatus("軽量表示です。");
+        try { await _lilToonHost.ClearAsync(); }
+        catch (Exception ex) { SetStatus($"軽量表示です。lilToon表示の終了処理に失敗しました: {ex.Message}"); }
     }
 
     private async Task ShowLilToonAsync(long requestId)
@@ -1381,8 +1382,8 @@ public partial class MainWindow : Window
     private void SetPreviewModeSelection(bool lilToon, bool lilToonLoading = false)
     {
         _isLilToonMode = lilToon;
-        var modelAvailable = _activeSceneRequestId.HasValue && !_isBusy && !_isOpeningSource;
-        var canUseLilToon = modelAvailable && !lilToonLoading && _activeHasLilToonMaterial
+        var modelAvailable = _activeSceneRequestId.HasValue && !_isOpeningSource;
+        var canUseLilToon = modelAvailable && !_isBusy && !lilToonLoading && _activeHasLilToonMaterial
             && _activeLilToonRequestId is { } requestId
             && _requestTemporaryRoots.TryGetValue(requestId, out var state)
             && state.LilToonPreparationPlans.Count > 0;
@@ -1401,10 +1402,11 @@ public partial class MainWindow : Window
         LightweightModeButton.Foreground = lilToon ? new SolidColorBrush(Color.FromRgb(229, 233, 239)) : Brushes.White;
         LightweightModeButton.BorderBrush = new SolidColorBrush(lilToon ? Color.FromRgb(57, 70, 86) : Color.FromRgb(117, 213, 194));
         LightweightModeButton.FontWeight = lilToon ? FontWeights.Normal : FontWeights.SemiBold;
-        LightweightModeButton.IsEnabled = modelAvailable && (lilToon || lilToonLoading);
+        LightweightModeButton.IsEnabled = PreviewModePolicy.CanReturnToLightweight(
+            _activeSceneRequestId.HasValue, _isOpeningSource, _isBusy, lilToon, lilToonLoading);
         LightweightModeButton.ToolTip = lilToonLoading && modelAvailable
             ? "準備を取り消して軽量表示に戻る"
-            : _isBusy || _isOpeningSource ? "読み込み中"
+            : _isOpeningSource ? "読み込み中"
             : !modelAvailable ? "3Dモデルを選択"
             : lilToon ? "軽量表示に切り替え"
             : "現在は軽量表示です";
@@ -1661,7 +1663,7 @@ public partial class MainWindow : Window
         if (message is not null) SetStatus(message);
         Cursor = busy ? System.Windows.Input.Cursors.Wait : System.Windows.Input.Cursors.Arrow;
         PreviewProgress.Visibility = busy && !_isOpeningSource ? Visibility.Visible : Visibility.Collapsed;
-        SetPreviewModeSelection(_isLilToonMode, lilToonLoading: busy || _isOpeningSource || _lilToonCancellation is not null);
+        SetPreviewModeSelection(_isLilToonMode, lilToonLoading: _isOpeningSource || _lilToonCancellation is not null);
     }
 
     private void SetStatus(string message) => StatusLabel.Text = message;

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Hidden/lilToonTwoPassTransparent材質を認識し、近似表示でも2パス透明シェーダーを維持。lilToon表示中に軽量表示へ戻る操作も読み込み状況に左右されないよう修正。
 - Prefab Variantの連鎖参照を解決し、改行された材質参照とスロットの差分を読み取るよう修正。循環・深さ・展開量を制限します。
 - lilToon材質の影・輪郭線・ノーマル・MatCap・発光・アルファマスクを確認するローカル互換ビューを追加。
 - ZIP内の512 MiB超のUnityPackageを、メモリへ全量展開せずに読み込むよう修正。

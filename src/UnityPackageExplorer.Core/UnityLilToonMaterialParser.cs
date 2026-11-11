@@ -20,7 +20,8 @@ internal static partial class UnityLilToonMaterialParser
             ["165365ab7100a044ca85fc8c33548a62"] = UnityMaterialRenderMode.Transparent,
             ["3c79b10c7e0b2784aaa4c2f8dd17d55e"] = UnityMaterialRenderMode.Transparent,
             ["0e3ece1bd59542743bccadb21f68318e"] = UnityMaterialRenderMode.Transparent,
-            ["1c12a37046f07ac4486881deaf0187ea"] = UnityMaterialRenderMode.Transparent
+            ["1c12a37046f07ac4486881deaf0187ea"] = UnityMaterialRenderMode.Transparent,
+            ["6a77405f7dfdc1447af58854c7f43f39"] = UnityMaterialRenderMode.Transparent
         };
 
     private static readonly IReadOnlyDictionary<string, UnityMaterialRenderMode> KnownFiles =
@@ -37,7 +38,8 @@ internal static partial class UnityLilToonMaterialParser
             ["lts_trans.shader"] = UnityMaterialRenderMode.Transparent,
             ["lts_trans_o.shader"] = UnityMaterialRenderMode.Transparent,
             ["ltsl_trans.shader"] = UnityMaterialRenderMode.Transparent,
-            ["ltsl_trans_o.shader"] = UnityMaterialRenderMode.Transparent
+            ["ltsl_trans_o.shader"] = UnityMaterialRenderMode.Transparent,
+            ["lts_twotrans.shader"] = UnityMaterialRenderMode.Transparent
         };
 
     public static bool TryGetRenderMode(string? shaderGuid, string? shaderName, out UnityMaterialRenderMode mode, bool isLilToonAsset = false)
@@ -66,7 +68,8 @@ internal static partial class UnityLilToonMaterialParser
         var textures = ParseTextures(text, properties);
         var outline = IsOutline(shaderGuid, shaderName);
         var effectiveMode = renderMode == UnityMaterialRenderMode.Unknown ? knownMode : renderMode;
-        var variant = multi ? (outline ? "multi-outline" : "multi") : outline ? "outline" : null;
+        var twoPass = IsTwoPass(shaderGuid, shaderName, isLilToonAsset);
+        var variant = twoPass ? "two-pass" : multi ? (outline ? "multi-outline" : "multi") : outline ? "outline" : null;
         return new LilToonMaterialData(effectiveMode.ToString().ToLowerInvariant(), variant, properties, textures);
     }
 
@@ -85,6 +88,10 @@ internal static partial class UnityLilToonMaterialParser
         string.Equals(guid, "9294844b15dca184d914a632279b24e1", StringComparison.OrdinalIgnoreCase)
         || string.Equals(guid, "51b2dee0ab07bd84d8147601ff89e511", StringComparison.OrdinalIgnoreCase)
         || (trustedAsset && shaderName is "ltsmulti" or "ltsmulti_o");
+
+    private static bool IsTwoPass(string? guid, string? shaderName, bool trustedAsset) =>
+        string.Equals(guid, "6a77405f7dfdc1447af58854c7f43f39", StringComparison.OrdinalIgnoreCase)
+        || (trustedAsset && string.Equals(Path.GetFileName(shaderName), "lts_twotrans", StringComparison.OrdinalIgnoreCase));
 
     private static void ParseScalarSection(string text, string section, IDictionary<string, object> properties, bool integer)
     {
