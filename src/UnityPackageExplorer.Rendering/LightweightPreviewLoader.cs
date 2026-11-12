@@ -151,7 +151,7 @@ public static class LightweightPreviewLoader
         var scene = importer.Load(modelPath, new ImporterConfiguration
         {
             ImportMaterialType = MaterialType.BlinnPhong,
-            CreateSkeletonForBoneSkinningMesh = true
+            CreateSkeletonForBoneSkinningMesh = false
         }) ?? throw new InvalidDataException("FBX could not be loaded.");
         try
         {
