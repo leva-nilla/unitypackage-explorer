@@ -38,6 +38,15 @@ $packageCache = if ([string]::IsNullOrWhiteSpace($env:NUGET_PACKAGES)) { Join-Pa
 
 & (Join-Path $PSScriptRoot 'Build-WebViewer.ps1')
 
+# Force a clean rebuild so stale incremental outputs cannot leak into the installer.
+foreach ($project in @($applicationProject, $previewHandlerProject)) {
+    $projectDir = Split-Path -Parent $project
+    foreach ($folder in @('bin', 'obj')) {
+        $target = Join-Path $projectDir $folder
+        if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+    }
+}
+
 if (Test-Path -LiteralPath $releaseRoot) {
     $resolvedArtifacts = $artifactRoot.TrimEnd('\') + '\'
     if (-not ([IO.Path]::GetFullPath($releaseRoot).StartsWith($resolvedArtifacts, [StringComparison]::OrdinalIgnoreCase))) {
