@@ -84,7 +84,7 @@ dotnet test .\UnityPackageExplorer.sln -c Release
 
 プロジェクトのソースはMIT Licenseです。依存コンポーネントの著作権・ライセンスは[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)と[`ThirdPartyLicenses`](ThirdPartyLicenses/)に記載しています。
 
-## MotW プレビュー有効化（任意）
+## MotW プレビュー有効化（推奨）
 
 Install-MotW.bat を管理者として実行すると、セットアップに加えて HKLM\...\Policies\Attachments\SaveZoneInformation = 1 を設定し、新規ダウンロードファイルに MotW が付かないようにします。これによりインターネットからダウンロードしたファイルのプレビューが動作します。
 

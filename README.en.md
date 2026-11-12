@@ -65,7 +65,7 @@ To make preview work for newly downloaded files, run as Administrator:
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments" /v SaveZoneInformation /t REG_DWORD /d 1 /f
 ```
 Existing MotW files still require individual unblocking.
-## MotW preview enable (optional)
+## MotW preview enable (recommended)
 
 Run Install-MotW.bat as Administrator to install and additionally set
 HKLM\...\Policies\Attachments\SaveZoneInformation = 1, so newly downloaded
