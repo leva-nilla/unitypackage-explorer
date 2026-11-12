@@ -85,6 +85,396 @@ Filename: "{app}\{#ProductExe}"; Description: "{cm:LaunchProgram,{#StringChange(
 Type: files; Name: "{app}\.unitypackage-explorer-inno-install.json"
 
 [Code]
+function IsValidAssociationProgId(const ProgId: String): Boolean;
+var
+  Index: Integer;
+  Segment: String;
+begin
+  Result := False;
+  if ProgId = '' then Exit;
+  Segment := '';
+  for Index := 1 to Length(ProgId) do begin
+    if Copy(ProgId, Index, 1) = '\' then begin
+      if (Segment = '') or (Segment = '.') or (Segment = '..') then Exit;
+      Segment := '';
+    end else begin
+      if Pos(Copy(ProgId, Index, 1), 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-') = 0 then Exit;
+      Segment := Segment + Copy(ProgId, Index, 1);
+    end;
+  end;
+  if (Segment = '') or (Segment = '.') or (Segment = '..') then Exit;
+  Result := True;
+end;
+
+function GetAssociationProgId(const Extension: String): String;
+var
+  ProgId: String;
+begin
+  Result := '';
+  if RegQueryStringValue(HKCU,
+    'Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\' + Extension + '\UserChoice',
+    'ProgId', ProgId) then begin
+    if IsValidAssociationProgId(ProgId) and RegKeyExists(HKCR, ProgId) then begin Result := ProgId; Exit; end;
+  end;
+  if not RegQueryStringValue(HKCR, Extension, '', ProgId) then Exit;
+  if IsValidAssociationProgId(ProgId) and RegKeyExists(HKCR, ProgId) then Result := ProgId;
+end;
+
+procedure RegisterAssociationProgIdVerb(const ProgId, ApplicationPath: String);
+var
+  VerbPath, CommandPath, CommandValue, ExpectedCommand, IconValue: String;
+begin
+  if ProgId = '' then Exit;
+
+  VerbPath := 'Software\Classes\' + ProgId + '\shell\UnityPackageExplorer.Open';
+  CommandPath := VerbPath + '\command';
+  ExpectedCommand := '"' + ApplicationPath + '" "%1"';
+  if RegValueExists(HKCU, CommandPath, '') then begin
+    if not RegQueryStringValue(HKCU, CommandPath, '', CommandValue) or
+       (CompareText(CommandValue, ExpectedCommand) <> 0) then
+      RaiseException('A conflicting command appeared for ProgID ' + ProgId + '.');
+  end;
+  if not RegValueExists(HKCU, CommandPath, '') and
+     (RegValueExists(HKCU, VerbPath, '') or RegValueExists(HKCU, VerbPath, 'Icon')) then
+    RaiseException('An existing ProgID verb without an owned command was left untouched for ' + ProgId + '.');
+  if RegQueryStringValue(HKCU, VerbPath, '', CommandValue) and
+     (CommandValue <> '') and (CommandValue <> 'UnityPackage Explorer で開く') then
+    RaiseException('A conflicting verb appeared for ProgID ' + ProgId + '.');
+  if RegQueryStringValue(HKCU, VerbPath, 'Icon', IconValue) and
+     (CompareText(IconValue, ApplicationPath + ',0') <> 0) then
+    RaiseException('A conflicting verb icon appeared for ProgID ' + ProgId + '.');
+
+  if not RegWriteStringValue(HKCU, CommandPath, '', ExpectedCommand) then
+    RaiseException('Could not register the UnityPackage Explorer command for ProgID ' + ProgId + '.');
+  if not RegWriteStringValue(HKCU, VerbPath, '', 'UnityPackage Explorer で開く') or
+     not RegWriteStringValue(HKCU, VerbPath, 'Icon', ApplicationPath + ',0') then
+    RaiseException('Could not register the UnityPackage Explorer verb for ProgID ' + ProgId + '.');
+end;
+
+procedure RegisterCurrentAssociationProgIdVerbs(const ApplicationPath: String);
+var
+  RegisteredProgIds: TArrayOfString;
+  Index, InnerIndex: Integer;
+  ValueName: String;
+  ProgId, Extension, StatePath: String;
+begin
+  SetArrayLength(RegisteredProgIds, 0);
+  for Index := 0 to 3 do begin
+    case Index of
+      0: Extension := '.unitypackage';
+      1: Extension := '.prefab';
+      2: Extension := '.zip';
+      3: Extension := '.rar';
+    end;
+    ProgId := GetAssociationProgId(Extension);
+    if ProgId <> '' then begin
+      for InnerIndex := 0 to GetArrayLength(RegisteredProgIds) - 1 do
+        if CompareText(RegisteredProgIds[InnerIndex], ProgId) = 0 then ProgId := '';
+      if ProgId <> '' then begin
+        SetArrayLength(RegisteredProgIds, GetArrayLength(RegisteredProgIds) + 1);
+        RegisteredProgIds[GetArrayLength(RegisteredProgIds) - 1] := ProgId;
+      end;
+    end;
+  end;
+
+  StatePath := 'Software\UnityPackageExplorer\Install';
+  for Index := 0 to GetArrayLength(RegisteredProgIds) - 1 do begin
+    ValueName := 'ProgIdVerb' + IntToStr(Index) + 'ProgId';
+    if not RegWriteStringValue(HKCU, StatePath, ValueName, RegisteredProgIds[Index]) or
+       not RegWriteStringValue(HKCU, StatePath, 'ProgIdVerb' + IntToStr(Index) + 'Command', '"' + ApplicationPath + '" "%1"') then begin
+      for InnerIndex := 0 to GetArrayLength(RegisteredProgIds) - 1 do begin
+        RegDeleteValue(HKCU, StatePath, 'ProgIdVerb' + IntToStr(InnerIndex) + 'ProgId');
+        RegDeleteValue(HKCU, StatePath, 'ProgIdVerb' + IntToStr(InnerIndex) + 'Command');
+      end;
+      RaiseException('Could not save ProgID verb ownership state.');
+    end;
+  end;
+  if not RegWriteDWordValue(HKCU, StatePath, 'ProgIdVerbCount', GetArrayLength(RegisteredProgIds)) then begin
+    for Index := 0 to GetArrayLength(RegisteredProgIds) - 1 do begin
+      RegDeleteValue(HKCU, StatePath, 'ProgIdVerb' + IntToStr(Index) + 'ProgId');
+      RegDeleteValue(HKCU, StatePath, 'ProgIdVerb' + IntToStr(Index) + 'Command');
+    end;
+    RaiseException('Could not save ProgID verb ownership state.');
+  end;
+  for Index := 0 to GetArrayLength(RegisteredProgIds) - 1 do
+    RegisterAssociationProgIdVerb(RegisteredProgIds[Index], ApplicationPath);
+end;
+
+function HasOwnedInstallMarker(const InstallDirectory, MarkerName: String): Boolean;
+var
+  MarkerLines: TArrayOfString;
+  EscapedDirectory: String;
+  ProductFound, DirectoryFound: Boolean;
+  Index: Integer;
+begin
+  Result := False;
+  if not LoadStringsFromFile(InstallDirectory + '\' + MarkerName, MarkerLines) then Exit;
+  EscapedDirectory := InstallDirectory;
+  StringChangeEx(EscapedDirectory, '\', '\\', True);
+  ProductFound := False;
+  DirectoryFound := False;
+  for Index := 0 to GetArrayLength(MarkerLines) - 1 do begin
+    ProductFound := ProductFound or (Pos('"Product": "UnityPackageExplorer"', MarkerLines[Index]) > 0) or
+      (Pos('"Product":"UnityPackageExplorer"', MarkerLines[Index]) > 0);
+    DirectoryFound := DirectoryFound or (Pos('"InstallDirectory": "' + EscapedDirectory + '"', MarkerLines[Index]) > 0) or
+      (Pos('"InstallDirectory":"' + EscapedDirectory + '"', MarkerLines[Index]) > 0);
+  end;
+  Result := ProductFound and DirectoryFound;
+end;
+
+function DirectoryIsEmpty(const DirectoryName: String): Boolean;
+var
+  FindRec: TFindRec;
+  Found: Boolean;
+begin
+  Result := True;
+  if not DirExists(DirectoryName) then Exit;
+  Found := FindFirst(AddBackslash(DirectoryName) + '*', FindRec);
+  try
+    while Found do begin
+      if (FindRec.Name <> '.') and (FindRec.Name <> '..') then begin
+        Result := False;
+        Exit;
+      end;
+      Found := FindNext(FindRec);
+    end;
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+function ShortcutTargetsApplication(const ShortcutFile, ApplicationPath: String): Boolean;
+var
+  Shell, Shortcut: Variant;
+  TargetPath: String;
+begin
+  Result := not FileExists(ShortcutFile);
+  if not FileExists(ShortcutFile) then Exit;
+  try
+    Shell := CreateOleObject('WScript.Shell');
+    Shortcut := Shell.CreateShortcut(ShortcutFile);
+    TargetPath := ExpandFileName(Shortcut.TargetPath);
+    Result := CompareText(TargetPath, ExpandFileName(ApplicationPath)) = 0;
+  except
+    Result := False;
+  end;
+end;
+
+function ReadTextFile(const FileName: String): String;
+var
+  Lines: TArrayOfString;
+  Index: Integer;
+begin
+  Result := '';
+  if not LoadStringsFromFile(FileName, Lines) then Exit;
+  for Index := 0 to GetArrayLength(Lines) - 1 do begin
+    if Result <> '' then Result := Result + #13#10;
+    Result := Result + Lines[Index];
+  end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  InstallDirectory, ApplicationPath, ExpectedCommand, RegisteredCommand: String;
+  PowerShellPath, MigrationScript, CurrentFilesManifest, MigrationParameters: String;
+  CleanupScript, SparseErrorLog, CleanupParameters, CleanupErrorText: String;
+  ShellPaths: TArrayOfString;
+  ShellPath, AssociationProgId, VerbPath, RegisteredLabel, RegisteredIcon: String;
+  Index, PathCount, MigrationResultCode, CleanupResultCode: Integer;
+begin
+  Result := '';
+  InstallDirectory := ExpandConstant('{app}');
+  ApplicationPath := InstallDirectory + '\UnityPackageExplorer.App.exe';
+
+  if not DirectoryIsEmpty(InstallDirectory) and
+     not HasOwnedInstallMarker(InstallDirectory, '.unitypackage-explorer-install.json') and
+     not HasOwnedInstallMarker(InstallDirectory, '.unitypackage-explorer-inno-install.json') then begin
+    Result := 'インストール先に別のファイルがあります。内容を保護するため、既存のUnityPackage Explorerインストールと確認できないフォルダーへの上書きを中止しました。';
+    Exit;
+  end;
+
+  ExtractTemporaryFile('Migrate-LegacyInstallFiles.ps1');
+  ExtractTemporaryFile('Cleanup-LegacyExplorerRegistration.ps1');
+  ExtractTemporaryFile('LegacyInstallSafety.psm1');
+  ExtractTemporaryFile('Register-ExplorerPreview.ps1');
+  ExtractTemporaryFile('Unregister-ExplorerPreview.ps1');
+  ExtractTemporaryFile('PreviewRegistration.Common.psm1');
+  ExtractTemporaryFile('CurrentInstallFiles.txt');
+  PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  MigrationScript := ExpandConstant('{tmp}\Migrate-LegacyInstallFiles.ps1');
+  CurrentFilesManifest := ExpandConstant('{tmp}\CurrentInstallFiles.txt');
+  MigrationParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + MigrationScript + #34 +
+    ' -InstallDirectory ' + #34 + InstallDirectory + #34 + ' -CurrentFilesManifest ' + #34 + CurrentFilesManifest + #34 + ' -Mode ValidateOnly';
+  if not Exec(PowerShellPath, MigrationParameters, '', SW_HIDE, ewWaitUntilTerminated, MigrationResultCode) then begin
+    Result := '旧版インストールの所有ファイルを検証できませんでした。既存ファイルを保護するため、セットアップを中止しました。';
+    Exit;
+  end;
+  if MigrationResultCode <> 0 then begin
+    if HasOwnedInstallMarker(InstallDirectory, '.unitypackage-explorer-inno-install.json') and
+       not FileExists(InstallDirectory + '\Tools\CurrentInstallFiles.txt') then
+      Result := '旧版Innoセットアップの所有ファイル一覧（Tools\CurrentInstallFiles.txt）が見つかりません。安全に確認できない既存ファイルを保護するため、更新を中止しました。Windowsの「設定 > アプリ > インストールされているアプリ」からUnityPackage Explorerをアンインストールし、完了後にこのセットアップを再実行してください。'
+    else
+      Result := '現在のセットアップが上書きするファイルに旧版の所有記録がありません。未知のファイルを保護するため、セットアップを中止しました。';
+    Exit;
+  end;
+
+  if WizardIsTaskSelected('startmenu') and not ShortcutTargetsApplication(ExpandConstant('{userprograms}\UnityPackage Explorer\UnityPackage Explorer.lnk'), ApplicationPath) then begin
+    Result := 'スタートメニューに同名の別アプリのショートカットがあります。上書きせず、名前を変更してから再実行してください。';
+    Exit;
+  end;
+  if WizardIsTaskSelected('sendto') and not ShortcutTargetsApplication(ExpandConstant('{userappdata}\Microsoft\Windows\SendTo\UnityPackage Explorer.lnk'), ApplicationPath) then begin
+    Result := '「送る」に同名の別アプリのショートカットがあります。上書きせず、名前を変更してから再実行してください。';
+    Exit;
+  end;
+
+  ExpectedCommand := '"' + ApplicationPath + '" "%1"';
+  SetArrayLength(ShellPaths, 4);
+  ShellPaths[0] := 'Software\Classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorer.Open\command';
+  ShellPaths[1] := 'Software\Classes\SystemFileAssociations\.prefab\shell\UnityPackageExplorer.Open\command';
+  ShellPaths[2] := 'Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open\command';
+  ShellPaths[3] := 'Software\Classes\SystemFileAssociations\.rar\shell\UnityPackageExplorer.Open\command';
+  PathCount := 4;
+  for Index := 0 to 3 do begin
+    case Index of
+      0: AssociationProgId := GetAssociationProgId('.unitypackage');
+      1: AssociationProgId := GetAssociationProgId('.prefab');
+      2: AssociationProgId := GetAssociationProgId('.zip');
+      3: AssociationProgId := GetAssociationProgId('.rar');
+    end;
+    if AssociationProgId <> '' then begin
+      SetArrayLength(ShellPaths, PathCount + 1);
+      ShellPaths[PathCount] := 'Software\Classes\' + AssociationProgId + '\shell\UnityPackageExplorer.Open\command';
+      PathCount := PathCount + 1;
+    end;
+  end;
+  for Index := 0 to PathCount - 1 do begin
+    ShellPath := ShellPaths[Index];
+    if RegValueExists(HKCU, ShellPath, '') then begin
+      if not RegQueryStringValue(HKCU, ShellPath, '', RegisteredCommand) or (CompareText(RegisteredCommand, ExpectedCommand) <> 0) then begin
+        Result := '右クリックメニューに同じ名前の別コマンドがあります。既存の登録を保護するため、登録を中止しました。';
+        Exit;
+      end;
+    end;
+    if Pos('SystemFileAssociations', ShellPath) = 0 then begin
+      VerbPath := Copy(ShellPath, 1, Length(ShellPath) - Length('\command'));
+      if not RegValueExists(HKCU, ShellPath, '') and
+         (RegValueExists(HKCU, VerbPath, '') or RegValueExists(HKCU, VerbPath, 'Icon')) then begin
+        Result := 'ProgIDに所有を確認できない同名の右クリック項目があります。既存の登録を保護するため、登録を中止しました。';
+        Exit;
+      end;
+      if RegQueryStringValue(HKCU, VerbPath, '', RegisteredLabel) and (RegisteredLabel <> '') and
+         (RegisteredLabel <> 'UnityPackage Explorer で開く') then begin
+        Result := 'ProgIDの右クリック項目に同じ名前の別登録があります。既存の登録を保護するため、登録を中止しました。';
+        Exit;
+      end;
+      if RegQueryStringValue(HKCU, VerbPath, 'Icon', RegisteredIcon) and
+         (CompareText(RegisteredIcon, ApplicationPath + ',0') <> 0) then begin
+        Result := 'ProgIDの右クリック項目に別アプリのアイコン登録があります。既存の登録を保護するため、登録を中止しました。';
+        Exit;
+      end;
+    end;
+  end;
+
+  CleanupScript := ExpandConstant('{tmp}\Cleanup-LegacyExplorerRegistration.ps1');
+  SparseErrorLog := ExpandConstant('{tmp}\UnityPackageExplorer-SparseRemovalError.txt');
+  DeleteFile(SparseErrorLog);
+  CleanupParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + CleanupScript + #34 +
+    ' -InstallDirectory ' + #34 + InstallDirectory + #34 + ' -CurrentFilesManifest ' + #34 + CurrentFilesManifest + #34 +
+    ' -MigrationScriptPath ' + #34 + MigrationScript + #34 + ' -Mode Upgrade -SparsePackageErrorLog ' + #34 + SparseErrorLog + #34;
+  if WizardIsTaskSelected('sendto') then CleanupParameters := CleanupParameters + ' -KeepSendToOnUpgrade';
+  if not Exec(PowerShellPath, CleanupParameters, '', SW_HIDE, ewWaitUntilTerminated, CleanupResultCode) then begin
+    Result := '旧バージョンの登録と所有ファイルを整理できませんでした。既存ファイルを変更する前にセットアップを中止しました。';
+    Exit;
+  end;
+  if CleanupResultCode <> 0 then begin
+    CleanupErrorText := '旧バージョンの登録と所有ファイルを整理できませんでした。既存ファイルを変更する前にセットアップを中止しました。';
+    if FileExists(SparseErrorLog) then begin
+      CleanupErrorText := ReadTextFile(SparseErrorLog);
+      if CleanupErrorText = '' then CleanupErrorText := '旧バージョンの登録と所有ファイルを整理できませんでした。';
+      CleanupErrorText := CleanupErrorText + #13#10#13#10 + 'セットアップを中止しました。';
+    end;
+    Result := CleanupErrorText;
+    Exit;
+  end;
+  DeleteFile(SparseErrorLog);
+end;
+
+function InitializeUninstall(): Boolean;
+var
+  PowerShellPath, CleanupScript, ErrorLogPath, Parameters, ErrorText, PreviewScript, PreviewParameters: String;
+  ExitCode: Integer;
+begin
+  Result := True;
+  PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  PreviewScript := ExpandConstant('{app}\Tools\Unregister-ExplorerPreview.ps1');
+  PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + ExpandConstant('{app}') + #34;
+  if FileExists(PreviewScript) then begin
+    if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then begin
+      MsgBox('エクスプローラーのプレビュー欄登録を復元できなかったため、アンインストールを中止しました。', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+  end;
+  CleanupScript := ExpandConstant('{app}\Tools\Cleanup-LegacyExplorerRegistration.ps1');
+  ErrorLogPath := ExpandConstant('{tmp}\UnityPackageExplorer-UninstallCleanupError.txt');
+  DeleteFile(ErrorLogPath);
+  Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + CleanupScript + #34 +
+    ' -InstallDirectory ' + #34 + ExpandConstant('{app}') + #34 + ' -CurrentFilesManifest ' + #34 +
+    ExpandConstant('{app}\Tools\CurrentInstallFiles.txt') + #34 + ' -Mode Uninstall -SparsePackageErrorLog ' + #34 + ErrorLogPath + #34;
+  if not Exec(PowerShellPath, Parameters, '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then begin
+    ErrorText := 'UnityPackage Explorerの登録を解除できなかったため、アンインストールを中止しました。右クリックメニューの登録が残る可能性を避けるため、解除に成功してから再試行してください。';
+    if FileExists(ErrorLogPath) then begin
+      ErrorText := ReadTextFile(ErrorLogPath);
+      if ErrorText = '' then ErrorText := 'UnityPackage Explorerの登録解除に失敗しました。';
+      ErrorText := ErrorText + #13#10#13#10 + 'アンインストールを中止しました。';
+    end;
+    MsgBox(ErrorText, mbError, MB_OK);
+    Result := False;
+  end;
+  DeleteFile(ErrorLogPath);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  InstallDirectory, ApplicationPath, EscapedDirectory, MarkerPath, PowerShellPath, PreviewScript, PreviewParameters: String;
+  PreviewExitCode: Integer;
+  MarkerText: AnsiString;
+begin
+  if CurStep = ssPostInstall then begin
+    InstallDirectory := ExpandConstant('{app}');
+    ApplicationPath := InstallDirectory + '\{#ProductExe}';
+    if WizardIsTaskSelected('contextmenu') then
+      RegisterCurrentAssociationProgIdVerbs(ApplicationPath);
+    PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    if WizardIsTaskSelected('explorerpreview') then begin
+      PreviewScript := ExpandConstant('{app}\Tools\Register-ExplorerPreview.ps1');
+      PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;
+      if Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) then begin
+        if PreviewExitCode = 3 then begin
+          PreviewScript := ExpandConstant('{app}\Tools\Unregister-ExplorerPreview.ps1');
+          PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;
+          if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) or (PreviewExitCode <> 0) then
+            RaiseException('プレビュー欄の既存登録を復元できませんでした。');
+          MsgBox('エクスプローラーのプレビュー欄は登録されませんでした。.NET 10 Desktop Runtime (x64) が必要です。専用アプリは引き続き使用できます。' + #13#10 + 'https://dotnet.microsoft.com/download/dotnet/10.0', mbInformation, MB_OK)
+        end else if PreviewExitCode <> 0 then
+          RaiseException('エクスプローラーのプレビュー欄を登録できませんでした。セットアップをやり直してください。');
+      end else RaiseException('プレビュー欄登録スクリプトを起動できませんでした。');
+    end else begin
+      PreviewScript := ExpandConstant('{app}\Tools\Unregister-ExplorerPreview.ps1');
+      PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;
+      if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) or (PreviewExitCode <> 0) then
+        RaiseException('エクスプローラーのプレビュー欄の登録を復元できませんでした。');
+    end;
+    EscapedDirectory := InstallDirectory;
+    StringChangeEx(EscapedDirectory, '\', '\\', True);
+    MarkerPath := InstallDirectory + '\.unitypackage-explorer-inno-install.json';
+    MarkerText := '{"Product":"UnityPackageExplorer","InstallDirectory":"' + EscapedDirectory + '"}';
+    if not SaveStringToFile(MarkerPath, MarkerText, False) then
+      Log('Could not write the UnityPackage Explorer ownership marker: ' + MarkerPath);
+  end;
+end;
+
+[Code]
 procedure CurPageChanged(CurPageID: Integer);
 var
   i: Integer;
