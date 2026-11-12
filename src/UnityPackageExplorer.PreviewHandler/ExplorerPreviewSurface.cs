@@ -32,6 +32,8 @@ internal sealed class ExplorerPreviewSurface : IDisposable
     private PreparedPreview? _prepared;
     private string? _preparedTempRoot;
     private bool _disposed;
+    private System.Windows.Media.Media3D.Point3D _modelCenter;
+    private float _modelExtent = 1f;
 
     public ExplorerPreviewSurface()
     {
@@ -51,12 +53,15 @@ internal sealed class ExplorerPreviewSurface : IDisposable
             Camera = new PerspectiveCamera { Position = new System.Windows.Media.Media3D.Point3D(0, 2, 6), LookDirection = new System.Windows.Media.Media3D.Vector3D(0, -1, -6), UpDirection = new System.Windows.Media.Media3D.Vector3D(0, 1, 0), FieldOfView = 45 },
             ShowCoordinateSystem = true,
             IsRotationEnabled = true,
-            IsPanEnabled = false,
+            IsPanEnabled = true,
             IsZoomEnabled = true,
             Visibility = Visibility.Collapsed
         };
         _models = new SceneNodeGroupModel3D();
+        _viewport.InputBindings.Clear();
         _viewport.InputBindings.Add(new MouseBinding(ViewportCommands.Rotate, new MouseGesture(MouseAction.LeftClick)));
+        _viewport.InputBindings.Add(new MouseBinding(ViewportCommands.Pan, new MouseGesture(MouseAction.MiddleClick)));
+        _viewport.PreviewMouseRightButtonDown += (_, e) => { ResetViewToFront(); e.Handled = true; };
         _viewport.Items.Add(_models);
         _viewport.Items.Add(new AmbientLight3D { Color = Colors.White });
         _viewport.Items.Add(new DirectionalLight3D { Color = Colors.White, Direction = new System.Windows.Media.Media3D.Vector3D(-1, -2, -3) });
@@ -144,6 +149,8 @@ internal sealed class ExplorerPreviewSurface : IDisposable
                 camera.UpDirection = new System.Windows.Media.Media3D.Vector3D(0, 1, 0);
                 _viewport.FixedRotationPoint = new System.Windows.Media.Media3D.Point3D(center.X, center.Y, center.Z);
                 _viewport.FixedRotationPointEnabled = true;
+                _modelCenter = new System.Windows.Media.Media3D.Point3D(center.X, center.Y, center.Z);
+                _modelExtent = extent;
             }
             else
             {
@@ -203,6 +210,18 @@ internal sealed class ExplorerPreviewSurface : IDisposable
             _preparedTempRoot = null;
             PreviewHandlerCom.SafeDeleteOwnedTemp(tempRoot);
         }
+    }
+
+    private void ResetViewToFront()
+    {
+        if (_viewport.Camera is not HelixToolkit.Wpf.SharpDX.PerspectiveCamera camera) return;
+        var center = _modelCenter;
+        var extent = _modelExtent <= 0 ? 1f : _modelExtent;
+        var direction = System.Numerics.Vector3.Normalize(new System.Numerics.Vector3(0f, 0.05f, 1f));
+        var distance = extent * 1.45f;
+        camera.Position = new System.Windows.Media.Media3D.Point3D(center.X + direction.X * distance, center.Y + direction.Y * distance, center.Z + direction.Z * distance);
+        camera.LookDirection = new System.Windows.Media.Media3D.Vector3D(-direction.X * distance, -direction.Y * distance, -direction.Z * distance);
+        camera.UpDirection = new System.Windows.Media.Media3D.Vector3D(0, 1, 0);
     }
 
     public void Dispose()
