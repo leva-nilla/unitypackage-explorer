@@ -1,5 +1,7 @@
 # UnityPackage Explorer
 
+> **Security warning (MotW preview enable):** The optional `Install-MotW.bat` modifies a system-wide Windows security policy (`HKLM\...\Policies\Attachments\SaveZoneInformation = 1`). This stops Windows from tagging newly downloaded files with Mark of the Web, which re-enables Explorer preview for internet-downloaded files but reduces protection against untrusted downloads. Only use it on machines you control and trust the source. Existing MotW files still require manual unblocking. Revert with `Uninstall-MotW.bat`. See the "MotW preview enable" section below.
+
 Unityを起動せずに、ダウンロードしたZIP/RARの中のUnityPackageやPrefabを確認するWindows 11向けツールです。ファイルを展開せずに内容を見て、整理先を決められます。
 
 ## 主な機能
