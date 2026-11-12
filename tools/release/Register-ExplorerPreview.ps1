@@ -12,17 +12,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'PreviewRegistration.Common.psm1') -Force
 $install = [IO.Path]::GetFullPath($InstallDirectory)
-$runtimeAvailable = $false
-foreach ($runtimePath in @($RuntimeKeyPath, $RuntimeFallbackKeyPath)) {
-    if (-not (Test-Path -LiteralPath $runtimePath)) { continue }
-    $runtimeRegistryKey = Get-Item -LiteralPath $runtimePath
-    foreach ($versionName in $runtimeRegistryKey.GetValueNames()) {
-        $parsed = [version]::new()
-        if ([version]::TryParse(($versionName -split '-')[0], [ref]$parsed) -and $parsed.Major -eq 10) { $runtimeAvailable = $true; break }
-    }
-    if ($runtimeAvailable) { break }
-}
-if (-not $runtimeAvailable -and -not $SkipRuntimeCheck) { Write-Output 'RUNTIME_MISSING'; exit 3 }
+# Preview handler is now self-contained (bundles .NET 10 Desktop Runtime), so no shared runtime check is required.
+$runtimeAvailable = $true
 $comhost = Join-Path $install 'PreviewHandler\UnityPackageExplorer.PreviewHandler.comhost.dll'
 $runtimeConfig = Join-Path $install 'PreviewHandler\UnityPackageExplorer.PreviewHandler.runtimeconfig.json'
 foreach ($required in @($comhost, $runtimeConfig)) { if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Preview handler publish file is missing: $required" } }
