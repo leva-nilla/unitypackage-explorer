@@ -239,8 +239,13 @@ public static class LightweightPreviewLoader
             if (isPrefabPreview)
             {
                 foreach (var mesh in EnumerateMeshes(root))
-                    if (mesh.Material is HelixToolkit.SharpDX.Model.PhongMaterialCore imported && imported.RenderDiffuseMap && imported.DiffuseMap is null && imported.DiffuseColor.Alpha <= 0f)
+                {
+                    if (mesh.Material is not HelixToolkit.SharpDX.Model.PhongMaterialCore imported || imported.DiffuseMap is not null) continue;
+                    if (imported.RenderDiffuseMap && imported.DiffuseColor.Alpha <= 0f)
                         SetMaterial(mesh, null, null, UnityMaterialRenderMode.Opaque, null);
+                    else if (IsSaturatedPrimaryColor(imported.DiffuseColor))
+                        SetMaterial(mesh, null, NeutralPreviewColor, UnityMaterialRenderMode.Opaque, null);
+                }
                 warnings.Add(hasUnappliedMaterialOverrides
                     ? "Nested Prefab material override textures were inspected for diagnostics but not applied because their FBX submesh targets could not be identified safely."
                     : UnityMaterialPreviewDiagnostics.GetMissingSupportedTextureWarning(materialReferences.Count));
@@ -297,7 +302,28 @@ public static class LightweightPreviewLoader
         }
         foreach (var binding in bindings.Except(applied).DistinctBy(x => x.MaterialGuid, StringComparer.OrdinalIgnoreCase))
             warnings.Add($"Material '{binding.MaterialName}' could not be matched to an FBX material and was left unused.");
+        if (isPrefabPreview)
+        {
+            var unmatched = meshes.Where(mesh => !exportBindings.ContainsKey(mesh)).ToArray();
+            foreach (var mesh in unmatched)
+            {
+                SetMaterial(mesh, null, NeutralPreviewColor, UnityMaterialRenderMode.Opaque, null);
+                mesh.Visible = false;
+            }
+            if (unmatched.Length > 0)
+                warnings.Add($"{unmatched.Length:N0} FBX mesh(es) had no matching Unity material; they were hidden in the preview.");
+        }
         return exportBindings;
+    }
+
+    private static readonly UnityMaterialColor NeutralPreviewColor = new(0.72f, 0.72f, 0.72f, 1f);
+
+    /// <summary>True when an imported FBX material is a saturated pure hue (e.g. assimp's red placeholder) that reads as an error.</summary>
+    private static bool IsSaturatedPrimaryColor(HelixToolkit.Maths.Color4 color)
+    {
+        var max = Math.Max(color.Red, Math.Max(color.Green, color.Blue));
+        var min = Math.Min(color.Red, Math.Min(color.Green, color.Blue));
+        return max > 0.7f && max - min > 0.5f;
     }
 
     private static void SetMaterial(HelixToolkit.SharpDX.Model.Scene.MeshNode mesh, string? path, UnityMaterialColor? color, UnityMaterialRenderMode mode, float? cutoff)

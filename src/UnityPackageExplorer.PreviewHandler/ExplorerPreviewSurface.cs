@@ -120,6 +120,36 @@ internal sealed class ExplorerPreviewSurface : IDisposable
         _image.Source = null;
         _image.Visibility = Visibility.Collapsed;
         _text.Visibility = prepared.Scenes.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
+        if (prepared.Scenes.Count > 0)
+        {
+            var minimum = new System.Numerics.Vector3(float.PositiveInfinity);
+            var maximum = new System.Numerics.Vector3(float.NegativeInfinity);
+            var found = false;
+            foreach (var scene in prepared.Scenes)
+            {
+                scene.Root.UpdateAllTransformMatrix();
+                if (!scene.Root.TryGetBound(out var bounds)) continue;
+                minimum = System.Numerics.Vector3.Min(minimum, bounds.Minimum);
+                maximum = System.Numerics.Vector3.Max(maximum, bounds.Maximum);
+                found = true;
+            }
+            if (found && _viewport.Camera is HelixToolkit.Wpf.SharpDX.PerspectiveCamera camera)
+            {
+                var center = (minimum + maximum) * 0.5f;
+                var extent = MathF.Max((maximum - minimum).Length(), 1f);
+                var direction = System.Numerics.Vector3.Normalize(new System.Numerics.Vector3(0.28f, 0.12f, 1f));
+                var distance = extent * 1.45f;
+                camera.Position = new System.Windows.Media.Media3D.Point3D(center.X + direction.X * distance, center.Y + direction.Y * distance, center.Z + direction.Z * distance);
+                camera.LookDirection = new System.Windows.Media.Media3D.Vector3D(-direction.X * distance, -direction.Y * distance, -direction.Z * distance);
+                camera.UpDirection = new System.Windows.Media.Media3D.Vector3D(0, 1, 0);
+                _viewport.FixedRotationPoint = new System.Windows.Media.Media3D.Point3D(center.X, center.Y, center.Z);
+                _viewport.FixedRotationPointEnabled = true;
+            }
+            else
+            {
+                _viewport.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => { if (!_disposed) _viewport.ZoomExtents(250); }));
+            }
+        }
         if (prepared.Scenes.Count == 0)
         {
             var lines = (fallbackItems ?? []).Take(20).Select(x => $"• {x}").ToArray();
@@ -131,8 +161,6 @@ internal sealed class ExplorerPreviewSurface : IDisposable
         }
         _summary.Text = summary;
         _warnings.Text = string.Join("\r\n", prepared.Warnings.Take(4));
-        if (prepared.Scenes.Count > 0)
-            _viewport.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => { if (!_disposed) _viewport.ZoomExtents(250); }));
     }
 
     public void ShowImage(Bitmap bitmap, string summary, IEnumerable<string>? warnings = null)

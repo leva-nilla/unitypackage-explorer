@@ -372,7 +372,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 TrackJob(load);
                 var prepared = await DeferredTaskCleanup.WaitAsync(
                     load, cancellationToken, static result => result.Dispose(), () => SafeDeleteOwnedTemp(tempRoot)).ConfigureAwait(false);
-                PreviewLog.Write($"LoadSelected prepared scenes={prepared.Scenes.Count} warnings={prepared.Warnings.Count}");
+                PreviewLog.Write($"LoadSelected prepared scenes={prepared.Scenes.Count} warnings={prepared.Warnings.Count} :: {string.Join(" | ", prepared.Warnings)}");
                 var fallbackItems = catalog.Entries.Where(x => x.HasAsset).Select(x => x.PathName).Take(25).ToArray();
                 var preparedPayload = new PreparedScenePayload(prepared, tempRoot, fallbackItems, catalog.Entries.Count(x => x.HasAsset));
                 PostOwnedToSelectionUi(requestId, selectionId, preparedPayload,
