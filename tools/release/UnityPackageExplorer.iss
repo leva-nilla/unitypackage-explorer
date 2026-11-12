@@ -473,3 +473,12 @@ begin
       Log('Could not write the UnityPackage Explorer ownership marker: ' + MarkerPath);
   end;
 end;
+
+[Code]
+procedure InitializeWizard;
+var
+  i: Integer;
+begin
+  for i := 0 to WizardForm.TasksList.Items.Count - 1 do
+    WizardForm.TasksList.Checked[i] := True;
+end;
