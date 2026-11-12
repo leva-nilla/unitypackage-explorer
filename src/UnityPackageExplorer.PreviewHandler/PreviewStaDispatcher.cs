@@ -51,6 +51,8 @@ internal sealed class PreviewStaDispatcher : IDisposable
     private void Run()
     {
         Volatile.Write(ref _threadId, Environment.CurrentManagedThreadId);
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, args) => PreviewLog.Write("UI thread exception", args.Exception);
         try
         {
             var control = new Control();

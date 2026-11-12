@@ -104,7 +104,13 @@ public static class LightweightPreviewLoader
                         warnings.Add($"{placement.Node.Name}: Unity Mesh fileID(s) {string.Join(", ", placement.MeshFileIds)} could not be mapped to individual FBX meshes; the complete FBX scene is shown as an approximation.");
                 }
                 catch (OperationCanceledException) { throw; }
-                catch (Exception ex) { warnings.Add($"{placement.Node.Name}: {ex.Message}"); }
+                catch (Exception ex)
+                {
+                    var baseException = ex.GetBaseException();
+                    warnings.Add(baseException is null || string.Equals(baseException.Message, ex.Message, StringComparison.Ordinal)
+                        ? $"{placement.Node.Name}: {ex.Message}"
+                        : $"{placement.Node.Name}: {ex.Message} (内側の例外: {baseException.Message})");
+                }
             }
             return new PreparedPreview(scenes, materialBindings, warnings.Distinct(StringComparer.Ordinal).ToArray());
         }

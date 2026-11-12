@@ -52,6 +52,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
     {
         lock (_comCallGate)
         {
+            PreviewLog.Write("Initialize(stream)");
             ResetForInitializeOnUiThread();
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
             _path = null;
@@ -93,6 +94,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         lock (_comCallGate)
         {
             var bounds = rect;
+            PreviewLog.Write($"SetWindow parent=0x{parentWindow:X} rect={bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom} parentRect={DescribeWindowRect(parentWindow)}");
             return GetOrCreateUiDispatcher().Invoke(() => SetWindowCore(parentWindow, bounds));
         }
     }
@@ -102,6 +104,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         lock (_comCallGate)
         {
             var bounds = rect;
+            PreviewLog.Write($"SetRect rect={bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom}");
             var dispatcher = _uiDispatcher;
             if (dispatcher is null) { _bounds = bounds; return 0; }
             return dispatcher.Invoke(() => { _bounds = bounds; PositionPanel(); return 0; });
@@ -113,12 +116,14 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         lock (_comCallGate)
         {
             if (string.IsNullOrWhiteSpace(_path) && _stream is null) return unchecked((int)0x80070002);
+            PreviewLog.Write("DoPreview enter");
             return GetOrCreateUiDispatcher().Invoke(DoPreviewCore);
         }
     }
 
     private int DoPreviewCore()
     {
+        PreviewLog.Write($"DoPreviewCore path={_path ?? "(stream)"}");
         var requestId = Interlocked.Increment(ref _generation);
         var initialDeadline = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * 30d);
         ResetPendingUiPayloads();
@@ -145,7 +150,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         _surface.Host.Dock = DockStyle.Fill;
         _surface.ShowStatus("索引を準備しています…");
         _panel.CreateControl();
-        if (_parent != IntPtr.Zero) { NativeMethods.SetParent(_panel.Handle, _parent); PositionPanel(); }
+        if (_parent != IntPtr.Zero) { NativeMethods.SetParent(_panel.Handle, _parent); PreviewLog.Write($"DoPreviewCore SetParent panel=0x{_panel.Handle:X} parent=0x{_parent:X}"); PositionPanel(); }
         _panel.Visible = true;
         var cancellationToken = _requestCancellation.Token;
         var path = _path;
@@ -159,6 +164,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
     {
         lock (_comCallGate)
         {
+            PreviewLog.Write("Unload");
             var dispatcher = _uiDispatcher;
             if (dispatcher is null) { UnloadCore(); return 0; }
             try { dispatcher.Invoke(UnloadCore); }
@@ -257,8 +263,8 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
             else if (selected.Extension != ".prefab") PostToUi(requestId, () => StartSelected(requestId, path, displayName ?? Path.GetFileName(path), catalog, selected, cancellationToken, RemainingBudget(initialDeadline)));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-        catch (OperationCanceledException) { PostToUi(requestId, () => _surface?.ShowStatus($"{displayName ?? Path.GetFileName(path)} · 読み込みが30秒を超えました。", ["安全のため処理を取り消しました。"])); }
-        catch (Exception ex) { PostToUi(requestId, () => _surface?.ShowStatus("プレビューを作成できませんでした。", [ex.Message])); }
+        catch (OperationCanceledException) { PreviewLog.Write($"LoadRequest timeout {displayName ?? path}"); PostToUi(requestId, () => _surface?.ShowStatus($"{displayName ?? Path.GetFileName(path)} · 読み込みが30秒を超えました。", ["安全のため処理を取り消しました。"])); }
+        catch (Exception ex) { PreviewLog.Write("LoadRequest failed", ex); PostToUi(requestId, () => _surface?.ShowStatus("プレビューを作成できませんでした。", [ex.Message, DescribeBaseException(ex)])); }
     }
 
     private void ResetForInitialize()
@@ -359,11 +365,14 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         {
             if (entry.Extension == ".prefab" || entry.Extension == ".fbx")
             {
+                AssimpNativeLoader.EnsureLoaded();
+                PreviewLog.Write($"LoadSelected prefab {entry.PathName} assimp preloaded");
                 var tempRoot = CreateRequestTempRoot();
                 var load = LightweightPreviewLoader.LoadAsync(catalog, entry, tempRoot, cancellationToken, stageUnselectedSiblingImages: false);
                 TrackJob(load);
                 var prepared = await DeferredTaskCleanup.WaitAsync(
                     load, cancellationToken, static result => result.Dispose(), () => SafeDeleteOwnedTemp(tempRoot)).ConfigureAwait(false);
+                PreviewLog.Write($"LoadSelected prepared scenes={prepared.Scenes.Count} warnings={prepared.Warnings.Count}");
                 var fallbackItems = catalog.Entries.Where(x => x.HasAsset).Select(x => x.PathName).Take(25).ToArray();
                 var preparedPayload = new PreparedScenePayload(prepared, tempRoot, fallbackItems, catalog.Entries.Count(x => x.HasAsset));
                 PostOwnedToSelectionUi(requestId, selectionId, preparedPayload,
@@ -403,13 +412,28 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         }
         catch (OperationCanceledException) when (requestId != Volatile.Read(ref _generation) || selectionId != Volatile.Read(ref _selectionGeneration) || _requestCancellation?.IsCancellationRequested == true) { }
         catch (OperationCanceledException) { PostToSelectionUi(requestId, selectionId, () => _surface?.ShowStatus(BuildSummary(path, catalog, displayName), [$"{entry.PathName}: 読み込みが30秒を超えました。", "安全のため処理を取り消しました。"]), static () => { }); }
-        catch (Exception ex) { PostToSelectionUi(requestId, selectionId, () => _surface?.ShowStatus($"{entry.PathName} を表示できませんでした。", [ex.Message]), static () => { }); }
+        catch (Exception ex) { PreviewLog.Write($"LoadSelected failed {entry.PathName}", ex); PostToSelectionUi(requestId, selectionId, () => _surface?.ShowStatus($"{entry.PathName} を表示できませんでした。", [ex.Message, DescribeBaseException(ex)]), static () => { }); }
+    }
+
+    private static string DescribeBaseException(Exception exception)
+    {
+        var baseException = exception.GetBaseException();
+        return baseException is null || string.Equals(baseException.Message, exception.Message, StringComparison.Ordinal)
+            ? string.Empty
+            : $"内側の例外: {baseException.Message}";
     }
 
     private void PostToUi(long requestId, Action action)
     {
         var dispatcher = Volatile.Read(ref _uiDispatcher);
-        dispatcher?.Post(() => { if (requestId == Volatile.Read(ref _generation)) action(); });
+        dispatcher?.Post(() =>
+        {
+            try
+            {
+                if (requestId == Volatile.Read(ref _generation)) action();
+            }
+            catch (Exception ex) { PreviewLog.Write("PostToUi action failed", ex); }
+        });
     }
 
     private void PostToSelectionUi(long requestId, long selectionId, Action action, Action rejected)
@@ -417,8 +441,12 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         var dispatcher = Volatile.Read(ref _uiDispatcher);
         if (dispatcher?.Post(() =>
         {
-            if (requestId == Volatile.Read(ref _generation) && selectionId == Volatile.Read(ref _selectionGeneration)) action();
-            else rejected();
+            try
+            {
+                if (requestId == Volatile.Read(ref _generation) && selectionId == Volatile.Read(ref _selectionGeneration)) action();
+                else rejected();
+            }
+            catch (Exception ex) { PreviewLog.Write("PostToSelectionUi action failed", ex); }
         }) != true) rejected();
     }
 
@@ -440,8 +468,16 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         var dispatcher = Volatile.Read(ref _uiDispatcher);
         if (dispatcher?.Post(() =>
         {
-            if (requestId == Volatile.Read(ref _generation) && selectionId == Volatile.Read(ref _selectionGeneration)) lease.TryConsume();
-            else lease.Dispose();
+            try
+            {
+                if (requestId == Volatile.Read(ref _generation) && selectionId == Volatile.Read(ref _selectionGeneration))
+                {
+                    PreviewLog.Write($"PostOwnedToSelectionUi consume {typeof(T).Name}");
+                    lease.TryConsume();
+                }
+                else lease.Dispose();
+            }
+            catch (Exception ex) { PreviewLog.Write($"PostOwnedToSelectionUi {typeof(T).Name} failed", ex); }
         }) != true) lease.Dispose();
     }
 
@@ -617,15 +653,48 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
     private void PositionPanel()
     {
         if (_panel?.IsHandleCreated != true || _parent == IntPtr.Zero) return;
-        NativeMethods.SetParent(_panel.Handle, _parent);
-        NativeMethods.SetWindowPos(
+        var parentResult = NativeMethods.SetParent(_panel.Handle, _parent);
+        var parentGle = Marshal.GetLastWin32Error();
+        var width = Math.Max(0, _bounds.Right - _bounds.Left);
+        var height = Math.Max(0, _bounds.Bottom - _bounds.Top);
+        var posOk = NativeMethods.SetWindowPos(
             _panel.Handle,
             IntPtr.Zero,
             _bounds.Left,
             _bounds.Top,
-            Math.Max(0, _bounds.Right - _bounds.Left),
-            Math.Max(0, _bounds.Bottom - _bounds.Top),
+            width,
+            height,
             0x0004 | 0x0010); // SWP_NOZORDER | SWP_NOACTIVATE
+        var posGle = Marshal.GetLastWin32Error();
+        if (NativeMethods.GetWindowRect(_panel.Handle, out var actual))
+        {
+            PreviewLog.Write($"PositionPanel panel=0x{_panel.Handle:X} requested={_bounds.Left},{_bounds.Top} {width}x{height} actual={actual.Left},{actual.Top} {actual.Right - actual.Left}x{actual.Bottom - actual.Top} parent={DescribeWindowRect(_parent)} setParent=0x{parentResult:X}(gle={parentGle}) setPos={posOk}(gle={posGle}) visible={_panel.Visible}");
+        }
+        else
+        {
+            PreviewLog.Write($"PositionPanel panel=0x{_panel.Handle:X} requested={_bounds.Left},{_bounds.Top} {width}x{height} GetWindowRect failed(gle={Marshal.GetLastWin32Error()}) parent={DescribeWindowRect(_parent)} setParent=0x{parentResult:X}(gle={parentGle}) setPos={posOk}(gle={posGle}) visible={_panel.Visible}");
+        }
+    }
+
+    private static string DescribeWindowRect(IntPtr window)
+    {
+        try
+        {
+            if (window == IntPtr.Zero) return "zero";
+            var isValid = NativeMethods.IsWindow(window);
+            NativeMethods.GetWindowThreadProcessId(window, out var ownerPid);
+            var className = new System.Text.StringBuilder(256);
+            _ = NativeMethods.GetClassName(window, className, className.Capacity);
+            var style = NativeMethods.GetWindowLong(window, -16); // GWL_STYLE
+            var rectText = "n/a";
+            if (NativeMethods.GetWindowRect(window, out var rect)) rectText = $"({rect.Left},{rect.Top})-({rect.Right},{rect.Bottom})";
+            else rectText += $", gle={Marshal.GetLastWin32Error()}";
+            return $"isWindow={isValid} ownerPid={ownerPid} class={className} style=0x{style:X} rect={rectText}";
+        }
+        catch (Exception ex)
+        {
+            return $"error: {ex.Message}";
+        }
     }
 
     private static PreviewContent ReadStreamContent(System.Runtime.InteropServices.ComTypes.IStream stream)
@@ -768,6 +837,23 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetWindowRect(IntPtr window, out NativeRect rect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int GetWindowLong(IntPtr window, int index);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindow(IntPtr window);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr window, System.Text.StringBuilder name, int maxCount);
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetFocus();
