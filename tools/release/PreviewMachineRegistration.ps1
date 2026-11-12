@@ -66,7 +66,7 @@ function Test-SameSnapshot($Left, $Right) {
 }
 
 function Invoke-ElevatedMachineValues($State, [object[]]$Targets) {
-    if ($RegistryRoot -ne 'HKLM:' -or (Test-Administrator)) { return $false }
+    if ($RegistryRoot -ne 'HKLM:') { return $false }
     $systemPowerShell = Join-Path ([Environment]::GetEnvironmentVariable('SystemRoot')) 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $systemPowerShell -PathType Leaf)) { throw "Windows PowerShell was not found: $systemPowerShell" }
 
@@ -92,9 +92,9 @@ $clsid = '{70C67CC6-949B-4B5D-A8F2-7844D5C29E76}'
 $appId = '{C50AF32D-4778-4B45-A2D3-FB0944F70271}'
 $machinePrefix = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\'
 $keyPaths = @(
-    $machinePrefix + 'CLSID\' + $clsid,
-    $machinePrefix + 'CLSID\' + $clsid + '\InprocServer32',
-    $machinePrefix + 'AppID\' + $appId
+    ($machinePrefix + 'CLSID\' + $clsid),
+    ($machinePrefix + 'CLSID\' + $clsid + '\InprocServer32'),
+    ($machinePrefix + 'AppID\' + $appId)
 )
 $valueTargets = @(
     [pscustomobject]@{ Path=$keyPaths[1]; Name=''; Value=(Join-Path $request.InstallDirectory 'PreviewHandler\UnityPackageExplorer.PreviewHandler.comhost.dll') },
@@ -105,6 +105,7 @@ $valueTargets = @(
 $state = $request.State
 if ($request.Action -notin @('Register','Unregister') -or $request.RegistryRoot -cne 'HKLM:' -or $state.RegistryRoot -cne 'HKLM:' -or $state.Clsid -cne $clsid -or $state.AppId -cne $appId) { throw 'Elevated request identity was rejected.' }
 if (@($state.Values).Count -ne 4 -or @($state.Installed).Count -ne 4 -or @($state.Keys).Count -ne 3) { throw 'Elevated request target count was rejected.' }
+if ($keyPaths.Count -ne 3 -or $valueTargets.Count -ne 4) { throw 'Elevated request did not resolve to the fixed registry target counts.' }
 $seenValues = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 for ($i = 0; $i -lt 4; $i++) {
     $target = $valueTargets[$i]
@@ -174,7 +175,11 @@ try {
     $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($elevatedCode))
     if ($encodedCommand.Length -gt 30000) { throw 'The validated machine registration request is too large for a safe Windows PowerShell command line.' }
     $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',$encodedCommand)
-    $child = Start-Process -FilePath $systemPowerShell -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments -Wait -PassThru
+    if (Test-Administrator) {
+        $child = Start-Process -FilePath $systemPowerShell -WindowStyle Hidden -ArgumentList $arguments -Wait -PassThru
+    } else {
+        $child = Start-Process -FilePath $systemPowerShell -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments -Wait -PassThru
+    }
     if ($child.ExitCode -ne 0) { throw "Elevated machine registration helper failed with exit code $($child.ExitCode)." }
     return $true
 }

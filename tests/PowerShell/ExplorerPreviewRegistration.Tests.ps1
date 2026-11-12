@@ -28,6 +28,38 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $installDirectory 'PreviewHandler') -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $installDirectory 'PreviewHandler\UnityPackageExplorer.PreviewHandler.comhost.dll') -Value 'fixture'
     Set-Content -LiteralPath (Join-Path $installDirectory 'PreviewHandler\UnityPackageExplorer.PreviewHandler.runtimeconfig.json') -Value '{}'
+    $machinePrefix = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\'
+    $machineClassPath = $machinePrefix + 'CLSID\' + $clsid
+    $machineInprocPath = $machineClassPath + '\InprocServer32'
+    $machineAppIdPath = $machinePrefix + 'AppID\{C50AF32D-4778-4B45-A2D3-FB0944F70271}'
+    $previousHostPath = Join-Path ([Environment]::GetFolderPath('Windows')) 'System32\prevhost.exe'
+    $fixedValues = @(
+        [pscustomobject]@{ Path=$machineInprocPath; Name=''; Kind='String'; Value=(Join-Path $installDirectory 'PreviewHandler\UnityPackageExplorer.PreviewHandler.comhost.dll') },
+        [pscustomobject]@{ Path=$machineInprocPath; Name='ThreadingModel'; Kind='String'; Value='Apartment' },
+        [pscustomobject]@{ Path=$machineClassPath; Name='AppID'; Kind='String'; Value='{C50AF32D-4778-4B45-A2D3-FB0944F70271}' },
+        [pscustomobject]@{ Path=$machineAppIdPath; Name='DllSurrogate'; Kind='String'; Value=$previousHostPath }
+    )
+    $fixedKeyPaths = @($machineClassPath,$machineInprocPath,$machineAppIdPath)
+    $machineValidationState = [pscustomobject]@{
+        Version=1; RegistryRoot='HKLM:'; Clsid=$clsid; AppId='{C50AF32D-4778-4B45-A2D3-FB0944F70271}'
+        Values=@($fixedValues | ForEach-Object { [pscustomobject]@{ Path=$_.Path; Name=$_.Name; Exists=$false } })
+        Keys=@($fixedKeyPaths | ForEach-Object { [pscustomobject]@{ Path=$_; Existed=$false } })
+        Installed=$fixedValues
+    }
+    if (@($machineValidationState.Keys).Count -ne 3 -or @($machineValidationState.Values).Count -ne 4) { throw 'The read-only embedded request fixture has incorrect target counts.' }
+    $machineValidationRequest = [pscustomobject]@{ Action='Register'; InstallDirectory=[IO.Path]::GetFullPath($installDirectory); RegistryRoot='HKLM:'; State=$machineValidationState }
+    $machineValidationBytes = [Text.Encoding]::Unicode.GetBytes(($machineValidationRequest | ConvertTo-Json -Depth 10 -Compress))
+    $machineValidationStream = [IO.MemoryStream]::new()
+    $machineValidationGzip = [IO.Compression.GZipStream]::new($machineValidationStream, [IO.Compression.CompressionMode]::Compress, $true)
+    try { $machineValidationGzip.Write($machineValidationBytes, 0, $machineValidationBytes.Length) } finally { $machineValidationGzip.Dispose() }
+    $machineValidationPayload = [Convert]::ToBase64String($machineValidationStream.ToArray())
+    $machineValidationStream.Dispose()
+    $registryOpenLine = '$base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)'
+    if (-not $elevatedTemplate.Contains($registryOpenLine)) { throw 'Cannot place the read-only stop before registry access in the embedded operation.' }
+    $validationCode = $elevatedTemplate.Replace('__REQUEST__', $machineValidationPayload).Replace($registryOpenLine, "throw 'READ_ONLY_VALIDATION_STOP'")
+    $validationStopped = $false
+    try { & ([scriptblock]::Create($validationCode)); } catch { if ($_.Exception.Message -eq 'READ_ONLY_VALIDATION_STOP') { $validationStopped = $true } else { throw } }
+    if (-not $validationStopped) { throw 'The embedded machine target validation did not reach the pre-registry stop.' }
     Import-Module (Join-Path $repoRoot 'tools\release\PreviewRegistration.Common.psm1') -Force
     $legacyRoot = "$registryRoot\Legacy"
     $legacyMachineRoot = "$registryRoot\LegacyMachine"
