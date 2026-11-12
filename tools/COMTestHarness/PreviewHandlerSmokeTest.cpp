@@ -18,7 +18,7 @@ int wmain(int argc, wchar_t** argv)
 
     const CLSID handler = { 0x70c67cc6, 0x949b, 0x4b5d, { 0xa8, 0xf2, 0x78, 0x44, 0xd5, 0xc2, 0x9e, 0x76 } };
     IPreviewHandler* preview = nullptr;
-    HRESULT result = CoCreateInstance(handler, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&preview));
+    HRESULT result = CoCreateInstance(handler, nullptr, CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&preview));
     if (SUCCEEDED(result)) {
         RECT bounds{ 0, 0, 900, 600 };
         HWND parent = CreateWindowExW(0, L"STATIC", L"Preview COM test", WS_OVERLAPPED,
@@ -52,6 +52,14 @@ int wmain(int argc, wchar_t** argv)
                 if (SUCCEEDED(result)) result = SHCreateStreamOnFileEx(argv[1], STGM_READ, FILE_ATTRIBUTE_NORMAL, FALSE, nullptr, &source);
                 if (SUCCEEDED(result)) result = initializeStream->Initialize(source, STGM_READ);
                 if (SUCCEEDED(result)) result = preview->DoPreview();
+                if (SUCCEEDED(result)) {
+                    IOleWindow* streamOleWindow = nullptr;
+                    result = preview->QueryInterface(IID_PPV_ARGS(&streamOleWindow));
+                    HWND streamChild = nullptr;
+                    if (SUCCEEDED(result)) result = streamOleWindow->GetWindow(&streamChild);
+                    if (SUCCEEDED(result) && !streamChild) result = E_FAIL;
+                    if (streamOleWindow) streamOleWindow->Release();
+                }
                 if (SUCCEEDED(result)) result = preview->Unload();
                 if (source) source->Release();
                 if (initializeStream) initializeStream->Release();
@@ -63,8 +71,17 @@ int wmain(int argc, wchar_t** argv)
     CoUninitialize();
     if (FAILED(result)) {
         std::wcerr << L"Preview handler native COM lifecycle failed: 0x" << std::hex << result << L"\n";
+        IErrorInfo* errorInfo = nullptr;
+        if (GetErrorInfo(0, &errorInfo) == S_OK && errorInfo) {
+            BSTR description = nullptr;
+            if (SUCCEEDED(errorInfo->GetDescription(&description)) && description) {
+                std::wcerr << L"COM error: " << description << L"\n";
+                SysFreeString(description);
+            }
+            errorInfo->Release();
+        }
         return 1;
     }
-    std::wcout << L"Native COM activation, preview vtable, and Unload succeeded.\n";
+    std::wcout << L"Native CLSCTX_LOCAL_SERVER activation, preview vtable, and Unload succeeded.\n";
     return 0;
 }

@@ -137,10 +137,14 @@ jobs:
           if ($setupProcess.ExitCode -ne 0) { throw "Setup exited with code $($setupProcess.ExitCode)." }
           $previewBackup = Join-Path $env:LOCALAPPDATA 'UnityPackageExplorer\ExplorerPreviewRegistration.json'
           if (-not (Test-Path -LiteralPath $previewBackup)) { throw 'Preview registration backup was not written.' }
+          $machinePreviewBackup = Join-Path $env:LOCALAPPDATA 'UnityPackageExplorer\ExplorerPreviewMachineRegistration.json'
+          if (-not (Test-Path -LiteralPath $machinePreviewBackup)) { throw 'Machine preview registration backup was not written.' }
           $previewBackupCount = @((Get-Content -LiteralPath $previewBackup -Raw | ConvertFrom-Json).Values).Count
+          $machinePreviewBackupCount = @((Get-Content -LiteralPath $machinePreviewBackup -Raw | ConvertFrom-Json).Values).Count
           $updateProcess = Start-Process -FilePath $setup.FullName -ArgumentList $setupArguments -Wait -PassThru
           if ($updateProcess.ExitCode -ne 0) { throw "Setup update exited with code $($updateProcess.ExitCode)." }
           if (@((Get-Content -LiteralPath $previewBackup -Raw | ConvertFrom-Json).Values).Count -ne $previewBackupCount) { throw 'Setup update replaced the original preview registration backup.' }
+          if (@((Get-Content -LiteralPath $machinePreviewBackup -Raw | ConvertFrom-Json).Values).Count -ne $machinePreviewBackupCount) { throw 'Setup update replaced the original machine preview registration backup.' }
 
           $app = Join-Path $installDirectory 'UnityPackageExplorer.App.exe'
           $handler = Join-Path $installDirectory 'PreviewHandler\UnityPackageExplorer.PreviewHandler.comhost.dll'
@@ -151,13 +155,13 @@ jobs:
           if (-not (Test-Path -LiteralPath $app -PathType Leaf)) { throw 'Installed application was not found.' }
           if (-not (Test-Path -LiteralPath $handler -PathType Leaf)) { throw 'Installed preview handler was not found.' }
           $handlerClsid = '{70C67CC6-949B-4B5D-A8F2-7844D5C29E76}'
-          $registeredComhost = (Get-Item -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Classes\CLSID\$handlerClsid\InprocServer32" -ErrorAction Stop).GetValue('')
+          $registeredComhost = (Get-Item -LiteralPath "Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\$handlerClsid\InprocServer32" -ErrorAction Stop).GetValue('')
           if (-not [string]$registeredComhost -or -not ([string]$registeredComhost).Equals($handler, [StringComparison]::OrdinalIgnoreCase)) { throw 'Preview handler COM registration did not point to the installed comhost.' }
-          $registeredAppId = (Get-Item -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Classes\CLSID\$handlerClsid" -ErrorAction Stop).GetValue('AppID')
+          $registeredAppId = (Get-Item -LiteralPath "Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\$handlerClsid" -ErrorAction Stop).GetValue('AppID')
           if ($registeredAppId -ne '{C50AF32D-4778-4B45-A2D3-FB0944F70271}') { throw 'Preview handler does not use its dedicated AppID.' }
-          $surrogate = (Get-Item -LiteralPath 'Registry::HKEY_CURRENT_USER\Software\Classes\AppID\{C50AF32D-4778-4B45-A2D3-FB0944F70271}' -ErrorAction Stop).GetValue('DllSurrogate')
-          if ($surrogate -ne 'Prevhost.exe') { throw 'Preview handler is not isolated in its Prevhost surrogate.' }
-          if ((Get-Item -LiteralPath 'Registry::HKEY_CURRENT_USER\Software\Classes\AppID\{C50AF32D-4778-4B45-A2D3-FB0944F70271}').GetValueNames().Contains('DisableLowILProcessIsolation')) { throw 'Preview handler registration disabled low-integrity isolation.' }
+          $surrogate = (Get-Item -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\AppID\{C50AF32D-4778-4B45-A2D3-FB0944F70271}' -ErrorAction Stop).GetValue('DllSurrogate')
+          if (-not ([string]$surrogate).EndsWith('System32\prevhost.exe', [StringComparison]::OrdinalIgnoreCase)) { throw 'Preview handler is not isolated in the system Preview Host.' }
+          if ((Get-Item -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\AppID\{C50AF32D-4778-4B45-A2D3-FB0944F70271}').GetValueNames().Contains('DisableLowILProcessIsolation')) { throw 'Preview handler registration disabled low-integrity isolation.' }
           if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { throw 'Installed uninstaller was not found.' }
           if (-not (Test-Path -LiteralPath $sendToShortcut -PathType Leaf)) { throw "Expected Send To shortcut was not installed: $sendToShortcut" }
           if (Test-Path -LiteralPath $doubleExtensionShortcut) { throw "Send To shortcut has an unwanted double extension: $doubleExtensionShortcut" }
@@ -216,7 +220,7 @@ jobs:
           if (-not $vcvars -or -not (Test-Path -LiteralPath $vcvars)) { throw 'The x64 Visual C++ build environment is required for COM activation smoke tests.' }
           $harnessSource = Join-Path $env:GITHUB_WORKSPACE 'tools\COMTestHarness\PreviewHandlerSmokeTest.cpp'
           $harnessExe = Join-Path $env:RUNNER_TEMP 'PreviewHandlerSmokeTest.exe'
-          $buildCommand = 'call "{0}" >nul && cl.exe /nologo /EHsc /std:c++17 /DUNICODE /D_UNICODE "{1}" /Fe:"{2}" /link Ole32.lib Shlwapi.lib Shell32.lib User32.lib' -f $vcvars, $harnessSource, $harnessExe
+          $buildCommand = 'call "{0}" >nul && cl.exe /nologo /EHsc /std:c++17 /DUNICODE /D_UNICODE "{1}" /Fe:"{2}" /link Ole32.lib OleAut32.lib Shlwapi.lib Shell32.lib User32.lib' -f $vcvars, $harnessSource, $harnessExe
           & $env:ComSpec /d /s /c $buildCommand
           if ($LASTEXITCODE -ne 0) { throw 'The native COM lifecycle smoke test harness did not compile.' }
           & $harnessExe $fixtures[2]
@@ -265,10 +269,13 @@ jobs:
             if ($remainingIcon -eq "$app,0" -or $remainingIcon -eq "`"$app`",0") { throw "An owned ProgID verb icon remained after uninstall: $verbPath" }
           }
           if (Test-Path -LiteralPath $installDirectory) { throw 'The isolated install directory remained after uninstall.' }
-          $uninstalledClassPath = "Registry::HKEY_CURRENT_USER\Software\Classes\CLSID\$handlerClsid"
+          $uninstalledClassPath = "Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\$handlerClsid"
           if (Test-Path -LiteralPath $uninstalledClassPath) {
             $uninstalledClass = Get-Item -LiteralPath $uninstalledClassPath
             if ($uninstalledClass.GetValueNames().Contains('AppID') -or $uninstalledClass.GetValueNames().Contains('')) { throw 'Owned Preview Handler CLSID values remained after uninstall.' }
           }
           $uninstalledInprocPath = "$uninstalledClassPath\InprocServer32"
           if ((Test-Path -LiteralPath $uninstalledInprocPath) -and (Get-Item -LiteralPath $uninstalledInprocPath).GetValueNames().Count -gt 0) { throw 'Owned Preview Handler InprocServer32 values remained after uninstall.' }
+          $uninstalledAppIdPath = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\AppID\{C50AF32D-4778-4B45-A2D3-FB0944F70271}'
+          if ((Test-Path -LiteralPath $uninstalledAppIdPath) -and (Get-Item -LiteralPath $uninstalledAppIdPath).GetValueNames().Contains('DllSurrogate')) { throw 'Owned Preview Handler AppID values remained after uninstall.' }
+          if (Test-Path -LiteralPath $machinePreviewBackup) { throw 'Machine preview registration backup remained after uninstall.' }

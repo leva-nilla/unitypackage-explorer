@@ -42,7 +42,14 @@ function Test-PreviewValue([string]$Path, [string]$Name, [object]$Value, [string
 
 function Restore-PreviewValue($Snapshot) {
     if ($Snapshot.Exists) {
-        Set-PreviewValue $Snapshot.Path $Snapshot.Name $Snapshot.Value $Snapshot.Kind
+        $value = $Snapshot.Value
+        if ($Snapshot.PSObject.Properties.Name -contains 'Encoding' -and $Snapshot.Encoding -eq 'Base64') {
+            $value = [Convert]::FromBase64String([string]$Snapshot.Value)
+        } else {
+            if ([string]$Snapshot.Kind -in @('Binary','None') -and $value -isnot [byte[]]) { $value = [byte[]]@($value) }
+            if ([string]$Snapshot.Kind -eq 'MultiString' -and $value -isnot [string[]]) { $value = [string[]]@($value) }
+        }
+        Set-PreviewValue $Snapshot.Path $Snapshot.Name $value $Snapshot.Kind
     } elseif (Test-Path -LiteralPath $Snapshot.Path) {
         if ($Snapshot.Path -notmatch '^Registry::HKEY_(CURRENT_USER|LOCAL_MACHINE)\\(.+)$') { throw "Unsupported registry path: $($Snapshot.Path)" }
         $hive = if ($Matches[1] -eq 'CURRENT_USER') { [Microsoft.Win32.RegistryHive]::CurrentUser } else { [Microsoft.Win32.RegistryHive]::LocalMachine }
@@ -51,6 +58,25 @@ function Restore-PreviewValue($Snapshot) {
         if ($key) { $key.DeleteValue([string]$Snapshot.Name, $false); $key.Dispose() }
         $baseKey.Dispose()
     }
+}
+
+function Remove-PreviewEmptyKey([string]$Path) {
+    if ($Path -notmatch '^Registry::HKEY_(CURRENT_USER|LOCAL_MACHINE)\\(.+)$') { throw "Unsupported registry path: $Path" }
+    $hive = if ($Matches[1] -eq 'CURRENT_USER') { [Microsoft.Win32.RegistryHive]::CurrentUser } else { [Microsoft.Win32.RegistryHive]::LocalMachine }
+    $subKey = $Matches[2].Replace('/', '\')
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, [Microsoft.Win32.RegistryView]::Default)
+    try {
+        $key = $baseKey.OpenSubKey($subKey, $false)
+        if (-not $key) { return }
+        $empty = $key.ValueCount -eq 0 -and $key.SubKeyCount -eq 0
+        $key.Dispose()
+        if (-not $empty) { return }
+        $parentPath = Split-Path $subKey -Parent
+        $leaf = Split-Path $subKey -Leaf
+        if (-not $parentPath -or -not $leaf) { return }
+        $parent = $baseKey.OpenSubKey($parentPath, $true)
+        if ($parent) { try { $parent.DeleteSubKey($leaf, $false) } finally { $parent.Dispose() } }
+    } finally { $baseKey.Dispose() }
 }
 
 function Get-EffectiveProgId([string]$Extension) {
@@ -67,4 +93,4 @@ function Get-EffectiveProgId([string]$Extension) {
     return $null
 }
 
-Export-ModuleMember -Function Get-PreviewRegistryPath,Get-PreviewValueSnapshot,Set-PreviewValue,Test-PreviewValue,Restore-PreviewValue,Get-EffectiveProgId
+Export-ModuleMember -Function Get-PreviewRegistryPath,Get-PreviewValueSnapshot,Set-PreviewValue,Test-PreviewValue,Restore-PreviewValue,Remove-PreviewEmptyKey,Get-EffectiveProgId

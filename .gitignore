@@ -10,3 +10,4 @@ TestResults/
 *.trx
 **/__pycache__/
 *.pyc
+*.obj

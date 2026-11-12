@@ -161,7 +161,7 @@ Set-Content -LiteralPath (Join-Path $licenseDirectory 'Microsoft-Visual-Cpp-Redi
 
 $toolsDirectory = Join-Path $publishDirectory 'Tools'
 New-Item -ItemType Directory -Force -Path $toolsDirectory | Out-Null
-foreach ($toolScript in @('Cleanup-LegacyExplorerRegistration.ps1', 'Migrate-LegacyInstallFiles.ps1', 'LegacyInstallSafety.psm1', 'Register-ExplorerPreview.ps1', 'Unregister-ExplorerPreview.ps1', 'PreviewRegistration.Common.psm1')) {
+foreach ($toolScript in @('Cleanup-LegacyExplorerRegistration.ps1', 'Migrate-LegacyInstallFiles.ps1', 'LegacyInstallSafety.psm1', 'Register-ExplorerPreview.ps1', 'Unregister-ExplorerPreview.ps1', 'PreviewMachineRegistration.ps1', 'PreviewRegistration.Common.psm1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $toolScript) -Destination (Join-Path $toolsDirectory $toolScript) -Force
 }
 $currentFilesManifest = Join-Path $toolsDirectory 'CurrentInstallFiles.txt'

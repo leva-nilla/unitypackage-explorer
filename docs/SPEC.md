@@ -14,7 +14,7 @@ IInitializeWithStream優先、Initializeでは入力を保持するだけ、DoPr
 
 ## 導入・解除
 
-COMは.NET 10 Desktop Runtime x64を使うframework-dependent配置。セットアップがruntimeを検出し不足時は公式URLを案内、preview登録を行わない（専用アプリ利用は可能）。Explorerプレビューは任意、配布既定OFF、このPCではON。ユーザー単位登録で既定アプリ/UserChoiceは変えず、既存handlerを記録、自分の登録が現存する場合だけ元に戻す。
+COMは.NET 10 Desktop Runtime x64を使うframework-dependent配置。セットアップがruntimeを検出し不足時は公式URLを案内、preview登録を行わない（専用アプリ利用は可能）。Explorerプレビューは任意、配布既定OFF、このPCではON。2026-11-12のユーザー追加承認に基づき、専用CLSID/AppIDのCOM起動情報4値だけをHKLMに登録する。HKCUのプレビュー関連付けと登録状態は元のユーザー権限で管理し、昇格ヘルパーは固定4値以外のレジストリを読み書きしない。既定アプリ/UserChoice、低整合性設定、グローバルCOM ACLは変更せず、保存した値の型を保って復元する。
 
 ダウンロード品のMotWは自動解除しない。信頼できるファイルのみWindowsプロパティで解除する手順をREADMEへ記載する。MiniStack/11_FullにはZoneId=3あり。解除はユーザー操作が必要。検証用には原本を変更しない信頼済みコピーか自作サンプルを使用する。
 
