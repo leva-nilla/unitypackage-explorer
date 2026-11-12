@@ -305,13 +305,23 @@ public static class LightweightPreviewLoader
         if (isPrefabPreview)
         {
             var unmatched = meshes.Where(mesh => !exportBindings.ContainsKey(mesh)).ToArray();
+            var allUnmatched = unmatched.Length == meshes.Length && meshes.Length > 0;
             foreach (var mesh in unmatched)
             {
-                SetMaterial(mesh, null, NeutralPreviewColor, UnityMaterialRenderMode.Opaque, null);
-                mesh.Visible = false;
+                var imported = mesh.Material as HelixToolkit.SharpDX.Model.PhongMaterialCore;
+                var isPlaceholder = imported is not null && imported.DiffuseMap is null && IsSaturatedPrimaryColor(imported.DiffuseColor);
+                if (allUnmatched || !isPlaceholder)
+                    SetMaterial(mesh, null, NeutralPreviewColor, UnityMaterialRenderMode.Opaque, null);
+                else
+                {
+                    SetMaterial(mesh, null, NeutralPreviewColor, UnityMaterialRenderMode.Opaque, null);
+                    mesh.Visible = false;
+                }
             }
             if (unmatched.Length > 0)
-                warnings.Add($"{unmatched.Length:N0} FBX mesh(es) had no matching Unity material; they were hidden in the preview.");
+                warnings.Add(allUnmatched
+                    ? $"{unmatched.Length:N0} FBX mesh(es) had no matching Unity material; placeholder colors were replaced with neutral gray."
+                    : $"{unmatched.Length:N0} FBX mesh(es) had no matching Unity material; they were hidden in the preview.");
         }
         return exportBindings;
     }
