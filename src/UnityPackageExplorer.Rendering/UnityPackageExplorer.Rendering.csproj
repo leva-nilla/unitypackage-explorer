@@ -3,6 +3,7 @@
     <ProjectReference Include="..\UnityPackageExplorer.Core\UnityPackageExplorer.Core.csproj" />
     <PackageReference Include="HelixToolkit.SharpDX.Assimp" Version="3.1.2" />
     <PackageReference Include="HelixToolkit.Wpf.SharpDX" Version="3.1.2" />
+    <PackageReference Include="HelixToolkit.SharpDX" Version="[3.1.2.1-upx.1]" />
   </ItemGroup>
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>

@@ -7,6 +7,7 @@ UnityPackage Explorer includes the following third-party software in its Windows
 | CommunityToolkit.Common, Diagnostics, and Mvvm | 8.3.2 | MIT |
 | Cyotek.Drawing.BitmapFont | 2.0.4 | MIT |
 | HelixToolkit and HelixToolkit.SharpDX packages | 3.1.2 | MIT |
+| HelixToolkit.SharpDX locally patched build | 3.1.2.1-upx.1 (based on 3.1.2) | MIT; source and changes in `third_party/HelixToolkit.SharpDX/UPSTREAM.md` |
 | Microsoft.CodeAnalysis.Common and CSharp | 4.11.0 | MIT; package third-party notices are included |
 | Microsoft.Extensions.DependencyInjection.Abstractions and Logging.Abstractions | 8.0.2 | MIT |
 | SharpAssimp | 6.0.6 | MIT |

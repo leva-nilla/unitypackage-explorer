@@ -36,6 +36,7 @@ $previewPublishDirectory = Join-Path $publishDirectory 'PreviewHandler'
 $assetsFile = Join-Path $repoRoot 'src\UnityPackageExplorer.App\obj\project.assets.json'
 $packageCache = if ([string]::IsNullOrWhiteSpace($env:NUGET_PACKAGES)) { Join-Path $env:USERPROFILE '.nuget\packages' } else { $env:NUGET_PACKAGES }
 
+& (Join-Path $repoRoot 'tools\dependencies\Build-PatchedHelix.ps1') -DotNetPath $dotnetPathResolved
 & (Join-Path $PSScriptRoot 'Build-WebViewer.ps1')
 
 # Force a clean rebuild so stale incremental outputs cannot leak into the installer.
