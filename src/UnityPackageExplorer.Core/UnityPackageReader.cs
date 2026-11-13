@@ -299,32 +299,37 @@ public sealed class UnityPackageReader
             {
                 if (memory.Length + read > _expandedCacheMaximumBytes)
                 {
+                    // Too large to cache; keep today's streaming behavior.
                     Volatile.Write(ref _cacheDisabled, 1);
                     expanded.Dispose();
+                    expanded = null;
                     memory.Dispose();
                     return OpenUncachedArchive(expansionBudget);
                 }
                 memory.Write(buffer, 0, read);
             }
+            expanded.Dispose();
+            expanded = null;
+            var bytes = memory.ToArray();
+            memory.Dispose();
+            memory = null!;
+            if (Interlocked.Add(ref _totalExpandedCacheBytes, bytes.Length) > TotalExpandedCacheMaximumBytes)
+            {
+                Interlocked.Add(ref _totalExpandedCacheBytes, -bytes.Length);
+                Volatile.Write(ref _cacheDisabled, 1);
+                return OpenUncachedArchive(expansionBudget);
+            }
+            Volatile.Write(ref _expandedCache, bytes);
+            return new MemoryStream(bytes, writable: false);
         }
         catch
         {
             // Budget exhaustion or broken archive: report as the uncached flow would.
-            memory.Dispose();
             expanded?.Dispose();
             file.Dispose();
+            memory.Dispose();
             throw;
         }
-        var bytes = memory.ToArray();
-        memory.Dispose();
-        if (Interlocked.Add(ref _totalExpandedCacheBytes, bytes.Length) > TotalExpandedCacheMaximumBytes)
-        {
-            Interlocked.Add(ref _totalExpandedCacheBytes, -bytes.Length);
-            Volatile.Write(ref _cacheDisabled, 1);
-            return OpenUncachedArchive(expansionBudget);
-        }
-        Volatile.Write(ref _expandedCache, bytes);
-        return new MemoryStream(bytes, writable: false);
     }
 
     private Stream OpenUncachedArchive(ArchiveExpansionBudget? expansionBudget = null)
