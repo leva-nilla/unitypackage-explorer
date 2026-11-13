@@ -21,7 +21,7 @@ DefaultDirName={localappdata}\Programs\UnityPackageExplorer
 DefaultGroupName={#ProductName}
 DisableProgramGroupPage=yes
 UsePreviousAppDir=yes
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 MinVersion=10.0.22000
@@ -58,7 +58,7 @@ Source: "{#SourceRoot}\tools\release\LegacyInstallSafety.psm1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\Register-ExplorerPreview.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\Unregister-ExplorerPreview.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\PreviewMachineRegistration.ps1"; Flags: dontcopy
-Source: "{#SourceRoot}\tools\release\PreviewRegistration.Common.psm1"; Flags: dontcopy
+Source: "{#SourceRoot}\tools\release\PreviewMachineRegistration.ps1"; Flags: dontcopy
 Source: "{#PublishRoot}\Tools\CurrentInstallFiles.txt"; Flags: dontcopy
 
 [Icons]
@@ -66,6 +66,7 @@ Name: "{group}\{#ProductName}"; Filename: "{app}\{#ProductExe}"; WorkingDir: "{a
 Name: "{userappdata}\Microsoft\Windows\SendTo\{#ProductName}"; Filename: "{app}\{#ProductExe}"; WorkingDir: "{app}"; Tasks: sendto
 
 [Registry]
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Policies\Attachments"; ValueType: dword; ValueName: "SaveZoneInformation"; ValueData: "1"; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: ""; ValueData: "UnityPackage Explorer で開く"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#ProductExe},0"; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorer.Open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#ProductExe}"" ""%1"""; Tasks: contextmenu
@@ -464,6 +465,13 @@ begin
       PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;
       if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) or (PreviewExitCode <> 0) then
         RaiseException('エクスプローラーのプレビュー欄の登録を復元できませんでした。');
+    end;
+    if WizardIsTaskSelected('explorerpreview') then begin
+      // Machine-wide (HKLM) COM registration for the preview handler.
+      PreviewScript := ExpandConstant('{app}\Tools\PreviewMachineRegistration.ps1');
+      PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -Action Register -InstallDirectory ' + #34 + InstallDirectory + #34;
+      if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) or (PreviewExitCode <> 0) then
+        RaiseException('プレビュー ハンドラーのマシン登録に失敗しました。');
     end;
     EscapedDirectory := InstallDirectory;
     StringChangeEx(EscapedDirectory, '\', '\\', True);
