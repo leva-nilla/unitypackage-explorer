@@ -77,6 +77,8 @@ public sealed class GeometryPreview : IDisposable
     private int _disposed;
     private readonly object _lifetimeGate = new();
     private int _materialReaders;
+    private bool _resourcesReleased;
+    private List<Action>? _afterRelease;
     internal GeometryPreview(IReadOnlyList<HelixToolkitScene> scenes, IReadOnlyList<GeometryPendingMaterials> pending, IReadOnlyList<string> warnings)
     { Scenes = scenes; Pending = pending; Warnings = warnings; }
     public IReadOnlyList<HelixToolkitScene> Scenes { get; }
@@ -84,12 +86,20 @@ public sealed class GeometryPreview : IDisposable
     public IReadOnlyList<string> Warnings { get; }
     public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
     public void Dispose()
+        => DisposeAfterRelease(null);
+
+    /// <summary>Disposes geometry and runs cleanup only after active material readers finish.</summary>
+    public void DisposeAfterRelease(Action? cleanup)
     {
         lock (_lifetimeGate)
         {
+            if (cleanup is not null)
+            {
+                if (_resourcesReleased) { cleanup(); return; }
+                (_afterRelease ??= []).Add(cleanup);
+            }
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-            if (_materialReaders == 0)
-                foreach (var scene in Scenes) scene.Root.Dispose();
+            if (_materialReaders == 0) ReleaseResources();
         }
     }
     internal void BeginMaterials()
@@ -105,7 +115,21 @@ public sealed class GeometryPreview : IDisposable
         lock (_lifetimeGate)
         {
             if (--_materialReaders == 0 && IsDisposed)
-                foreach (var scene in Scenes) scene.Root.Dispose();
+                ReleaseResources();
+        }
+    }
+
+    private void ReleaseResources()
+    {
+        try { foreach (var scene in Scenes) scene.Root.Dispose(); }
+        finally
+        {
+            _resourcesReleased = true;
+            if (_afterRelease is { } callbacks)
+            {
+                _afterRelease = null;
+                foreach (var callback in callbacks) callback();
+            }
         }
     }
 }

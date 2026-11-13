@@ -229,13 +229,15 @@ internal sealed class ExplorerPreviewSurface : IDisposable
     private void ClearPrepared()
     {
         _models.Clear();
-        _prepared?.Dispose();
+        var prepared = _prepared;
         _prepared = null;
-        if (_preparedTempRoot is { } tempRoot)
+        var tempRoot = _preparedTempRoot;
+        _preparedTempRoot = null;
+        if (prepared is not null)
         {
-            _preparedTempRoot = null;
-            PreviewHandlerCom.SafeDeleteOwnedTemp(tempRoot);
+            prepared.DisposeAfterRelease(tempRoot is null ? null : () => PreviewHandlerCom.SafeDeleteOwnedTemp(tempRoot));
         }
+        else if (tempRoot is not null) PreviewHandlerCom.SafeDeleteOwnedTemp(tempRoot);
     }
 
     private void ResetViewToFront()

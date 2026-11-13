@@ -349,7 +349,15 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 }
                 var geometryTask = LightweightPreviewLoader.LoadGeometryAsync(catalog, entry, tempRoot, cancellationToken, stageUnselectedSiblingImages: false);
                 TrackJob(geometryTask);
-                var geometry = await geometryTask.ConfigureAwait(false);
+                var geometry = await DeferredTaskCleanup.WaitAsync(
+                    geometryTask,
+                    cancellationToken,
+                    static result => result.Dispose(),
+                    () =>
+                    {
+                        SafeDeleteOwnedTemp(tempRoot);
+                        lock (_activeJobsGate) _selectionTempRoots.Remove(tempRoot);
+                    }).ConfigureAwait(false);
                 PreviewLog.Write($"LoadSelected geometry scenes={geometry.Scenes.Count} warnings={geometry.Warnings.Count} :: {string.Join(" | ", geometry.Warnings)}");
                 var fallbackItems = catalog.Entries.Where(x => x.HasAsset).Select(x => x.PathName).Take(25).ToArray();
                 var geometryPayload = new PreparedScenePayload(geometry, tempRoot, fallbackItems, catalog.Entries.Count(x => x.HasAsset));
@@ -381,7 +389,11 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                     materialBudget.CancelAfter(TimeSpan.FromSeconds(30));
                     var materialTask = LightweightPreviewLoader.CompleteMaterialsAsync(geometry, catalog, entry, tempRoot, materialBudget.Token);
                     TrackJob(materialTask);
-                    var plan = await materialTask.ConfigureAwait(false);
+                    var plan = await DeferredTaskCleanup.WaitAsync(
+                        materialTask,
+                        materialBudget.Token,
+                        disposeLateResult: null,
+                        () => SafeDeleteOwnedTemp(tempRoot)).ConfigureAwait(false);
                     PreviewLog.Write($"LoadSelected materials specs={plan.Plans.Sum(x => x.Specs.Count)} warnings={plan.Warnings.Count} :: {string.Join(" | ", plan.Warnings)}");
                     PostOwnedToSelectionUi(requestId, selectionId, new MaterialApplyPayload(geometry, plan, plan.Warnings),
                         payload =>
@@ -392,14 +404,11 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    // No material payload was posted, so the staged files are no longer needed.
-                    SafeDeleteOwnedTemp(tempRoot);
                     throw;
                 }
                 catch (Exception ex)
                 {
                     PreviewLog.Write($"LoadSelected material phase failed {entry.PathName}", ex);
-                    SafeDeleteOwnedTemp(tempRoot);
                     PostToSelectionUi(requestId, selectionId, () => _surface?.MarkMaterialPhaseFinished(), static () => { });
                 }
                 return;

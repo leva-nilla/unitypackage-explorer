@@ -70,15 +70,17 @@ public sealed class UnityAssetCatalog : IDisposable
                 .ToArray();
             return new UnityAssetCatalog(reader, entries);
         }
-        IReadOnlyList<UnityPackageEntry> index;
-        try { index = reader.ReadIndex(cancellationToken); }
+        try
+        {
+            var index = reader.ReadIndex(cancellationToken);
+            cache?.Store(new CatalogCachePayload(
+                CatalogIndexCache.Version,
+                [],
+                [],
+                index.Select(item => new CatalogCacheEntry(item.Guid, item.PathName, item.HasAsset, item.HasMeta)).ToArray()));
+            return new UnityAssetCatalog(reader, index);
+        }
         catch { reader.Dispose(); throw; }
-        cache?.Store(new CatalogCachePayload(
-            CatalogIndexCache.Version,
-            [],
-            [],
-            index.Select(item => new CatalogCacheEntry(item.Guid, item.PathName, item.HasAsset, item.HasMeta)).ToArray()));
-        return new UnityAssetCatalog(reader, index);
     }
 
     public static UnityAssetCatalog OpenZip(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null, string? expandedCacheSpillDirectory = null)
@@ -109,78 +111,85 @@ public sealed class UnityAssetCatalog : IDisposable
         var entries = new List<UnityPackageEntry>();
         var warnings = new List<string>();
         var nestedPackageBudget = new ArchiveExpansionBudget(UnityPackageReader.MaximumExpandedArchiveBytes);
-        foreach (var member in packageMembers)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var packageMemberPath = member.FullName;
-            if (nestedPackageBudget.IsExhausted)
+            foreach (var member in packageMembers)
             {
-                warnings.Add($"{archive.FormatName}内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
-                break;
-            }
-            if (member.Length == 0)
-            {
-                warnings.Add($"{packageMemberPath}: unitypackage is empty and could not be read.");
-                continue;
-            }
-            var reader = new UnityPackageReader(() => archive.OpenMember(packageMemberPath), expandedCacheSpillDirectory: expandedCacheSpillDirectory);
-            try
-            {
-                var packageEntries = reader.ReadIndex(cancellationToken, nestedPackageBudget);
-                packageReaders.Add(packageMemberPath, reader);
-                cachedPackages.Add(new CatalogCachePackage(packageMemberPath, packageEntries.Select(item =>
-                    new CatalogCacheEntry(item.Guid, item.PathName, item.HasAsset, item.HasMeta)).ToArray()));
-                entries.AddRange(packageEntries.Select(item => item with
-                {
-                    PathName = $"{packageMemberPath}/{item.PathName}",
-                    PackageMemberPath = packageMemberPath,
-                    AssetPathName = item.PathName
-                }));
-            }
-            catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException)
-            {
-                reader.Dispose();
-                warnings.Add($"{packageMemberPath}: 読み込めませんでした ({exception.Message})");
+                cancellationToken.ThrowIfCancellationRequested();
+                var packageMemberPath = member.FullName;
                 if (nestedPackageBudget.IsExhausted)
                 {
                     warnings.Add($"{archive.FormatName}内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
                     break;
                 }
-            }
-            catch
-            {
-                reader.Dispose();
-                foreach (var previous in packageReaders.Values) previous.Dispose();
-                throw;
-            }
-        }
-
-        var memberNames = members.Select(x => x.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var member in members.Where(x => !x.FullName.EndsWith("/", StringComparison.Ordinal)
-            && !x.FullName.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)
-            && !x.FullName.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase)))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var metaName = member.FullName + ".meta";
-            string? guid = null;
-            if (memberNames.Contains(metaName))
-            {
-                try { guid = UnityPackageReader.ReadGuid(Encoding.UTF8.GetString(archive.ReadMember(metaName, MaximumMetaBytes, cancellationToken))); }
-                catch (Exception exception) when (exception is IOException or InvalidDataException)
+                if (member.Length == 0)
                 {
-                    warnings.Add($"{metaName}: GUID metadata was ignored ({exception.Message})");
+                    warnings.Add($"{packageMemberPath}: unitypackage is empty and could not be read.");
+                    continue;
+                }
+                var reader = new UnityPackageReader(() => archive.OpenMember(packageMemberPath), expandedCacheSpillDirectory: expandedCacheSpillDirectory);
+                try
+                {
+                    var packageEntries = reader.ReadIndex(cancellationToken, nestedPackageBudget);
+                    packageReaders.Add(packageMemberPath, reader);
+                    cachedPackages.Add(new CatalogCachePackage(packageMemberPath, packageEntries.Select(item =>
+                        new CatalogCacheEntry(item.Guid, item.PathName, item.HasAsset, item.HasMeta)).ToArray()));
+                    entries.AddRange(packageEntries.Select(item => item with
+                    {
+                        PathName = $"{packageMemberPath}/{item.PathName}",
+                        PackageMemberPath = packageMemberPath,
+                        AssetPathName = item.PathName
+                    }));
+                }
+                catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException)
+                {
+                    reader.Dispose();
+                    warnings.Add($"{packageMemberPath}: 読み込めませんでした ({exception.Message})");
+                    if (nestedPackageBudget.IsExhausted)
+                    {
+                        warnings.Add($"{archive.FormatName}内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
+                        break;
+                    }
+                }
+                catch
+                {
+                    reader.Dispose();
+                    throw;
                 }
             }
-            guid ??= StableGuid(member.FullName);
-            cachedLooseMembers.Add(new CatalogCacheEntry(guid, member.FullName, true, memberNames.Contains(metaName)));
-            entries.Add(new UnityPackageEntry(guid, member.FullName, true, memberNames.Contains(metaName))
-            {
-                ZipMemberPath = member.FullName
-            });
-        }
 
-        cache?.Store(new CatalogCachePayload(CatalogIndexCache.Version, [.. members.Select(x => new CatalogCacheMember(x.FullName, x.Length))], cachedPackages, cachedLooseMembers));
-        return new UnityAssetCatalog(null, entries, archiveReader: archive, zipPackages: packageReaders, warnings: warnings);
+            var memberNames = members.Select(x => x.FullName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var member in members.Where(x => !x.FullName.EndsWith("/", StringComparison.Ordinal)
+                && !x.FullName.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)
+                && !x.FullName.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase)))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var metaName = member.FullName + ".meta";
+                string? guid = null;
+                if (memberNames.Contains(metaName))
+                {
+                    try { guid = UnityPackageReader.ReadGuid(Encoding.UTF8.GetString(archive.ReadMember(metaName, MaximumMetaBytes, cancellationToken))); }
+                    catch (Exception exception) when (exception is IOException or InvalidDataException)
+                    {
+                        warnings.Add($"{metaName}: GUID metadata was ignored ({exception.Message})");
+                    }
+                }
+                guid ??= StableGuid(member.FullName);
+                cachedLooseMembers.Add(new CatalogCacheEntry(guid, member.FullName, true, memberNames.Contains(metaName)));
+                entries.Add(new UnityPackageEntry(guid, member.FullName, true, memberNames.Contains(metaName))
+                {
+                    ZipMemberPath = member.FullName
+                });
+            }
+
+            cache?.Store(new CatalogCachePayload(CatalogIndexCache.Version, [.. members.Select(x => new CatalogCacheMember(x.FullName, x.Length))], cachedPackages, cachedLooseMembers));
+            return new UnityAssetCatalog(null, entries, archiveReader: archive, zipPackages: packageReaders, warnings: warnings);
+        }
+        catch
+        {
+            foreach (var previous in packageReaders.Values) previous.Dispose();
+            throw;
+        }
     }
 
     private static UnityAssetCatalog BuildCachedArchiveCatalog(IUnityArchiveReader archive, IReadOnlyList<UnityArchiveMember> members, CatalogCachePayload cached, string? expandedCacheSpillDirectory)
