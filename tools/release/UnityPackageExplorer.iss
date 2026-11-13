@@ -51,7 +51,7 @@ Name: "sendto"; Description: "「送る」に追加"; GroupDescription: "エク�
 Name: "explorerpreview"; Description: "エクスプローラーのプレビュー欄にZIP / UnityPackageを表示"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 
 [Files]
-Source: "{#PublishRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.pdb"
+Source: "{#PublishRoot}\dotnet-runtime-installer.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: FileExists(ExpandConstant('{#PublishRoot}\dotnet-runtime-installer.exe'))
 Source: "{#SourceRoot}\tools\release\Migrate-LegacyInstallFiles.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\Cleanup-LegacyExplorerRegistration.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\LegacyInstallSafety.psm1"; Flags: dontcopy
@@ -437,8 +437,8 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  InstallDirectory, ApplicationPath, EscapedDirectory, MarkerPath, PowerShellPath, PreviewScript, PreviewParameters: String;
-  PreviewExitCode: Integer;
+  InstallDirectory, ApplicationPath, EscapedDirectory, MarkerPath, PowerShellPath, PreviewScript, PreviewParameters, DotNetInstaller: String;
+  PreviewExitCode, ExitCode: Integer;
   MarkerText: AnsiString;
 begin
   if CurStep = ssPostInstall then begin
@@ -447,6 +447,10 @@ begin
     if WizardIsTaskSelected('contextmenu') then
       RegisterCurrentAssociationProgIdVerbs(ApplicationPath);
     PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    // Install .NET 10 Desktop Runtime (required for Explorer preview handler). Idempotent.
+    DotNetInstaller := ExpandConstant('{app}\dotnet-runtime-installer.exe');
+    if FileExists(DotNetInstaller) then
+      Exec(DotNetInstaller, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ExitCode);
     if WizardIsTaskSelected('explorerpreview') then begin
       PreviewScript := ExpandConstant('{app}\Tools\Register-ExplorerPreview.ps1');
       PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;

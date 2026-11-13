@@ -81,7 +81,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $publishDirectory 'WebViewer\index.h
     throw 'The lilToon web viewer was not included in the published application.'
 }
 if (-not (Test-Path -LiteralPath $previewHandlerProject -PathType Leaf)) { throw "Preview handler project is missing: $previewHandlerProject" }
-$previewPublishArguments = @('publish', $previewHandlerProject, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $previewPublishDirectory, '-p:DebugType=None', '-p:DebugSymbols=false', "-p:Version=$Version", "-p:FileVersion=$Version.0", "-p:BaseOutputPath=$buildOutputDirectory")
+$previewPublishArguments = @('publish', $previewHandlerProject, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'false', '-o', $previewPublishDirectory, '-p:DebugType=None', '-p:DebugSymbols=false', "-p:Version=$Version", "-p:FileVersion=$Version.0", "-p:BaseOutputPath=$buildOutputDirectory")
 if (-not [string]::IsNullOrWhiteSpace($env:UPX_RESTORE_CONFIG_FILE)) { $previewPublishArguments += "-p:RestoreConfigFile=$env:UPX_RESTORE_CONFIG_FILE" }
 if (-not [string]::IsNullOrWhiteSpace($env:UPX_TARGET_PLATFORM_SDK_ROOT_OVERRIDE)) {
     $previewPublishArguments += "-p:TargetPlatformSdkRootOverride=$env:UPX_TARGET_PLATFORM_SDK_ROOT_OVERRIDE"
@@ -179,6 +179,15 @@ $currentInstallFiles = @(Get-ChildItem -LiteralPath $publishDirectory -File -Rec
     ForEach-Object { $_.FullName.Substring($publishDirectory.TrimEnd('\').Length + 1).Replace('/', '\') })
 $currentInstallFiles += 'Tools\CurrentInstallFiles.txt'
 Set-Content -LiteralPath $currentFilesManifest -Value $currentInstallFiles -Encoding UTF8
+
+# Download the .NET 10 Desktop Runtime installer (for preview handler) if not already present.
+$dotnetRuntimeInstaller = Join-Path $publishDirectory 'dotnet-runtime-installer.exe'
+if (-not (Test-Path -LiteralPath $dotnetRuntimeInstaller -PathType Leaf)) {
+    $runtimeUrl = 'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe'
+    Write-Host "Downloading .NET 10 Desktop Runtime installer..."
+    Invoke-WebRequest -Uri $runtimeUrl -OutFile $dotnetRuntimeInstaller -UseBasicParsing
+    if (-not (Test-Path -LiteralPath $dotnetRuntimeInstaller -PathType Leaf)) { throw "Failed to download .NET 10 Desktop Runtime installer." }
+}
 
 $installer = if ($env:INNO_SETUP_COMPILER) { $env:INNO_SETUP_COMPILER } else { Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe' }
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Inno Setup 6 compiler not found: $installer" }
