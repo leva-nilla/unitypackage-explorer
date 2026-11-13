@@ -61,19 +61,32 @@ public sealed class UnityPackageReaderTests
     }
 
     [Fact]
-    public void CacheFallsBackToStreamingWhenTheExpandedArchiveExceedsTheCacheLimit()
+    public void SpillsTheExpandedArchiveToDiskWhenItExceedsTheCacheLimit()
     {
         var guid = "a".PadLeft(32, '0');
         using var package = TemporaryPackage.Create([
             ($"{guid}/pathname", "Assets/Props/Item.prefab"),
             ($"{guid}/asset", new string('x', 4096))
         ]);
-        var reader = new UnityPackageReader(
-            () => new FileStream(package.Path, FileMode.Open, FileAccess.Read, FileShare.Read),
-            expandedCacheMaximumBytes: 64);
+        var spillDirectory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"unitypackage-test-spill-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(spillDirectory);
+        try
+        {
+            var reader = new UnityPackageReader(
+                () => new FileStream(package.Path, FileMode.Open, FileAccess.Read, FileShare.Read),
+                expandedCacheMaximumBytes: 64,
+                expandedCacheSpillDirectory: spillDirectory);
 
-        Assert.Equal(new string('x', 4096), Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
-        Assert.Equal(new string('x', 4096), Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
+            Assert.Equal(new string('x', 4096), Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
+            Assert.Equal(new string('x', 4096), Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
+
+            reader.Dispose();
+            Assert.Empty(Directory.GetFiles(spillDirectory));
+        }
+        finally
+        {
+            Directory.Delete(spillDirectory, recursive: true);
+        }
     }
 
     [Fact]

@@ -154,7 +154,8 @@ CatalogIndexCache {
 - 以降の `ReadAsset`/`ReadIndex` はメモリ走査(zip member の再展開なし)。
 - 上限: 1 reader あたり 1GB、プロセス合計 1.5GB(`Interlocked` 加算管理)。超えたらその reader はキャッシュ無効化して従来のストリーミングにフォールバック(機能は変わらない)。実測: 11_Full のネストパッケージは 743.6MB。
 - **エントリ索引**: キャッシュ作成時に tar 全体を1回走査して `エントリ名 → (DataOffset, Length)` を記録し、`ReadAsset` はシーク+ペイロード読み(743MB の全走査35回 ≒ 26GB のメモリ走査を、必要バイト読みだけに削減)。索引に無い/索引未構築時は従来の順次走査にフォールバック。索引は regular file のみ記録。
-- キャッシュ済みデータは `MemoryStream(buffer, 0, length, writable: false)` として渡すため、並列読み出しにも安全。`MemoryStream.ToArray()` を使わず成長バッファを再利用して大容量時の二重コピーを回避。
+- **ディスクスピル(1GB超対応)**: 展開サイズがメモリ上限を超えたら、残りを一時ファイル(`%TEMP%\unitypackage-explorer-expanded-*.tar`)にスピルし、同じオフセット索引+シーク読みをファイルに対して行う。メモリ消費は増えず、任意サイズのパッケージで同様に高速化。スピルファイルは `FileOptions.DeleteOnClose` の所有ハンドルで寿命管理(最後のハンドルが閉じると OS が削除)+ `UnityPackageReader.Dispose()` で確定的に削除。`Dispose()` 未呼出時は GC のファイナライズで最終的に削除される。スピル済みの reader は合計メモリ上限の加算対象外。
+- キャッシュ済みデータは `MemoryStream(buffer, 0, length, writable: false)` またはスピルファイルの読み取り専用ハンドルとして渡すため、並列読み出しにも安全。`MemoryStream.ToArray()` を使わず成長バッファを再利用して大容量時の二重コピーを回避。
 - 予算(aggregate decompressed size limit)の意味論は変わらない: キャッシュ読みも同じ budget で消費され、超過時は従来と同じ例外経路。
 - 並列化は見送り: 索引により 1 読み出しが O(ペイロード) になり、並列化の効果が消える。>1GB のフォールバック時のみ効果が残るが、スレッドセーフ対応(共有 warnings など)と CPU 負荷増のコストが見合わない。必要になれば `PrepareMaterialBindings` の material reference 単位に bounded parallelism を追加する。
 
