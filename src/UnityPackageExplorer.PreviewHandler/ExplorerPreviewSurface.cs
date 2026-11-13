@@ -252,10 +252,17 @@ internal sealed class ExplorerPreviewSurface : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
         _disposed = true;
+        CandidateSelected = null;
+        _candidateEntries = [];
+        _prefabs.Items.Clear();
+        _image.Source = null;
         ClearPrepared();
+        _viewport.Dispose();
         _viewport.EffectsManager = null;
         _effectsManager.Dispose();
+        _host.Child = null;
         _host.Dispose();
     }
 
