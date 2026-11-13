@@ -36,6 +36,7 @@ namespace
         const wchar_t* extension = PathFindExtensionW(path);
         return extension != nullptr &&
             (_wcsicmp(extension, L".zip") == 0 ||
+             _wcsicmp(extension, L".rar") == 0 ||
              _wcsicmp(extension, L".unitypackage") == 0 ||
              _wcsicmp(extension, L".prefab") == 0);
     }

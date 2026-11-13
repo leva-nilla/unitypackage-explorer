@@ -20,6 +20,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="TestData\Rar5.solid.rar" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tools\samples\UnityPackageExplorer-Showcase.zip" Link="TestData\UnityPackageExplorer-Showcase.zip" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tools\context-menu\AppxManifest.xml" Link="TestData\AppxManifest.xml" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\src\UnityPackageExplorer.ShellExtension\UnityPackageExplorerShellCommand.cpp" Link="TestData\UnityPackageExplorerShellCommand.cpp" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\Install-UnityPackageExplorerContextMenu.ps1" Link="TestData\Install-UnityPackageExplorerContextMenu.ps1" CopyToOutputDirectory="PreserveNewest" />
@@ -34,6 +36,15 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\UnityPackageExplorer.Core\UnityPackageExplorer.Core.csproj" />
     <ProjectReference Include="..\..\src\UnityPackageExplorer.App\UnityPackageExplorer.App.csproj" />
+    <ProjectReference Include="..\..\src\UnityPackageExplorer.Rendering\UnityPackageExplorer.Rendering.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\UnityPackageExplorer.PreviewHandler\PendingUiPayloadQueue.cs" Link="PreviewHandler\PendingUiPayloadQueue.cs" />
+    <Compile Include="..\..\src\UnityPackageExplorer.PreviewHandler\PreviewSourceName.cs" Link="PreviewHandler\PreviewSourceName.cs" />
+    <Compile Include="..\..\src\UnityPackageExplorer.PreviewHandler\PreviewLog.cs" Link="PreviewHandler\PreviewLog.cs" />
+    <Compile Include="..\..\src\UnityPackageExplorer.PreviewHandler\PreviewStaDispatcher.cs" Link="PreviewHandler\PreviewStaDispatcher.cs" />
+    <Compile Include="..\..\src\UnityPackageExplorer.PreviewHandler\DeferredTaskCleanup.cs" Link="PreviewHandler\DeferredTaskCleanup.cs" />
   </ItemGroup>
 
 </Project>

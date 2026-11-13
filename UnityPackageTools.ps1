@@ -20,9 +20,9 @@ function Test-UnityAssetPath {
         throw "指定されたファイルが見つかりません: $Path"
     }
     $extension = [IO.Path]::GetExtension($Path)
-    if ($Action -eq 'inspect' -and $extension -in @('.unitypackage', '.zip', '.prefab')) { return }
+    if ($Action -eq 'inspect' -and $extension -in @('.unitypackage', '.zip', '.rar', '.prefab')) { return }
     if ($extension -ine '.unitypackage') {
-        throw "inspect は .unitypackage / .zip / .prefab、extract と open は .unitypackage に対応します。: $Path"
+        throw "inspect は .unitypackage / .zip / .rar / .prefab、extract と open は .unitypackage に対応します。: $Path"
     }
 }
 

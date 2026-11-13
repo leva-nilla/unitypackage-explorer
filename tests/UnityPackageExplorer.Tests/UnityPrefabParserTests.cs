@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Text;
 using UnityPackageExplorer.Core;
 
 namespace UnityPackageExplorer.Tests;
@@ -336,6 +337,259 @@ public sealed class UnityPrefabParserTests
         Assert.Equal(materialOverride, Assert.Single(placement.MaterialOverrides));
         Assert.Contains(result.Warnings, warning => warning.Contains("target renderer and slot are retained for diagnostics", StringComparison.Ordinal));
         Assert.DoesNotContain("Unknown component", root.Components);
+    }
+
+    [Fact]
+    public void ResolvesVariantChainAndAppliesExactRendererOverridesAndRootTransforms()
+    {
+        const string baseGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string variantGuid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const string outerGuid = "cccccccccccccccccccccccccccccccc";
+        const string meshGuid = "dddddddddddddddddddddddddddddddd";
+        const string baseMaterialGuid = "11111111111111111111111111111111";
+        const string firstMaterialGuid = "22222222222222222222222222222222";
+        const string secondMaterialGuid = "33333333333333333333333333333333";
+        const long baseRendererId = 30;
+        const long firstInstanceId = 100;
+        const long outerInstanceId = 200;
+        var variantRendererId = (baseRendererId ^ firstInstanceId) & long.MaxValue;
+
+        var basePrefab = $$"""
+            --- !u!1 &10
+            GameObject:
+              m_Component:
+              - component: {fileID: 20}
+              - component: {fileID: 30}
+              m_Name: Body
+            --- !u!4 &20
+            Transform:
+              m_GameObject: {fileID: 10}
+              m_Father: {fileID: 0}
+              m_LocalPosition: {x: 1, y: 2, z: 3}
+              m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+              m_LocalScale: {x: 2, y: 2, z: 2}
+            --- !u!137 &30
+            SkinnedMeshRenderer:
+              m_GameObject: {fileID: 10}
+              m_Mesh: {fileID: 4300000, guid: {{meshGuid}}, type: 3}
+              m_Materials:
+              - {fileID: 2100000, guid: {{baseMaterialGuid}}, type: 2}
+              - {fileID: 2100000, guid: {{baseMaterialGuid}}, type: 2}
+            """;
+        var variant = $$"""
+            --- !u!1001 &{{firstInstanceId}}
+            PrefabInstance:
+              m_SourcePrefab: {fileID: 100100000, guid: {{baseGuid}}, type: 3}
+              m_Modification:
+                m_TransformParent: {fileID: 0}
+                m_Modifications:
+                - target: {fileID: {{baseRendererId}}, guid: {{baseGuid}},
+                    type: 3}
+                  propertyPath: m_Materials.Array.data[0]
+                  value:
+                    objectReference: {fileID: 2100000, guid: {{firstMaterialGuid}}, type: 2}
+                - target: {fileID: 20, guid: {{baseGuid}}, type: 3}
+                  propertyPath: m_LocalPosition.x
+                  value: 4
+                  objectReference: {fileID: 0}
+            """;
+        var outer = $$"""
+            --- !u!1001 &{{outerInstanceId}}
+            PrefabInstance:
+              m_SourcePrefab: {fileID: 100100000, guid: {{variantGuid}}, type: 3}
+              m_Modification:
+                m_TransformParent: {fileID: 0}
+                m_Modifications:
+                - target: {fileID: {{variantRendererId}}, guid: {{variantGuid}},
+                    type: 3}
+                  propertyPath: m_Materials.Array.data[1]
+                  value:
+                    objectReference: {fileID: 2100000, guid: {{secondMaterialGuid}}, type: 2}
+                - target: {fileID: {{20 ^ firstInstanceId}}, guid: {{variantGuid}}, type: 3}
+                  propertyPath: m_LocalPosition.y
+                  value: 8
+                  objectReference: {fileID: 0}
+            """;
+
+        var result = UnityPrefabParser.ParseResolved(outer, outerGuid, (guid, _) => guid switch
+        {
+            var value when value == variantGuid => variant,
+            var value when value == baseGuid => basePrefab,
+            _ => null
+        });
+
+        var root = Assert.Single(result.Roots);
+        Assert.Null(root.SourcePrefab);
+        Assert.Equal(new Vector3Value(4, 8, 3), root.Position);
+        Assert.Equal(new Vector3Value(2, 2, 2), root.Scale);
+        Assert.Equal(meshGuid, root.Mesh?.Guid);
+        Assert.Equal(firstMaterialGuid, root.Materials[0].Guid);
+        Assert.Equal(secondMaterialGuid, root.Materials[1].Guid);
+        Assert.DoesNotContain(result.Warnings, warning => warning.Contains("could not be mapped safely", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Warnings, warning => warning.Contains("retained for diagnostics", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void StopsNestedPrefabCyclesAndHonorsDepthAndCancellationLimits()
+    {
+        const string firstGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string secondGuid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        static string Instance(string guid) => $$"""
+            --- !u!1001 &100
+            PrefabInstance:
+              m_SourcePrefab: {fileID: 100100000, guid: {{guid}}, type: 3}
+              m_Modification:
+                m_TransformParent: {fileID: 0}
+                m_Modifications: []
+            """;
+
+        var cyclic = UnityPrefabParser.ParseResolved(Instance(secondGuid), firstGuid, (guid, _) => guid switch
+        {
+            secondGuid => Instance(firstGuid),
+            firstGuid => Instance(secondGuid),
+            _ => null
+        });
+        Assert.Contains(cyclic.Warnings, warning => warning.Contains("cycle detected", StringComparison.Ordinal));
+        Assert.Equal(firstGuid, Assert.Single(cyclic.Roots).SourcePrefab?.Guid);
+
+        var limited = UnityPrefabParser.ParseResolved(Instance(secondGuid), firstGuid, (_, _) => Instance(firstGuid), maximumNestedDepth: 0);
+        Assert.Contains(limited.Warnings, warning => warning.Contains("depth limit", StringComparison.Ordinal));
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        Assert.Throws<OperationCanceledException>(() => UnityPrefabParser.ParseResolved(Instance(secondGuid), firstGuid, (_, _) => null, cancellation.Token));
+    }
+
+    [Fact]
+    public void KeepsCombinedHierarchyWithinThePerPrefabDepthLimit()
+    {
+        const string sourceGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const long instanceId = 9000;
+        static string Hierarchy(int count, long firstObjectId, long firstTransformId, long? instance = null, string? sourceGuid = null)
+        {
+            var yaml = new StringBuilder();
+            for (var index = 0; index < count; index++)
+            {
+                var objectId = firstObjectId + index;
+                var transformId = firstTransformId + index;
+                yaml.AppendLine($"--- !u!1 &{objectId}");
+                yaml.AppendLine("GameObject:");
+                yaml.AppendLine("  m_Component:");
+                yaml.AppendLine($"  - component: {{fileID: {transformId}}}");
+                yaml.AppendLine($"  m_Name: Node{index}");
+                if (index == count - 1 && instance.HasValue) yaml.AppendLine($"  m_PrefabInstance: {{fileID: {instance.Value}}}");
+                yaml.AppendLine($"--- !u!4 &{transformId}");
+                yaml.AppendLine("Transform:");
+                yaml.AppendLine($"  m_GameObject: {{fileID: {objectId}}}");
+                yaml.AppendLine($"  m_Father: {{fileID: {(index == 0 ? 0 : firstTransformId + index - 1)}}}");
+                yaml.AppendLine("  m_LocalPosition: {x: 0, y: 0, z: 0}");
+                yaml.AppendLine("  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}");
+                yaml.AppendLine("  m_LocalScale: {x: 1, y: 1, z: 1}");
+            }
+            if (instance.HasValue)
+            {
+                yaml.AppendLine($"--- !u!1001 &{instance.Value}");
+                yaml.AppendLine("PrefabInstance:");
+                yaml.AppendLine($"  m_SourcePrefab: {{fileID: 100100000, guid: {sourceGuid}, type: 3}}");
+                yaml.AppendLine("  m_Modification:");
+                yaml.AppendLine($"    m_TransformParent: {{fileID: {firstTransformId + count - 1}}}");
+                yaml.AppendLine("    m_Modifications: []");
+            }
+            return yaml.ToString();
+        }
+        static int MaximumDepth(IEnumerable<PrefabNode> roots)
+        {
+            var maximum = 0;
+            var pending = new Stack<(PrefabNode Node, int Depth)>(roots.Select(x => (x, 1)));
+            while (pending.Count > 0)
+            {
+                var (node, depth) = pending.Pop();
+                maximum = Math.Max(maximum, depth);
+                foreach (var child in node.Children) pending.Push((child, depth + 1));
+            }
+            return maximum;
+        }
+
+        var outer = Hierarchy(250, 1000, 2000, instanceId, sourceGuid);
+        var nested = Hierarchy(20, 5000, 6000);
+        var result = UnityPrefabParser.ParseResolved(outer, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", (guid, _) => guid == sourceGuid ? nested : null);
+
+        Assert.True(MaximumDepth(result.Roots) <= 256);
+        Assert.Contains(result.Warnings, warning => warning.Contains("trimmed to keep the combined hierarchy", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AppliesIndexedRendererOverridesAndRejectsAmbiguousOrInvalidTargets()
+    {
+        const string sourceGuid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string newMaterialGuid = "cccccccccccccccccccccccccccccccc";
+        const string basePrefab = """
+            --- !u!1 &10
+            GameObject:
+              m_Component:
+              - component: {fileID: 20}
+              - component: {fileID: 30}
+              m_Name: First
+            --- !u!4 &20
+            Transform:
+              m_GameObject: {fileID: 10}
+              m_Father: {fileID: 0}
+            --- !u!1 &11
+            GameObject:
+              m_Component:
+              - component: {fileID: 21}
+              - component: {fileID: 30}
+              m_Name: Duplicate
+            --- !u!4 &21
+            Transform:
+              m_GameObject: {fileID: 11}
+              m_Father: {fileID: 0}
+            --- !u!1 &12
+            GameObject:
+              m_Component:
+              - component: {fileID: 22}
+              - component: {fileID: 32}
+              m_Name: Single
+            --- !u!4 &22
+            Transform:
+              m_GameObject: {fileID: 12}
+              m_Father: {fileID: 0}
+            --- !u!23 &30
+            MeshRenderer:
+              m_GameObject: {fileID: 10}
+              m_Materials:
+              - {fileID: 2100000, guid: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, type: 2}
+            --- !u!23 &32
+            MeshRenderer:
+              m_GameObject: {fileID: 12}
+              m_Materials:
+              - {fileID: 2100000, guid: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, type: 2}
+            """;
+        var variant = $$"""
+            --- !u!1001 &100
+            PrefabInstance:
+              m_SourcePrefab: {fileID: 100100000, guid: {{sourceGuid}}, type: 3}
+              m_Modification:
+                m_TransformParent: {fileID: 0}
+                m_Modifications:
+                - target: {fileID: 30, guid: {{sourceGuid}}, type: 3}
+                  propertyPath: m_Materials.Array.data[0]
+                  value:
+                    objectReference: {fileID: 2100000, guid: {{newMaterialGuid}}, type: 2}
+                - target: {fileID: 32, guid: {{sourceGuid}}, type: 3}
+                  propertyPath: m_Materials.Array.data[1]
+                  value:
+                    objectReference: {fileID: 2100000, guid: {{newMaterialGuid}}, type: 2}
+            """;
+
+        var result = UnityPrefabParser.ParseResolved(variant, "dddddddddddddddddddddddddddddddd",
+            (guid, _) => guid == sourceGuid ? basePrefab : null);
+
+        var instance = Assert.Single(result.Roots);
+        Assert.Equal(3, instance.Children.Count);
+        Assert.All(instance.Children, node => Assert.Equal("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Assert.Single(node.Materials).Guid));
+        Assert.Contains(result.Warnings, warning => warning.Contains("matched multiple renderers", StringComparison.Ordinal));
+        Assert.Contains(result.Warnings, warning => warning.Contains("outside the source renderer's material list", StringComparison.Ordinal));
     }
 
     [Fact]

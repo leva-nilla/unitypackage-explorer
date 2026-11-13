@@ -1,4 +1,6 @@
 using UnityPackageExplorer.Core;
+using UnityPackageExplorer.PreviewHandler;
+using System.Runtime.InteropServices.ComTypes;
 
 namespace UnityPackageExplorer.Tests;
 
@@ -72,5 +74,63 @@ public sealed class AutomaticPreviewSelectorTests
 
         Assert.Equal("body", AutomaticPreviewSelector.Select(candidates, "ALL Bandage.zip")?.Guid);
         Assert.Equal("head", AutomaticPreviewSelector.Select([candidates[0]], "ALL Bandage.zip")?.Guid);
+    }
+
+    [Fact]
+    public void StreamSourceNameHintSurvivesSpoolingAndBreaksPrefabTie()
+    {
+        var stream = new NamedPreviewStream(@"C:\Packages\MAYO Outfit.zip");
+        var sourceName = PreviewSourceName.ReadStreamDisplayName(stream);
+        var spooled = PreviewSourceName.CreateSpoolResult(@"C:\Users\user\AppData\LocalLow\UnityPackageExplorer\PreviewRequests\id\source.zip", sourceName);
+        var candidates = new[]
+        {
+            new UnityPackageEntry("unrelated", "Assets/Prefab/Alpha.prefab", true, true),
+            new UnityPackageEntry("related", "Assets/Prefab/MAYO Outfit.prefab", true, true)
+        };
+
+        Assert.Equal("source.zip", Path.GetFileName(spooled.ReadPath));
+        Assert.Equal("MAYO Outfit.zip", spooled.DisplayName);
+        Assert.Equal(0, stream.StatFlag);
+        Assert.Equal("related", AutomaticPreviewSelector.Select(candidates, spooled.SelectorSourceName)?.Guid);
+    }
+
+    [Fact]
+    public void MissingStreamNameKeepsSpoolPathFallbackForPrefabTie()
+    {
+        var stream = new NamedPreviewStream(null);
+        var sourceName = PreviewSourceName.ReadStreamDisplayName(stream);
+        var spooled = PreviewSourceName.CreateSpoolResult(@"C:\Users\user\AppData\LocalLow\UnityPackageExplorer\PreviewRequests\id\source.zip", sourceName);
+        var candidates = new[]
+        {
+            new UnityPackageEntry("unrelated", "Assets/Prefab/Alpha.prefab", true, true),
+            new UnityPackageEntry("related", "Assets/Prefab/MAYO Outfit.prefab", true, true)
+        };
+
+        Assert.Null(sourceName);
+        Assert.Null(spooled.DisplayName);
+        Assert.Equal(spooled.ReadPath, spooled.SelectorSourceName);
+        Assert.Equal(0, stream.StatFlag);
+        Assert.Equal("unrelated", AutomaticPreviewSelector.Select(candidates, spooled.SelectorSourceName)?.Guid);
+    }
+
+    private sealed class NamedPreviewStream(string? name) : IStream
+    {
+        public int StatFlag { get; private set; } = -1;
+        public void Stat(out STATSTG pstatstg, int grfStatFlag)
+        {
+            StatFlag = grfStatFlag;
+            pstatstg = new STATSTG { pwcsName = name! };
+        }
+
+        public void Read(byte[] pv, int cb, IntPtr pcbRead) => throw new NotSupportedException();
+        public void Write(byte[] pv, int cb, IntPtr pcbWritten) => throw new NotSupportedException();
+        public void Seek(long dlibMove, int dwOrigin, IntPtr plibNewPosition) => throw new NotSupportedException();
+        public void SetSize(long libNewSize) => throw new NotSupportedException();
+        public void CopyTo(IStream pstm, long cb, IntPtr pcbRead, IntPtr pcbWritten) => throw new NotSupportedException();
+        public void Commit(int grfCommitFlags) => throw new NotSupportedException();
+        public void Revert() => throw new NotSupportedException();
+        public void LockRegion(long libOffset, long cb, int dwLockType) => throw new NotSupportedException();
+        public void UnlockRegion(long libOffset, long cb, int dwLockType) => throw new NotSupportedException();
+        public void Clone(out IStream ppstm) => throw new NotSupportedException();
     }
 }

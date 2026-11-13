@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- 任意のExplorerプレビュー欄登録を追加。.zip / .unitypackageのプレビュー関連付けはユーザー単位で登録し、COM起動情報のみPC共通領域へ追加するためこの機能を選んだ場合だけ管理者確認を表示する。.NET 10 Desktop Runtime x64がない場合は登録を省略して公式案内を表示。登録解除時は上書きされていない元の値を復元。
+- Hidden/lilToonTwoPassTransparent材質を認識し、近似表示でも2パス透明シェーダーを維持。lilToon表示中に軽量表示へ戻る操作も読み込み状況に左右されないよう修正。
+- Prefab Variantの連鎖参照を解決し、改行された材質参照とスロットの差分を読み取るよう修正。循環・深さ・展開量を制限します。
+- lilToon材質の影・輪郭線・ノーマル・MatCap・発光・アルファマスクを確認するローカル互換ビューを追加。
+- ZIP内の512 MiB超のUnityPackageを、メモリへ全量展開せずに読み込むよう修正。
+- RAR4/RAR5とソリッドRARの閲覧、ドラッグ＆ドロップ、分類、右クリック登録に対応。
+- 内包UnityPackageの項目数上限と、破損・大容量アーカイブの回帰テストを追加。
+
 ## 0.1.0 — preview
 
 - ZIPを展開せずに内包するUnityPackageとPrefabを確認。

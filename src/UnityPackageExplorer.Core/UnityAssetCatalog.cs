@@ -18,34 +18,12 @@ public sealed class UnityAssetCatalog
     private static readonly Regex ShaderKeywordsPattern = new("(?m)^[ \\t]*m_ShaderKeywords:\\s*(?<value>[^\\r\\n]*)", RegexOptions.Compiled);
     private static readonly Regex ValidKeywordsPattern = new("(?ms)^[ \\t]*m_ValidKeywords:[ \\t]*(?<value>.*?)(?=^[ \\t]*[A-Za-z][A-Za-z0-9_]*:|\\z)", RegexOptions.Compiled);
     private static readonly HashSet<string> SupportedMaterialTextureSlots = new(["_MainTex", "_BaseMap", "_BaseColorMap", "_BaseColorTexture"], StringComparer.OrdinalIgnoreCase);
-    // GUIDs were verified at the lilToon 1.3.7 tag (36ff295b41cc4c398b95419d513adeecb0b322d4) and the current tag (72fc09625b24c9a750591c286e9192512a5177a).
-    private static readonly IReadOnlyDictionary<string, UnityMaterialRenderMode> KnownLilToonShaderModes = new Dictionary<string, UnityMaterialRenderMode>(StringComparer.OrdinalIgnoreCase)
-    {
-        ["df12117ecd77c31469c224178886498e"] = UnityMaterialRenderMode.Opaque,
-        ["efa77a80ca0344749b4f19fdd5891cbe"] = UnityMaterialRenderMode.Opaque,
-        ["381af8ba8e1740a41b9768ccfb0416c2"] = UnityMaterialRenderMode.Opaque,
-        ["583a88005abb81a4ebbce757b4851a0d"] = UnityMaterialRenderMode.Opaque,
-        ["85d6126cae43b6847aff4b13f4adb8ec"] = UnityMaterialRenderMode.Cutout,
-        ["3b4aa19949601f046a20ca8bdaee929f"] = UnityMaterialRenderMode.Cutout,
-        ["b957dce3d03ff5445ac989f8de643c7f"] = UnityMaterialRenderMode.Cutout,
-        ["8cf5267d397b04846856f6d3d9561da0"] = UnityMaterialRenderMode.Cutout,
-        ["165365ab7100a044ca85fc8c33548a62"] = UnityMaterialRenderMode.Transparent,
-        ["3c79b10c7e0b2784aaa4c2f8dd17d55e"] = UnityMaterialRenderMode.Transparent,
-        ["0e3ece1bd59542743bccadb21f68318e"] = UnityMaterialRenderMode.Transparent,
-        ["1c12a37046f07ac4486881deaf0187ea"] = UnityMaterialRenderMode.Transparent
-    };
-    private static readonly HashSet<string> KnownLilToonOutlineShaderGuids = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "efa77a80ca0344749b4f19fdd5891cbe", "583a88005abb81a4ebbce757b4851a0d",
-        "3b4aa19949601f046a20ca8bdaee929f", "8cf5267d397b04846856f6d3d9561da0",
-        "3c79b10c7e0b2784aaa4c2f8dd17d55e", "1c12a37046f07ac4486881deaf0187ea"
-    };
     private readonly UnityPackageReader? _package;
     private readonly Dictionary<string, List<UnityPackageEntry>> _byGuid;
     private readonly Dictionary<string, UnityPackageEntry> _byPath;
     private readonly Dictionary<string, string>? _externalGuidPaths;
     private readonly string? _projectRoot;
-    private readonly UnityZipReader? _zipReader;
+    private readonly IUnityArchiveReader? _archiveReader;
     private readonly IReadOnlyDictionary<string, UnityPackageReader> _zipPackages;
 
     private UnityAssetCatalog(
@@ -53,7 +31,7 @@ public sealed class UnityAssetCatalog
         IReadOnlyList<UnityPackageEntry> entries,
         Dictionary<string, string>? externalGuidPaths = null,
         string? assetRoot = null,
-        UnityZipReader? zipReader = null,
+        IUnityArchiveReader? archiveReader = null,
         IReadOnlyDictionary<string, UnityPackageReader>? zipPackages = null,
         IReadOnlyList<string>? warnings = null)
     {
@@ -63,7 +41,7 @@ public sealed class UnityAssetCatalog
         _byPath = entries.GroupBy(x => x.PathName, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
         _externalGuidPaths = externalGuidPaths;
         _projectRoot = assetRoot;
-        _zipReader = zipReader;
+        _archiveReader = archiveReader;
         _zipPackages = zipPackages ?? new Dictionary<string, UnityPackageReader>(StringComparer.OrdinalIgnoreCase);
         Warnings = warnings ?? [];
     }
@@ -72,7 +50,9 @@ public sealed class UnityAssetCatalog
     public IReadOnlyList<string> Warnings { get; }
     public bool IsPackage => _package is not null;
 
-    public void RebindZipPath(string path) => (_zipReader ?? throw new InvalidOperationException("This catalog is not reading a ZIP archive.")).RebindPath(path);
+    public void RebindArchivePath(string path) => (_archiveReader ?? throw new InvalidOperationException("This catalog is not reading an outer archive.")).RebindPath(path);
+
+    public void RebindZipPath(string path) => RebindArchivePath(path);
 
     public static UnityAssetCatalog OpenPackage(string path, CancellationToken cancellationToken = default)
     {
@@ -86,9 +66,18 @@ public sealed class UnityAssetCatalog
     }
 
     public static UnityAssetCatalog OpenZip(UnityZipReader zip, CancellationToken cancellationToken = default)
+        => OpenArchive(zip, cancellationToken);
+
+    public static UnityAssetCatalog OpenRar(string path, CancellationToken cancellationToken = default)
+        => OpenArchive(new UnityRarReader(path), cancellationToken);
+
+    public static UnityAssetCatalog OpenRar(UnityRarReader rar, CancellationToken cancellationToken = default)
+        => OpenArchive(rar, cancellationToken);
+
+    public static UnityAssetCatalog OpenArchive(IUnityArchiveReader archive, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(zip);
-        var members = zip.ReadIndex(cancellationToken);
+        ArgumentNullException.ThrowIfNull(archive);
+        var members = archive.ReadIndex(cancellationToken);
         var packageMembers = members.Where(x => x.FullName.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase)).ToArray();
         var packageReaders = new Dictionary<string, UnityPackageReader>(StringComparer.OrdinalIgnoreCase);
         var entries = new List<UnityPackageEntry>();
@@ -100,7 +89,7 @@ public sealed class UnityAssetCatalog
             var packageMemberPath = member.FullName;
             if (nestedPackageBudget.IsExhausted)
             {
-                warnings.Add("ZIP内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
+                warnings.Add($"{archive.FormatName}内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
                 break;
             }
             if (member.Length == 0)
@@ -108,7 +97,7 @@ public sealed class UnityAssetCatalog
                 warnings.Add($"{packageMemberPath}: unitypackage is empty and could not be read.");
                 continue;
             }
-            var reader = new UnityPackageReader(() => zip.OpenMember(packageMemberPath));
+            var reader = new UnityPackageReader(() => archive.OpenMember(packageMemberPath));
             try
             {
                 var packageEntries = reader.ReadIndex(cancellationToken, nestedPackageBudget);
@@ -125,7 +114,7 @@ public sealed class UnityAssetCatalog
                 warnings.Add($"{packageMemberPath}: 読み込めませんでした ({exception.Message})");
                 if (nestedPackageBudget.IsExhausted)
                 {
-                    warnings.Add("ZIP内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
+                    warnings.Add($"{archive.FormatName}内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
                     break;
                 }
             }
@@ -141,7 +130,7 @@ public sealed class UnityAssetCatalog
             string? guid = null;
             if (memberNames.Contains(metaName))
             {
-                try { guid = UnityPackageReader.ReadGuid(Encoding.UTF8.GetString(zip.ReadMember(metaName, MaximumMetaBytes, cancellationToken))); }
+                try { guid = UnityPackageReader.ReadGuid(Encoding.UTF8.GetString(archive.ReadMember(metaName, MaximumMetaBytes, cancellationToken))); }
                 catch (Exception exception) when (exception is IOException or InvalidDataException)
                 {
                     warnings.Add($"{metaName}: GUID metadata was ignored ({exception.Message})");
@@ -154,7 +143,7 @@ public sealed class UnityAssetCatalog
             });
         }
 
-        return new UnityAssetCatalog(null, entries, zipReader: zip, zipPackages: packageReaders, warnings: warnings);
+        return new UnityAssetCatalog(null, entries, archiveReader: archive, zipPackages: packageReaders, warnings: warnings);
     }
 
     public static UnityAssetCatalog OpenProjectPrefab(string prefabPath, CancellationToken cancellationToken = default)
@@ -195,10 +184,10 @@ public sealed class UnityAssetCatalog
         var readLimit = payload == "asset.meta" ? Math.Min(maximumBytes, MaximumMetaBytes) : maximumBytes;
         if (entry.PackageMemberPath is not null && _zipPackages.TryGetValue(entry.PackageMemberPath, out var zipPackage))
             return zipPackage.ReadAsset(entry.Guid, payload, cancellationToken, readLimit);
-        if (entry.ZipMemberPath is not null && _zipReader is not null)
+        if (entry.ZipMemberPath is not null && _archiveReader is not null)
         {
             var memberPath = payload == "asset.meta" ? entry.ZipMemberPath + ".meta" : entry.ZipMemberPath;
-            try { return _zipReader.ReadMember(memberPath, readLimit, cancellationToken); }
+            try { return _archiveReader.ReadMember(memberPath, readLimit, cancellationToken); }
             catch (FileNotFoundException) { return null; }
         }
         if (_package is not null) return _package.ReadAsset(entry.Guid, payload, cancellationToken, readLimit);
@@ -306,12 +295,15 @@ public sealed class UnityAssetCatalog
         if (validKeywords.Success)
             foreach (Match keyword in Regex.Matches(validKeywords.Groups["value"].Value, "[A-Za-z0-9_]+", RegexOptions.CultureInvariant))
                 keywords.Add(keyword.Value);
-        var isLilToonShaderAsset = shaderPath?.Contains("lilToon", StringComparison.OrdinalIgnoreCase) == true;
+        var isLilToonShaderAsset = shaderPath?.Replace('\\', '/').Split('/').Any(segment =>
+            segment.Equals("lilToon", StringComparison.OrdinalIgnoreCase)
+            || segment.Equals("jp.lilxyzw.liltoon", StringComparison.OrdinalIgnoreCase)
+            || segment.StartsWith("jp.lilxyzw.liltoon@", StringComparison.OrdinalIgnoreCase)) == true;
         var renderMode = ResolveRenderMode(renderTag, keywords, shaderGuid, shaderName, isLilToonShaderAsset, text);
         var enabledFeatures = new[] { "_AlphaMaskMode", "_UseMatCap", "_UseMatCap2nd", "_UseOutline", "_UseEmission" }
             .Where(feature => HasEnabledMaterialFloat(text, feature) || keywords.Contains(feature.ToUpperInvariant()))
             .ToArray();
-        if (shaderGuid is not null && KnownLilToonOutlineShaderGuids.Contains(shaderGuid) && !enabledFeatures.Contains("outline shader variant", StringComparer.Ordinal))
+        if (UnityLilToonMaterialParser.IsOutline(shaderGuid, isLilToonShaderAsset ? shaderName : null) && !enabledFeatures.Contains("outline shader variant", StringComparer.Ordinal))
             enabledFeatures = [.. enabledFeatures, "outline shader variant"];
         return new UnityMaterialInfo(name, supported, unsupported, supportedBlocks)
         {
@@ -322,7 +314,8 @@ public sealed class UnityAssetCatalog
             RenderTypeTag = renderTag,
             RenderMode = renderMode,
             Cutoff = cutoff,
-            EnabledUnsupportedFeatures = enabledFeatures
+            EnabledUnsupportedFeatures = enabledFeatures,
+            LilToon = UnityLilToonMaterialParser.Parse(text, renderMode, shaderGuid, shaderName, isLilToonShaderAsset)
         };
     }
 
@@ -344,7 +337,8 @@ public sealed class UnityAssetCatalog
 
     private static UnityMaterialRenderMode ResolveRenderMode(string? tag, HashSet<string> keywords, string? shaderGuid, string? shaderName, bool isLilToonShaderAsset, string text)
     {
-        if (shaderGuid is not null && KnownLilToonShaderModes.TryGetValue(shaderGuid, out var knownMode)) return knownMode;
+        if (UnityLilToonMaterialParser.TryGetMultiRenderMode(text, shaderGuid, shaderName, isLilToonShaderAsset, out var multiMode)) return multiMode;
+        if (UnityLilToonMaterialParser.TryGetRenderMode(shaderGuid, shaderName, out var knownMode, isLilToonShaderAsset)) return knownMode;
         if (isLilToonShaderAsset) return UnityMaterialRenderMode.Unknown;
         if (string.Equals(tag, "Transparent", StringComparison.OrdinalIgnoreCase)) return UnityMaterialRenderMode.Transparent;
         if (string.Equals(tag, "TransparentCutout", StringComparison.OrdinalIgnoreCase) || string.Equals(tag, "Cutout", StringComparison.OrdinalIgnoreCase)) return UnityMaterialRenderMode.Cutout;

@@ -397,11 +397,11 @@ Invoke-RequiredCleanupStep -StepName 'legacy PreviewHandler and shell registrati
     }
 
     if ($ownsPreviewHandler) {
-        foreach ($extension in @('.unitypackage', '.prefab', '.zip')) { Get-OldPreviewAssociation $extension }
+        foreach ($extension in @('.unitypackage', '.prefab', '.zip', '.rar')) { Get-OldPreviewAssociation $extension }
 
         $state = $reg.OpenSubKey('Software\UnityPackageExplorer\Install')
         if ($state) {
-            foreach ($valueName in @('UnityPackageProgId', 'PrefabProgId', 'ZipProgId')) {
+            foreach ($valueName in @('UnityPackageProgId', 'PrefabProgId', 'ZipProgId', 'RarProgId')) {
                 $progId = [string]$state.GetValue($valueName)
                 if ([string]::IsNullOrWhiteSpace($progId)) { continue }
                 Remove-Owned-Preview-Association "$classes\$progId\shellex\$previewCategory"

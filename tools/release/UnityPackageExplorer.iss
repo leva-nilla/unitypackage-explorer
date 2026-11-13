@@ -17,7 +17,7 @@ AppName={#ProductName}
 AppVersion={#AppVersion}
 AppVerName={#ProductName} {#AppVersion}
 AppPublisher=Levanilla
-DefaultDirName={localappdata}\Programs\UnityPackageExplorer\Release
+DefaultDirName={localappdata}\Programs\UnityPackageExplorer
 DefaultGroupName={#ProductName}
 DisableProgramGroupPage=yes
 UsePreviousAppDir=yes
@@ -48,12 +48,17 @@ Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 Name: "contextmenu"; Description: "従来の右クリックメニューに追加"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 Name: "startmenu"; Description: "スタートメニューに追加"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 Name: "sendto"; Description: "「送る」に追加"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
+Name: "explorerpreview"; Description: "エクスプローラーのプレビュー欄にZIP / UnityPackageを表示"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 
 [Files]
 Source: "{#PublishRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.pdb"
 Source: "{#SourceRoot}\tools\release\Migrate-LegacyInstallFiles.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\Cleanup-LegacyExplorerRegistration.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\LegacyInstallSafety.psm1"; Flags: dontcopy
+Source: "{#SourceRoot}\tools\release\Register-ExplorerPreview.ps1"; Flags: dontcopy
+Source: "{#SourceRoot}\tools\release\Unregister-ExplorerPreview.ps1"; Flags: dontcopy
+Source: "{#SourceRoot}\tools\release\PreviewMachineRegistration.ps1"; Flags: dontcopy
+Source: "{#SourceRoot}\tools\release\PreviewRegistration.Common.psm1"; Flags: dontcopy
 Source: "{#PublishRoot}\Tools\CurrentInstallFiles.txt"; Flags: dontcopy
 
 [Icons]
@@ -70,6 +75,9 @@ Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.prefab\shell\Unity
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: ""; ValueData: "UnityPackage Explorer で開く"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#ProductExe},0"; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#ProductExe}"" ""%1"""; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: ""; ValueData: "UnityPackage Explorer で開く"; Flags: uninsdeletekey; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#ProductExe},0"; Tasks: contextmenu
+Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\UnityPackageExplorer.Open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#ProductExe}"" ""%1"""; Tasks: contextmenu
 [Run]
 Filename: "{app}\{#ProductExe}"; Description: "{cm:LaunchProgram,{#StringChange(ProductName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
@@ -151,11 +159,12 @@ var
   ProgId, Extension, StatePath: String;
 begin
   SetArrayLength(RegisteredProgIds, 0);
-  for Index := 0 to 2 do begin
+  for Index := 0 to 3 do begin
     case Index of
       0: Extension := '.unitypackage';
       1: Extension := '.prefab';
       2: Extension := '.zip';
+      3: Extension := '.rar';
     end;
     ProgId := GetAssociationProgId(Extension);
     if ProgId <> '' then begin
@@ -287,6 +296,9 @@ begin
   ExtractTemporaryFile('Migrate-LegacyInstallFiles.ps1');
   ExtractTemporaryFile('Cleanup-LegacyExplorerRegistration.ps1');
   ExtractTemporaryFile('LegacyInstallSafety.psm1');
+  ExtractTemporaryFile('Register-ExplorerPreview.ps1');
+  ExtractTemporaryFile('Unregister-ExplorerPreview.ps1');
+  ExtractTemporaryFile('PreviewRegistration.Common.psm1');
   ExtractTemporaryFile('CurrentInstallFiles.txt');
   PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   MigrationScript := ExpandConstant('{tmp}\Migrate-LegacyInstallFiles.ps1');
@@ -316,16 +328,18 @@ begin
   end;
 
   ExpectedCommand := '"' + ApplicationPath + '" "%1"';
-  SetArrayLength(ShellPaths, 3);
+  SetArrayLength(ShellPaths, 4);
   ShellPaths[0] := 'Software\Classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorer.Open\command';
   ShellPaths[1] := 'Software\Classes\SystemFileAssociations\.prefab\shell\UnityPackageExplorer.Open\command';
   ShellPaths[2] := 'Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Open\command';
-  PathCount := 3;
-  for Index := 0 to 2 do begin
+  ShellPaths[3] := 'Software\Classes\SystemFileAssociations\.rar\shell\UnityPackageExplorer.Open\command';
+  PathCount := 4;
+  for Index := 0 to 3 do begin
     case Index of
       0: AssociationProgId := GetAssociationProgId('.unitypackage');
       1: AssociationProgId := GetAssociationProgId('.prefab');
       2: AssociationProgId := GetAssociationProgId('.zip');
+      3: AssociationProgId := GetAssociationProgId('.rar');
     end;
     if AssociationProgId <> '' then begin
       SetArrayLength(ShellPaths, PathCount + 1);
@@ -387,11 +401,20 @@ end;
 
 function InitializeUninstall(): Boolean;
 var
-  PowerShellPath, CleanupScript, ErrorLogPath, Parameters, ErrorText: String;
+  PowerShellPath, CleanupScript, ErrorLogPath, Parameters, ErrorText, PreviewScript, PreviewParameters: String;
   ExitCode: Integer;
 begin
   Result := True;
   PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  PreviewScript := ExpandConstant('{app}\Tools\Unregister-ExplorerPreview.ps1');
+  PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + ExpandConstant('{app}') + #34;
+  if FileExists(PreviewScript) then begin
+    if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then begin
+      MsgBox('エクスプローラーのプレビュー欄登録を復元できなかったため、アンインストールを中止しました。', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+  end;
   CleanupScript := ExpandConstant('{app}\Tools\Cleanup-LegacyExplorerRegistration.ps1');
   ErrorLogPath := ExpandConstant('{tmp}\UnityPackageExplorer-UninstallCleanupError.txt');
   DeleteFile(ErrorLogPath);
@@ -413,14 +436,53 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  InstallDirectory, ApplicationPath, EscapedDirectory, MarkerPath: String;
+  InstallDirectory, ApplicationPath, EscapedDirectory, MarkerPath, PowerShellPath, PreviewScript, PreviewParameters, DotNetInstaller: String;
+  PreviewExitCode, ExitCode: Integer;
   MarkerText: AnsiString;
 begin
+  if CurStep = ssInstall then begin
+    // Clean up legacy install locations that can block the new install.
+    if DirExists(ExpandConstant('{pf}\UnityPackageExplorer')) then
+      DelTree(ExpandConstant('{pf}\UnityPackageExplorer'), True, True, True);
+    if DirExists(ExpandConstant('{localappdata}\Programs\UnityPackageExplorer\Release')) then
+      DelTree(ExpandConstant('{localappdata}\Programs\UnityPackageExplorer\Release'), True, True, True);
+  end;
   if CurStep = ssPostInstall then begin
     InstallDirectory := ExpandConstant('{app}');
     ApplicationPath := InstallDirectory + '\{#ProductExe}';
     if WizardIsTaskSelected('contextmenu') then
       RegisterCurrentAssociationProgIdVerbs(ApplicationPath);
+    PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    // Install .NET 10 Desktop Runtime (required for Explorer preview handler). Idempotent.
+    DotNetInstaller := ExpandConstant('{app}\dotnet-runtime-installer.exe');
+    if FileExists(DotNetInstaller) then
+      Exec(DotNetInstaller, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ExitCode);
+    if WizardIsTaskSelected('explorerpreview') then begin
+      PreviewScript := ExpandConstant('{app}\Tools\Register-ExplorerPreview.ps1');
+      PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;
+      if Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) then begin
+        if PreviewExitCode = 3 then begin
+          PreviewScript := ExpandConstant('{app}\Tools\Unregister-ExplorerPreview.ps1');
+          PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;
+          if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) or (PreviewExitCode <> 0) then
+            RaiseException('プレビュー欄の既存登録を復元できませんでした。');
+          MsgBox('エクスプローラーのプレビュー欄は登録されませんでした。.NET 10 Desktop Runtime (x64) が必要です。専用アプリは引き続き使用できます。' + #13#10 + 'https://dotnet.microsoft.com/download/dotnet/10.0', mbInformation, MB_OK)
+        end else if PreviewExitCode <> 0 then
+          RaiseException('エクスプローラーのプレビュー欄を登録できませんでした。セットアップをやり直してください。');
+      end else RaiseException('プレビュー欄登録スクリプトを起動できませんでした。');
+    end else begin
+      PreviewScript := ExpandConstant('{app}\Tools\Unregister-ExplorerPreview.ps1');
+      PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;
+      if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) or (PreviewExitCode <> 0) then
+        RaiseException('エクスプローラーのプレビュー欄の登録を復元できませんでした。');
+    end;
+    if WizardIsTaskSelected('explorerpreview') then begin
+      // Machine-wide (HKLM) COM registration for the preview handler.
+      PreviewScript := ExpandConstant('{app}\Tools\PreviewMachineRegistration.ps1');
+      PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -Action Register -InstallDirectory ' + #34 + InstallDirectory + #34;
+      if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) or (PreviewExitCode <> 0) then
+        RaiseException('プレビュー ハンドラーのマシン登録に失敗しました。');
+    end;
     EscapedDirectory := InstallDirectory;
     StringChangeEx(EscapedDirectory, '\', '\\', True);
     MarkerPath := InstallDirectory + '\.unitypackage-explorer-inno-install.json';
@@ -428,4 +490,14 @@ begin
     if not SaveStringToFile(MarkerPath, MarkerText, False) then
       Log('Could not write the UnityPackage Explorer ownership marker: ' + MarkerPath);
   end;
+end;
+
+[Code]
+procedure CurPageChanged(CurPageID: Integer);
+var
+  i: Integer;
+begin
+  if CurPageID = wpSelectTasks then
+    for i := 0 to WizardForm.TasksList.Items.Count - 1 do
+      WizardForm.TasksList.Checked[i] := True;
 end;

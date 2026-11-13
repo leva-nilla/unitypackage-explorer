@@ -4,6 +4,12 @@
 
 ## 今回の選択
 
+2026-10-24追記: ユーザーからlilToonの見た目で表示する依頼を受け、Issue #11でWebView2 + Three.js 0.180.0 + 非公式移植three-liltoon 0.1.9をローカル互換ビューとして追加する方針へ進んだ。既存のHelix表示は軽量モードとして残す。以下の「今回」は2026-10-11時点の選択を記録したもので、今回の追加実装の範囲を制限しない。
+
+実素材 `11_Full.zip` のシェーダー参照は `51b2dee0ab07bd84d8147601ff89e511` だった。固定本家コミットの [ltsmulti_o.shader.meta](https://github.com/lilxyzw/lilToon/blob/72fc09625b24c9a750591c286e9192512a5177a1/Assets/lilToon/Shader/ltsmulti_o.shader.meta) で MultiOutline と確認し、[ltsmulti_o.shader](https://github.com/lilxyzw/lilToon/blob/72fc09625b24c9a750591c286e9192512a5177a1/Assets/lilToon/Shader/ltsmulti_o.shader) の `_TransparentMode` 定義（0 Opaque、1 Cutout、2 Transparent）に限り通常描画への明示的変換を追加する。Multi本体のIDは [ltsmulti.shader.meta](https://github.com/lilxyzw/lilToon/blob/72fc09625b24c9a750591c286e9192512a5177a1/Assets/lilToon/Shader/ltsmulti.shader.meta) の `9294844b15dca184d914a632279b24e1`。移植にはMulti専用実装がないため、通常モードへの変換と差分を警告する。未確認GUIDやMultiの他のモードを推測で変換しない。
+
+three-liltoon 0.1.9のnpmメタデータでソースリビジョン `6c3728de6ac87153cdcf2bc60286d132f00494b4` を確認し、同リビジョンの第三者通知全文を `ThirdPartyLicenses/ThreeLilToon-ThirdPartyNotices.md` に保持する。
+
 ユーザーは調査中の選択肢から「今の描画で軽い近似対応（色・透過など）を追加」を選んだ。今回は Helix を維持し、材質の色・基本透過の近似を追加する。本家 shader の同梱、WebView2 / Three.js / three-liltoon の導入、renderer の置換は行わない。lilToon 本体を実行した表示という表記はしない。
 
 ここでの「軽い」は追加 renderer を導入しない実装範囲を指す。現 PC における効果別の描画時間やメモリ増加は未測定で、性能達成の判断は実装後の比較で行う。

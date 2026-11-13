@@ -48,4 +48,26 @@ public sealed class UnityZipCategorizerTests
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
     }
+
+    [Fact]
+    public void MovesRarIntoAnExistingCategory()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"unitypackage-category-test-{Guid.NewGuid():N}");
+        var category = Path.Combine(root, "衣装");
+        Directory.CreateDirectory(category);
+        var source = Path.Combine(root, "item.rar");
+        File.WriteAllText(source, "source contents");
+        try
+        {
+            var moved = UnityZipCategorizer.MoveToExistingCategory(source, root, "衣装");
+
+            Assert.Equal(Path.Combine(category, "item.rar"), moved);
+            Assert.False(File.Exists(source));
+            Assert.Equal("source contents", File.ReadAllText(moved));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
 }
