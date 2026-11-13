@@ -1,6 +1,6 @@
 # UnityPackage Explorer
 
-> **MotW (Mark of the Web) note:** The setup does NOT change any Windows security setting. Files downloaded from the internet (carrying MotW) cannot be previewed by Windows design. Unblock only trusted files, per folder, with the included `Unblock-MotW-Folder.bat`. See the "Unblocking MotW files" section below.
+> **MotW (Mark of the Web) note:** The setup does NOT change any Windows security setting. Files downloaded from the internet (carrying MotW) cannot be previewed by Windows design. Unblock only trusted files with the included `Unblock-MotW-Folder.bat`: **copy it into the folder containing the files you want to unblock and run it** (press Enter to unblock that folder). See the "Unblocking MotW files" section below.
 
 A Windows 11 tool to inspect UnityPackage / Prefab / FBX inside ZIP/RAR archives without launching Unity. Browse contents without extracting to decide where to organize files.
 
@@ -72,7 +72,7 @@ The setup changes no Windows security settings, so newly downloaded files will k
 
 To preview existing MotW files, unblock only trusted ones:
 
-- Run the included `Unblock-MotW-Folder.bat` and pick a folder; it removes MotW from all files inside.
+- **Copy the included `Unblock-MotW-Folder.bat` into the folder containing the files you want to unblock, then run it.** When asked for a path, press Enter to unblock the folder the bat lives in (including subfolders). You may also type a folder path directly.
 - For a single file: right-click -> Properties -> General -> Unblock.
 - Or in elevated PowerShell:
 ```
