@@ -21,7 +21,7 @@ DefaultDirName={localappdata}\Programs\UnityPackageExplorer
 DefaultGroupName={#ProductName}
 DisableProgramGroupPage=yes
 UsePreviousAppDir=yes
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 MinVersion=10.0.22000
@@ -57,7 +57,6 @@ Source: "{#SourceRoot}\tools\release\Cleanup-LegacyExplorerRegistration.ps1"; Fl
 Source: "{#SourceRoot}\tools\release\LegacyInstallSafety.psm1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\Register-ExplorerPreview.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\Unregister-ExplorerPreview.ps1"; Flags: dontcopy
-Source: "{#SourceRoot}\tools\release\PreviewMachineRegistration.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\PreviewMachineRegistration.ps1"; Flags: dontcopy
 Source: "{#PublishRoot}\Tools\CurrentInstallFiles.txt"; Flags: dontcopy
 
