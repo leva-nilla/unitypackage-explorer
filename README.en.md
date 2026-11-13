@@ -1,6 +1,6 @@
 # UnityPackage Explorer
 
-> **Security warning (MotW preview enable):** The optional `Install-MotW.bat` modifies a system-wide Windows security policy (`HKLM\...\Policies\Attachments\SaveZoneInformation = 1`). This stops Windows from tagging newly downloaded files with Mark of the Web, which re-enables Explorer preview for internet-downloaded files but reduces protection against untrusted downloads. Only use it on machines you control and trust the source. Existing MotW files still require manual unblocking. Revert with `Uninstall-MotW.bat`. See the "MotW preview enable" section below.
+> **MotW (Mark of the Web) note:** The setup does NOT change any Windows security setting. Files downloaded from the internet (carrying MotW) cannot be previewed by Windows design. Unblock only trusted files, per folder, with the included `Unblock-MotW-Folder.bat`. See the "Unblocking MotW files" section below.
 
 A Windows 11 tool to inspect UnityPackage / Prefab / FBX inside ZIP/RAR archives without launching Unity. Browse contents without extracting to decide where to organize files.
 
@@ -66,21 +66,17 @@ Get-ChildItem -Path "C:\path\to\trusted\folder" -Recurse -File | Unblock-File
 ```
 Only run on folders you have verified.
 
-## Explorer preview MotW note
+## Unblocking MotW files
 
-To make preview work for newly downloaded files, run as Administrator:
+The setup changes no Windows security settings, so newly downloaded files will keep carrying MotW and stay blocked from preview. That is by Windows design.
+
+To preview existing MotW files, unblock only trusted ones:
+
+- Run the included `Unblock-MotW-Folder.bat` and pick a folder; it removes MotW from all files inside.
+- For a single file: right-click -> Properties -> General -> Unblock.
+- Or in elevated PowerShell:
 ```
-reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Attachments" /v SaveZoneInformation /t REG_DWORD /d 1 /f
+Get-ChildItem -Path "C:\path\to\downloads" -Recurse -File | Unblock-File
 ```
-Existing MotW files still require individual unblocking.
-## MotW preview enable (recommended)
 
-Run Install-MotW.bat as Administrator to install and additionally set
-HKLM\...\Policies\Attachments\SaveZoneInformation = 1, so newly downloaded
-files no longer carry Mark of the Web and can be previewed.
-
-Notes:
-- This is a system-wide security setting change. Downloaded-file warnings
-  will no longer appear for new files.
-- Existing MotW files still require individual unblocking.
-- To revert, run Uninstall-MotW.bat as Administrator.
+Only unblock folders and files you trust. MotW marks a file's download origin; unblocked files become preview-eligible.

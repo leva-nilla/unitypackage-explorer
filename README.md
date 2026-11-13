@@ -1,6 +1,6 @@
 # UnityPackage Explorer
 
-> **Security warning (MotW preview enable):** The optional `Install-MotW.bat` modifies a system-wide Windows security policy (`HKLM\...\Policies\Attachments\SaveZoneInformation = 1`). This stops Windows from tagging newly downloaded files with Mark of the Web, which re-enables Explorer preview for internet-downloaded files but reduces protection against untrusted downloads. Only use it on machines you control and trust the source. Existing MotW files still require manual unblocking. Revert with `Uninstall-MotW.bat`. See the "MotW preview enable" section below.
+> **MotW (Mark of the Web) について:** セットアップは Windows のセキュリティ設定を一切変更しません。インターネットからダウンロードしたファイル（MotW 付き）は Windows の仕様上プレビューできません。信頼できるファイルだけ、同梱の `Unblock-MotW-Folder.bat` でフォルダー単位でブロック解除してください。詳しくは下の「MotW ファイルのブロック解除」セクションを見てください。
 
 Unityを起動せずに、ダウンロードしたZIP/RARの中のUnityPackageやPrefabを確認するWindows 11向けツールです。ファイルを展開せずに内容を見て、整理先を決められます。
 
@@ -92,11 +92,17 @@ dotnet test .\UnityPackageExplorer.sln -c Release
 
 プロジェクトのソースはMIT Licenseです。依存コンポーネントの著作権・ライセンスは[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)と[`ThirdPartyLicenses`](ThirdPartyLicenses/)に記載しています。
 
-## MotW プレビュー有効化（推奨）
+## MotW ファイルのブロック解除
 
-Install-MotW.bat を管理者として実行すると、セットアップに加えて HKLM\...\Policies\Attachments\SaveZoneInformation = 1 を設定し、新規ダウンロードファイルに MotW が付かないようにします。これによりインターネットからダウンロードしたファイルのプレビューが動作します。
+セットアップは Windows のセキュリティ設定を変更しません。そのため、新規ダウンロードされたファイルには引き続き MotW が付き、プレビューは止まります。これは Windows の仕様です。
 
-注意:
-- システム全体のセキュリティ設定変更です。MotW によるダウンロードファイルの警告が今後出なくなります。
-- 既存の MotW 付きファイルは個別にブロック解除が必要です。
-- 元に戻すには Uninstall-MotW.bat を管理者として実行してください。
+既存の MotW 付きファイルをプレビューするには、信頼できるファイルだけをブロック解除してください:
+
+- 同梱の `Unblock-MotW-Folder.bat` を実行し、フォルダーを指定すると、そのフォルダー内の全ファイルの MotW を解除します。
+- 個別に解除する場合は、エクスプローラーで右クリック →「プロパティ」→「全般」→「許可する」。
+- 一括解除する場合（管理者 PowerShell）:
+```
+Get-ChildItem -Path "C:\Users\...\ダウンロードフォルダー" -Recurse -File | Unblock-File
+```
+
+注意: ブロック解除は信頼できるフォルダー・ファイルだけに実行してください。MotW はダウンロード元の安全性を示す目印であり、解除したファイルはプレビューが有効になります。
