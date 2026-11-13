@@ -51,7 +51,7 @@ Name: "sendto"; Description: "「送る」に追加"; GroupDescription: "エク�
 Name: "explorerpreview"; Description: "エクスプローラーのプレビュー欄にZIP / UnityPackageを表示"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 
 [Files]
-Source: "{#PublishRoot}\dotnet-runtime-installer.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: FileExists(ExpandConstant('{#PublishRoot}\dotnet-runtime-installer.exe'))
+Source: "{#PublishRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.pdb"
 Source: "{#SourceRoot}\tools\release\Migrate-LegacyInstallFiles.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\Cleanup-LegacyExplorerRegistration.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\LegacyInstallSafety.psm1"; Flags: dontcopy
