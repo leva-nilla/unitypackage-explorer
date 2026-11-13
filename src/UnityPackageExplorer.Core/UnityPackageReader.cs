@@ -17,14 +17,18 @@ public sealed class UnityPackageReader
     // Expanded-tar caching: re-reading a nested unitypackage member decompresses the whole
     // package on every ReadAsset call. Caching the expanded bytes after the first (index) or
     // second read turns the remaining material/texture reads into in-memory scans.
-    private const long ExpandedCacheMaximumBytes = 512L * 1024 * 1024;
+    private const long ExpandedCacheMaximumBytes = 1024L * 1024 * 1024;
+    private const long TotalExpandedCacheMaximumBytes = 1536L * 1024 * 1024;
     private readonly long _expandedCacheMaximumBytes;
-    private const long TotalExpandedCacheMaximumBytes = 1024L * 1024 * 1024;
     private static long _totalExpandedCacheBytes;
     private readonly object _cacheGate = new();
-    private byte[]? _expandedCache;
+    private ExpandedCacheEntry? _expandedCache;
     private int _cacheableOpens;
     private int _cacheDisabled;
+
+    private sealed record ExpandedCacheEntry(byte[] Buffer, int Length, Dictionary<string, CachedTarEntry> Index);
+
+    private sealed record CachedTarEntry(long DataOffset, long Length);
 
     public UnityPackageReader(string packagePath)
     {
@@ -102,6 +106,25 @@ public sealed class UnityPackageReader
         if (maximumBytes is <= 0 or > MaximumAssetBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
 
         var target = $"{guid}/{payloadName}";
+        var cached = Volatile.Read(ref _expandedCache);
+        if (cached?.Index.TryGetValue(target, out var slot) == true)
+        {
+            if (slot.Length == 0) return [];
+            if (slot.Length > maximumBytes) throw new InvalidDataException($"Asset exceeds the {maximumBytes:N0} byte safety limit.");
+            cancellationToken.ThrowIfCancellationRequested();
+            using var cachedStream = new MemoryStream(cached.Buffer, 0, cached.Length, writable: false);
+            cachedStream.Seek(slot.DataOffset, SeekOrigin.Begin);
+            var payload = new byte[slot.Length];
+            var filled = 0;
+            while (filled < payload.Length)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var read = cachedStream.Read(payload, filled, payload.Length - filled);
+                if (read == 0) throw new InvalidDataException("Cached package entry is truncated.");
+                filled += read;
+            }
+            return payload;
+        }
         using var archive = OpenArchive();
         using var reader = new TarReader(archive, leaveOpen: false);
         TarEntry? entry;
@@ -267,15 +290,36 @@ public sealed class UnityPackageReader
         return match.Success ? match.Groups[1].Value.ToLowerInvariant() : null;
     }
 
+    private static Dictionary<string, CachedTarEntry> BuildTarEntryIndex(byte[] buffer, int length)
+    {
+        var index = new Dictionary<string, CachedTarEntry>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var stream = new MemoryStream(buffer, 0, length, writable: false);
+            using var reader = new TarReader(stream);
+            while (reader.GetNextEntry(copyData: false) is { } entry)
+            {
+                if (entry.EntryType is not TarEntryType.RegularFile) continue;
+                if (entry.DataOffset < 0) continue;
+                index[entry.Name.Replace('\\', '/').TrimEnd('/')] = new CachedTarEntry(entry.DataOffset, entry.Length);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException)
+        {
+            // Partial index; unknown targets fall back to the sequential scan path.
+        }
+        return index;
+    }
+
     private Stream OpenArchive(ArchiveExpansionBudget? expansionBudget = null)
     {
         var cached = Volatile.Read(ref _expandedCache);
-        if (cached is not null) return new MemoryStream(cached, writable: false);
+        if (cached is not null) return new MemoryStream(cached.Buffer, 0, cached.Length, writable: false);
         if (Volatile.Read(ref _cacheDisabled) != 0) return OpenUncachedArchive(expansionBudget);
         lock (_cacheGate)
         {
             cached = Volatile.Read(ref _expandedCache);
-            if (cached is not null) return new MemoryStream(cached, writable: false);
+            if (cached is not null) return new MemoryStream(cached.Buffer, 0, cached.Length, writable: false);
             // Cache when this is the outer catalog index read (shared budget present) or a
             // repeat read; single-read packages never pay the buffering cost.
             var opens = Interlocked.Increment(ref _cacheableOpens);
@@ -310,17 +354,19 @@ public sealed class UnityPackageReader
             }
             expanded.Dispose();
             expanded = null;
-            var bytes = memory.ToArray();
+            // Keep the growth buffer instead of ToArray to avoid a second full-size copy.
+            var cachedBuffer = memory.GetBuffer();
+            var cachedLength = (int)memory.Length;
             memory.Dispose();
             memory = null!;
-            if (Interlocked.Add(ref _totalExpandedCacheBytes, bytes.Length) > TotalExpandedCacheMaximumBytes)
+            if (Interlocked.Add(ref _totalExpandedCacheBytes, cachedBuffer.Length) > TotalExpandedCacheMaximumBytes)
             {
-                Interlocked.Add(ref _totalExpandedCacheBytes, -bytes.Length);
+                Interlocked.Add(ref _totalExpandedCacheBytes, -cachedBuffer.Length);
                 Volatile.Write(ref _cacheDisabled, 1);
                 return OpenUncachedArchive(expansionBudget);
             }
-            Volatile.Write(ref _expandedCache, bytes);
-            return new MemoryStream(bytes, writable: false);
+            Volatile.Write(ref _expandedCache, new ExpandedCacheEntry(cachedBuffer, cachedLength, BuildTarEntryIndex(cachedBuffer, cachedLength)));
+            return new MemoryStream(cachedBuffer, 0, cachedLength, writable: false);
         }
         catch
         {
