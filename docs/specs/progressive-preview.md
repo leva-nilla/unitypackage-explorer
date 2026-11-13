@@ -152,9 +152,9 @@ CatalogIndexCache {
 
 - 外側カタログの index 読み(`expansionBudget` 付き)または 2 回目以降の open で、展開済み tar を一度メモリに読み込む(1 回きりの読み出しパッケージは従来どおり)。
 - 以降の `ReadAsset`/`ReadIndex` はメモリ走査(zip member の再展開なし)。
-- メモリキャッシュの上限: 1 reader あたり 1GiB、プロセス合計 1.5GiB。超過時はディスクにスピルする。これは保持済みキャッシュの上限であり、構築中のバッファや複数プロセスを含むピークメモリの上限ではない。
+- メモリキャッシュの上限: 1 reader あたり 64MiB、プロセス合計 256MiB。超過時はディスクにスピルする。これは保持済みキャッシュの上限であり、構築中のバッファや複数プロセスを含むピークメモリの上限ではない。
 - **エントリ索引**: キャッシュ作成時に tar 全体を1回走査して `エントリ名 → (DataOffset, Length)` を記録し、`ReadAsset` はシーク+ペイロード読み(743MB の全走査35回 ≒ 26GB のメモリ走査を、必要バイト読みだけに削減)。索引に無い/索引未構築時は従来の順次走査にフォールバック。索引は regular file のみ記録。
-- **ディスクスピル(1GiB超対応)**: メモリ上限超過時は展開済み tar を一時ファイル(`%TEMP%\unitypackage-explorer-expanded-*.tar`)に保存し、オフセット索引でシークする。ディスクの空き容量と速度に依存し、初回展開には時間がかかる。既存の展開後 2GiB 安全上限は変わらない。スピルファイルは `FileOptions.DeleteOnClose` の所有ハンドルで管理し、`Dispose()` またはハンドルのファイナライズ時に削除される。現状の catalog は reader を明示的に破棄しないため、プレビュー終了直後の削除は保証しない。
+- **ディスクスピル**: メモリ上限超過時は展開済み tar を一時ファイル(`%TEMP%\unitypackage-explorer-expanded-*.tar`)に保存し、同じ所有ハンドルを使ってオフセット索引で読む。ディスクの空き容量と速度に依存し、初回展開には時間がかかる。既存の展開後 2GiB 安全上限は変わらない。スピルファイルは `FileOptions.DeleteOnClose` の所有ハンドルで管理し、`Dispose()` またはハンドルのファイナライズ時に削除される。現状の catalog は reader を明示的に破棄しないため、プレビュー終了直後の削除は保証しない。
 - キャッシュ済みデータは `MemoryStream(buffer, 0, length, writable: false)` またはスピルファイルの読み取り専用ハンドルとして渡すため、並列読み出しにも安全。`MemoryStream.ToArray()` を使わず成長バッファを再利用して大容量時の二重コピーを回避。
 - 予算(aggregate decompressed size limit)の意味論は変わらない: キャッシュ読みも同じ budget で消費され、超過時は従来と同じ例外経路。
 - 並列化は見送り: 索引読みの実測を優先する。必要になれば `PrepareMaterialBindings` の material reference 単位の bounded parallelism を検討する。
