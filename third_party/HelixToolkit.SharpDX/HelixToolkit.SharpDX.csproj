@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Version>3.1.2.1-upx.1</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <AssemblyVersion>3.1.2.0</AssemblyVersion>
+    <FileVersion>3.1.2.1</FileVersion>
+    <AssemblyOriginatorKeyFile>HelixToolkit.snk</AssemblyOriginatorKeyFile>
+    <SignAssembly>true</SignAssembly>
+    <IsPackable>true</IsPackable>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageReadmeFile>UPSTREAM.md</PackageReadmeFile>
+    <Authors>Helix Toolkit contributors</Authors>
+    <Description>HelixToolkit.SharpDX 3.1.2 with two COM lifetime fixes for UnityPackage Explorer. See UPSTREAM.md.</Description>
+    <RepositoryUrl>https://github.com/leva-nilla/unitypackage-explorer</RepositoryUrl>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS0618</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Remove="System.Net.Http" />
+    <None Include="LICENSE" Pack="true" PackagePath="" />
+    <None Include="UPSTREAM.md" Pack="true" PackagePath="" />
+    <EmbeddedResource Include="Textures\arial.dds;Textures\arial.fnt;Resources\*.cso">
+      <LogicalName>HelixToolkit.SharpDX.Resources.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+    <PackageReference Include="HelixToolkit" Version="3.1.2" />
+    <PackageReference Include="HelixToolkit.Geometry" Version="3.1.2" />
+    <PackageReference Include="HelixToolkit.Maths" Version="3.1.2" />
+    <PackageReference Include="CommunityToolkit.Common" Version="8.3.2" />
+    <PackageReference Include="CommunityToolkit.Diagnostics" Version="8.3.2" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
+    <PackageReference Include="Cyotek.Drawing.BitmapFont" Version="2.0.4" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
+    <PackageReference Include="SharpDX.D3DCompiler" Version="4.2.0" />
+    <PackageReference Include="SharpDX.Direct2D1" Version="4.2.0" />
+    <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
+    <PackageReference Include="SharpDX.DXGI" Version="4.2.0" />
+  </ItemGroup>
+</Project>

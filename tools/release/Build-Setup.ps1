@@ -36,6 +36,7 @@ $previewPublishDirectory = Join-Path $publishDirectory 'PreviewHandler'
 $assetsFile = Join-Path $repoRoot 'src\UnityPackageExplorer.App\obj\project.assets.json'
 $packageCache = if ([string]::IsNullOrWhiteSpace($env:NUGET_PACKAGES)) { Join-Path $env:USERPROFILE '.nuget\packages' } else { $env:NUGET_PACKAGES }
 
+& (Join-Path $repoRoot 'tools\dependencies\Build-PatchedHelix.ps1') -DotNetPath $dotnetPathResolved
 & (Join-Path $PSScriptRoot 'Build-WebViewer.ps1')
 
 # Force a clean rebuild so stale incremental outputs cannot leak into the installer.
@@ -89,6 +90,14 @@ if (-not [string]::IsNullOrWhiteSpace($env:UPX_TARGET_PLATFORM_SDK_ROOT_OVERRIDE
 }
 & $dotnetPathResolved @previewPublishArguments
 if ($LASTEXITCODE -ne 0) { throw "Preview handler publish failed with exit code $LASTEXITCODE." }
+$patchedHelix = Join-Path $repoRoot 'third_party\HelixToolkit.SharpDX\bin\Release\net8.0\HelixToolkit.SharpDX.dll'
+$patchedHelixHash = (Get-FileHash -LiteralPath $patchedHelix -Algorithm SHA256).Hash
+foreach ($directory in @($publishDirectory, $previewPublishDirectory)) {
+    $publishedHelix = Join-Path $directory 'HelixToolkit.SharpDX.dll'
+    if ((Get-FileHash -LiteralPath $publishedHelix -Algorithm SHA256).Hash -ne $patchedHelixHash) {
+        throw "Published HelixToolkit does not match the source-built lifetime fix: $publishedHelix"
+    }
+}
 foreach ($required in @('UnityPackageExplorer.PreviewHandler.comhost.dll','UnityPackageExplorer.PreviewHandler.runtimeconfig.json')) {
     if (-not (Test-Path -LiteralPath (Join-Path $previewPublishDirectory $required) -PathType Leaf)) { throw "Preview handler publish output is missing: $required" }
 }

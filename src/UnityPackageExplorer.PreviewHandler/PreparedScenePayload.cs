@@ -20,9 +20,12 @@ internal sealed class PreparedScenePayload(GeometryPreview preview, string tempR
 
     public void Dispose()
     {
-        Interlocked.Exchange(ref _preview, null)?.Dispose();
+        var preview = Interlocked.Exchange(ref _preview, null);
         var root = Interlocked.Exchange(ref _tempRoot, null);
-        if (root is not null) PreviewHandlerCom.SafeDeleteOwnedTemp(root);
+        if (preview is not null)
+            preview.DisposeAfterRelease(root is null ? null : () => PreviewHandlerCom.SafeDeleteOwnedTemp(root));
+        else if (root is not null)
+            PreviewHandlerCom.SafeDeleteOwnedTemp(root);
     }
 }
 

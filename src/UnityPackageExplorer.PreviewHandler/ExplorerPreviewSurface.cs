@@ -229,13 +229,15 @@ internal sealed class ExplorerPreviewSurface : IDisposable
     private void ClearPrepared()
     {
         _models.Clear();
-        _prepared?.Dispose();
+        var prepared = _prepared;
         _prepared = null;
-        if (_preparedTempRoot is { } tempRoot)
+        var tempRoot = _preparedTempRoot;
+        _preparedTempRoot = null;
+        if (prepared is not null)
         {
-            _preparedTempRoot = null;
-            PreviewHandlerCom.SafeDeleteOwnedTemp(tempRoot);
+            prepared.DisposeAfterRelease(tempRoot is null ? null : () => PreviewHandlerCom.SafeDeleteOwnedTemp(tempRoot));
         }
+        else if (tempRoot is not null) PreviewHandlerCom.SafeDeleteOwnedTemp(tempRoot);
     }
 
     private void ResetViewToFront()
@@ -252,10 +254,17 @@ internal sealed class ExplorerPreviewSurface : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
         _disposed = true;
+        CandidateSelected = null;
+        _candidateEntries = [];
+        _prefabs.Items.Clear();
+        _image.Source = null;
         ClearPrepared();
+        _viewport.Dispose();
         _viewport.EffectsManager = null;
         _effectsManager.Dispose();
+        _host.Child = null;
         _host.Dispose();
     }
 

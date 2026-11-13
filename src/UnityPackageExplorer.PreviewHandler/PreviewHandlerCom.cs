@@ -32,6 +32,8 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
     private Task? _activeRequest;
     private readonly List<Task> _activeJobs = [];
     private readonly object _activeJobsGate = new();
+    private UnityAssetCatalog? _requestCatalog;
+    private readonly List<string> _selectionTempRoots = [];
     private readonly object _selectionGate = new();
     private readonly object _comCallGate = new();
     private PendingUiPayloadQueue _pendingUiPayloads = new();
@@ -131,14 +133,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         _requestCancellation?.Dispose();
         _requestCancellation = new CancellationTokenSource();
         CancelSelection();
-        var previousRoot = _requestTempRoot;
-        Task[] previousJobs;
-        lock (_activeJobsGate) { previousJobs = _activeJobs.ToArray(); _activeJobs.Clear(); }
-        if (previousRoot is not null)
-        {
-            _requestTempRoot = null;
-            _ = Task.WhenAll(previousJobs).ContinueWith(_ => SafeDeleteOwnedTemp(previousRoot), TaskScheduler.Default);
-        }
+        ReleaseRequestResources();
         _requestTempRoot = _stream is null ? null : CreateRequestTempRoot();
         _panel?.Dispose();
         _surface?.Dispose();
@@ -186,15 +181,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         _requestCancellation = null;
         CancelSelection();
         Interlocked.Increment(ref _selectionGeneration);
-        var requestRoot = _requestTempRoot;
-        _requestTempRoot = null;
-        if (requestRoot is not null)
-        {
-            Task[] jobs;
-            lock (_activeJobsGate) { jobs = _activeJobs.ToArray(); _activeJobs.Clear(); }
-            if (jobs.Length == 0) SafeDeleteOwnedTemp(requestRoot);
-            else _ = Task.WhenAll(jobs).ContinueWith(_ => SafeDeleteOwnedTemp(requestRoot), TaskScheduler.Default);
-        }
+        ReleaseRequestResources();
         _surface?.Dispose();
         _surface = null;
         _panel?.Dispose();
@@ -220,17 +207,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 if (tempRoot is null) throw new InvalidOperationException("Request temp root was not created.");
                 var copyTask = Task.Run(() => CopyMarshaledStream(marshaled, tempRoot, loadToken));
                 TrackJob(copyTask);
-                PreviewSourceSpoolResult spoolResult;
-                try
-                {
-                    spoolResult = await DeferredTaskCleanup.WaitAsync(
-                        copyTask, loadToken, disposeLateResult: null, () => SafeDeleteOwnedTemp(tempRoot)).ConfigureAwait(false);
-                }
-                catch
-                {
-                    Interlocked.CompareExchange(ref _requestTempRoot, null, tempRoot);
-                    throw;
-                }
+                var spoolResult = await copyTask.ConfigureAwait(false);
                 path = spoolResult.ReadPath;
                 displayName = spoolResult.DisplayName ?? Path.GetFileName(path);
                 selectorSourceName = spoolResult.SelectorSourceName;
@@ -238,12 +215,16 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
             if (path is null) throw new FileNotFoundException("Preview source is unavailable.");
             var catalogTask = Task.Run(() => OpenCatalog(path, loadToken), loadToken);
             TrackJob(catalogTask);
-            var catalog = await DeferredTaskCleanup.WaitAsync(
-                catalogTask,
-                loadToken,
-                disposeLateResult: null,
-                tempRoot is null ? static () => { } : () => SafeDeleteOwnedTemp(tempRoot),
-                tempRoot is null ? null : () => Interlocked.CompareExchange(ref _requestTempRoot, null, tempRoot)).ConfigureAwait(false);
+            var catalog = await catalogTask.ConfigureAwait(false);
+            lock (_activeJobsGate)
+            {
+                if (cancellationToken.IsCancellationRequested || requestId != Volatile.Read(ref _generation))
+                {
+                    catalog.Dispose();
+                    return;
+                }
+                _requestCatalog = catalog;
+            }
             var entries = catalog.Entries.Where(x => x.HasAsset && x.Extension == ".prefab").ToArray();
             var selected = AutomaticPreviewSelector.Select(GetPreviewableEntries(catalog.Entries), selectorSourceName ?? path);
             PostToUi(requestId, () =>
@@ -276,15 +257,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         _requestCancellation = null;
         CancelSelection();
         Interlocked.Increment(ref _selectionGeneration);
-        var root = _requestTempRoot;
-        _requestTempRoot = null;
-        if (root is not null)
-        {
-            Task[] jobs;
-            lock (_activeJobsGate) { jobs = _activeJobs.ToArray(); _activeJobs.Clear(); }
-            if (jobs.Length == 0) SafeDeleteOwnedTemp(root);
-            else _ = Task.WhenAll(jobs).ContinueWith(_ => SafeDeleteOwnedTemp(root), TaskScheduler.Default);
-        }
+        ReleaseRequestResources();
         _surface?.Dispose();
         _surface = null;
         _panel?.Dispose();
@@ -367,11 +340,34 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
             {
                 AssimpNativeLoader.EnsureLoaded();
                 PreviewLog.Write($"LoadSelected prefab {entry.PathName} assimp preloaded");
-                var tempRoot = CreateRequestTempRoot();
-                var geometryTask = LightweightPreviewLoader.LoadGeometryAsync(catalog, entry, tempRoot, cancellationToken, stageUnselectedSiblingImages: false);
-                TrackJob(geometryTask);
+                string tempRoot;
+                lock (_activeJobsGate)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    tempRoot = CreateRequestTempRoot();
+                    _selectionTempRoots.Add(tempRoot);
+                }
+                Task<GeometryPreview> geometryTask;
+                try
+                {
+                    geometryTask = StartTrackedJob(cancellationToken, () =>
+                        LightweightPreviewLoader.LoadGeometryAsync(catalog, entry, tempRoot, cancellationToken, stageUnselectedSiblingImages: false));
+                }
+                catch
+                {
+                    SafeDeleteOwnedTemp(tempRoot);
+                    lock (_activeJobsGate) _selectionTempRoots.Remove(tempRoot);
+                    throw;
+                }
                 var geometry = await DeferredTaskCleanup.WaitAsync(
-                    geometryTask, cancellationToken, static result => result.Dispose(), () => SafeDeleteOwnedTemp(tempRoot)).ConfigureAwait(false);
+                    geometryTask,
+                    cancellationToken,
+                    static result => result.Dispose(),
+                    () =>
+                    {
+                        SafeDeleteOwnedTemp(tempRoot);
+                        lock (_activeJobsGate) _selectionTempRoots.Remove(tempRoot);
+                    }).ConfigureAwait(false);
                 PreviewLog.Write($"LoadSelected geometry scenes={geometry.Scenes.Count} warnings={geometry.Warnings.Count} :: {string.Join(" | ", geometry.Warnings)}");
                 var fallbackItems = catalog.Entries.Where(x => x.HasAsset).Select(x => x.PathName).Take(25).ToArray();
                 var geometryPayload = new PreparedScenePayload(geometry, tempRoot, fallbackItems, catalog.Entries.Count(x => x.HasAsset));
@@ -382,8 +378,8 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                     var fallback = AutomaticPreviewSelector.Select(GetPreviewableEntries(catalog.Entries).Where(candidate => candidate.Kind == "Image"), displayName);
                     if (fallback is not null)
                     {
-                        var fallbackTask = Task.Run(() => catalog.ReadAsset(fallback, cancellationToken: cancellationToken, maximumBytes: 64L * 1024 * 1024), cancellationToken);
-                        TrackJob(fallbackTask);
+                        var fallbackTask = StartTrackedJob(cancellationToken, () =>
+                            Task.Run(() => catalog.ReadAsset(fallback, cancellationToken: cancellationToken, maximumBytes: 64L * 1024 * 1024), cancellationToken));
                         var imageBytes = await fallbackTask.WaitAsync(cancellationToken).ConfigureAwait(false);
                         using var fallbackStream = imageBytes is null ? null : new MemoryStream(imageBytes);
                         using var fallbackImage = fallbackStream is null ? null : new Bitmap(fallbackStream);
@@ -401,10 +397,13 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 {
                     using var materialBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     materialBudget.CancelAfter(TimeSpan.FromSeconds(30));
-                    var materialTask = LightweightPreviewLoader.CompleteMaterialsAsync(geometry, catalog, entry, tempRoot, materialBudget.Token);
-                    TrackJob(materialTask);
-                    var plan = await DeferredTaskCleanup.WaitAsync(materialTask, materialBudget.Token,
-                        disposeLateResult: null, cleanup: static () => { }).ConfigureAwait(false);
+                    var materialTask = StartTrackedJob(materialBudget.Token, () =>
+                        LightweightPreviewLoader.CompleteMaterialsAsync(geometry, catalog, entry, tempRoot, materialBudget.Token));
+                    var plan = await DeferredTaskCleanup.WaitAsync(
+                        materialTask,
+                        materialBudget.Token,
+                        disposeLateResult: null,
+                        () => SafeDeleteOwnedTemp(tempRoot)).ConfigureAwait(false);
                     PreviewLog.Write($"LoadSelected materials specs={plan.Plans.Sum(x => x.Specs.Count)} warnings={plan.Warnings.Count} :: {string.Join(" | ", plan.Warnings)}");
                     PostOwnedToSelectionUi(requestId, selectionId, new MaterialApplyPayload(geometry, plan, plan.Warnings),
                         payload =>
@@ -415,20 +414,17 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    // No material payload was posted, so the staged files are no longer needed.
-                    SafeDeleteOwnedTemp(tempRoot);
                     throw;
                 }
                 catch (Exception ex)
                 {
                     PreviewLog.Write($"LoadSelected material phase failed {entry.PathName}", ex);
-                    SafeDeleteOwnedTemp(tempRoot);
                     PostToSelectionUi(requestId, selectionId, () => _surface?.MarkMaterialPhaseFinished(), static () => { });
                 }
                 return;
             }
-            var imageTask = Task.Run(() => catalog.ReadAsset(entry, cancellationToken: cancellationToken, maximumBytes: 64L * 1024 * 1024), cancellationToken);
-            TrackJob(imageTask);
+            var imageTask = StartTrackedJob(cancellationToken, () =>
+                Task.Run(() => catalog.ReadAsset(entry, cancellationToken: cancellationToken, maximumBytes: 64L * 1024 * 1024), cancellationToken));
             var bytes = await imageTask.WaitAsync(cancellationToken).ConfigureAwait(false);
             using var imageStream = bytes is null ? null : new MemoryStream(bytes);
             using var image = imageStream is null ? null : new Bitmap(imageStream);
@@ -556,14 +552,48 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         return resized;
     }
 
-    private static UnityAssetCatalog OpenCatalog(string path, CancellationToken token) => Path.GetExtension(path).ToLowerInvariant() switch
+    private void ReleaseRequestResources()
     {
-        ".unitypackage" => UnityAssetCatalog.OpenPackage(path, token, CatalogIndexCache.ForArchive(path)),
-        ".zip" => UnityAssetCatalog.OpenZip(path, token, CatalogIndexCache.ForArchive(path)),
-        ".rar" => UnityAssetCatalog.OpenRar(path, token, CatalogIndexCache.ForArchive(path)),
-        ".prefab" => UnityAssetCatalog.OpenProjectPrefab(path, token),
-        _ => throw new InvalidDataException("対応形式: .unitypackage / .zip / .rar / .prefab")
-    };
+        Task[] jobs;
+        UnityAssetCatalog? catalog;
+        string[] roots;
+        lock (_activeJobsGate)
+        {
+            jobs = _activeJobs.ToArray();
+            _activeJobs.Clear();
+            catalog = _requestCatalog;
+            _requestCatalog = null;
+            roots = _selectionTempRoots.Concat(_requestTempRoot is null ? [] : new[] { _requestTempRoot }).ToArray();
+            _selectionTempRoots.Clear();
+            _requestTempRoot = null;
+            _activeRequest = null;
+        }
+        _ = Task.WhenAll(jobs).ContinueWith(completed =>
+        {
+            _ = completed.Exception;
+            catalog?.Dispose();
+            foreach (var root in roots) SafeDeleteOwnedTemp(root);
+            PreviewLog.Write($"Request cleanup catalogs={(catalog is null ? 0 : 1)} roots={roots.Length}");
+        }, TaskScheduler.Default);
+    }
+
+    private Task<T> StartTrackedJob<T>(CancellationToken token, Func<Task<T>> start)
+        => DeferredTaskCleanup.StartTracked(_activeJobsGate, token, start, TrackJob);
+
+    private static UnityAssetCatalog OpenCatalog(string path, CancellationToken token)
+    {
+        // Explorer preview handlers run at low integrity and cannot write to the normal TEMP.
+        var spillDirectory = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "..", "LocalLow", "UnityPackageExplorer", "ExpandedCache"));
+        Directory.CreateDirectory(spillDirectory);
+        return Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".unitypackage" => UnityAssetCatalog.OpenPackage(path, token, expandedCacheSpillDirectory: spillDirectory),
+            ".zip" => UnityAssetCatalog.OpenZip(path, token, expandedCacheSpillDirectory: spillDirectory),
+            ".rar" => UnityAssetCatalog.OpenRar(path, token, expandedCacheSpillDirectory: spillDirectory),
+            ".prefab" => UnityAssetCatalog.OpenProjectPrefab(path, token),
+            _ => throw new InvalidDataException("対応形式: .unitypackage / .zip / .rar / .prefab")
+        };
+    }
 
     private static string CreateRequestTempRoot()
     {

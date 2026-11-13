@@ -29,6 +29,8 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _treeRefreshCancellation;
     private long _treeRefreshVersion;
     private UnityAssetCatalog? _catalog;
+    private RetirableResource<UnityAssetCatalog>? _catalogLifetime;
+    private readonly Dictionary<long, IDisposable> _catalogRequestLeases = [];
     private IReadOnlyList<UnityPackageEntry> _entries = [];
     private string? _packagePath;
     private string? _directPrefabPath;
@@ -98,6 +100,9 @@ public partial class MainWindow : Window
         Closed += (_, _) =>
         {
             CancelPendingOperations();
+            _catalogLifetime?.Retire();
+            _catalogLifetime = null;
+            _catalog = null;
             _activeSceneRequestId = null;
             CleanupTemporaryFiles();
             StopCameraInput();
@@ -113,7 +118,9 @@ public partial class MainWindow : Window
         var cancellation = new CancellationTokenSource();
         var previous = Interlocked.Exchange(ref _previewCancellation, cancellation);
         previous?.Cancel();
-        return (_previewRequests.BeginRequest(), cancellation);
+        var requestId = _previewRequests.BeginRequest();
+        if (_catalogLifetime is { } catalog) _catalogRequestLeases.Add(requestId, catalog.Acquire());
+        return (requestId, cancellation);
     }
 
     private void CancelActivePreview()
@@ -230,6 +237,8 @@ public partial class MainWindow : Window
             _packagePath = null;
             _directPrefabPath = null;
             _sourcePath = Path.GetFullPath(path);
+            _catalogLifetime?.Retire();
+            _catalogLifetime = null;
             _catalog = null;
             _entries = [];
             CategoryPanel.Visibility = Visibility.Collapsed;
@@ -239,10 +248,10 @@ public partial class MainWindow : Window
             if (extension == ".unitypackage")
             {
                 var catalog = await Task.Run(() => UnityAssetCatalog.OpenPackage(path, cancellationToken), cancellationToken);
-                if (!_previewRequests.IsCurrent(requestId)) return;
-                _catalog = catalog;
+                if (!_previewRequests.IsCurrent(requestId)) { catalog.Dispose(); return; }
+                SetCatalogForRequest(requestId, catalog);
                 _packagePath = Path.GetFullPath(path);
-                _entries = _catalog.Entries;
+                _entries = catalog.Entries;
                 var presentation = await Task.Run(() => (
                     Summary: BuildSummary(_entries, Path.GetFileName(path)),
                     Kinds: GetAvailableKinds(_entries)), cancellationToken);
@@ -267,23 +276,23 @@ public partial class MainWindow : Window
                 var catalog = await Task.Run(() => extension == ".zip"
                     ? UnityAssetCatalog.OpenZip(path, cancellationToken)
                     : UnityAssetCatalog.OpenRar(path, cancellationToken), cancellationToken);
-                if (!_previewRequests.IsCurrent(requestId)) return;
-                _catalog = catalog;
-                _entries = _catalog.Entries;
+                if (!_previewRequests.IsCurrent(requestId)) { catalog.Dispose(); return; }
+                SetCatalogForRequest(requestId, catalog);
+                _entries = catalog.Entries;
                 SourceLabel.Text = Path.GetFileName(path);
                 ExtractButton.IsEnabled = false;
                 CategoryPanel.Visibility = Visibility.Visible;
                 var categoryRoot = GetCategoryRoot(path);
                 var availableCategories = Categories.Where(name => Directory.Exists(Path.Combine(categoryRoot, name))).ToArray();
                 CategoryPicker.ItemsSource = availableCategories;
-                var warnings = _catalog.Warnings;
+                var warnings = catalog.Warnings;
                 var zipPresentation = await Task.Run(() => (
                     Summary: BuildArchiveSummary(_entries, Path.GetFileName(path), extension == ".rar" ? "RAR" : "ZIP", warnings, availableCategories.Length == 0),
                     Kinds: GetAvailableKinds(_entries)), cancellationToken);
                 if (!_previewRequests.IsCurrent(requestId)) return;
                 RefreshKindFilter(zipPresentation.Kinds);
                 DetailsText.Text = zipPresentation.Summary;
-                var warningsStatus = _catalog.Warnings.Count == 0 ? string.Empty : $" {_catalog.Warnings.Count:N0} 件の警告があります。";
+                var warningsStatus = catalog.Warnings.Count == 0 ? string.Empty : $" {catalog.Warnings.Count:N0} 件の警告があります。";
                 var emptyStatus = _entries.Count == 0 ? " 対応する素材が見つかりません。" : string.Empty;
                 var archiveLabel = extension == ".rar" ? "RAR" : "ZIP";
                 SetStatus($"{archiveLabel}内の素材を読み込みました。元{archiveLabel}は展開していません。{warningsStatus}{emptyStatus}");
@@ -300,9 +309,9 @@ public partial class MainWindow : Window
             else if (extension == ".prefab")
             {
                 var catalog = await Task.Run(() => UnityAssetCatalog.OpenProjectPrefab(path, cancellationToken), cancellationToken);
-                if (!_previewRequests.IsCurrent(requestId)) return;
-                _catalog = catalog;
-                _entries = _catalog.Entries;
+                if (!_previewRequests.IsCurrent(requestId)) { catalog.Dispose(); return; }
+                SetCatalogForRequest(requestId, catalog);
+                _entries = catalog.Entries;
                 var kinds = await Task.Run(() => GetAvailableKinds(_entries), cancellationToken);
                 if (!_previewRequests.IsCurrent(requestId)) return;
                 RefreshKindFilter(kinds);
@@ -1181,6 +1190,7 @@ public partial class MainWindow : Window
         if (_activeLilToonRequestId != requestId || !_activeHasLilToonMaterial
             || !_requestTemporaryRoots.TryGetValue(requestId, out var temporaryState)
             || temporaryState.LilToonPreparationPlans.Count == 0) return;
+        using var catalogLease = _catalogLifetime?.Acquire();
         var cancellation = new CancellationTokenSource();
         var previousCancellation = Interlocked.Exchange(ref _lilToonCancellation, cancellation);
         previousCancellation?.Cancel();
@@ -1526,9 +1536,18 @@ public partial class MainWindow : Window
 
     private void CompletePreviewRequest(long requestId)
     {
+        if (_catalogRequestLeases.Remove(requestId, out var catalogLease)) catalogLease.Dispose();
         if (!_requestTemporaryRoots.TryGetValue(requestId, out var state)) return;
         state.InFlight = state.LilToonOperations > 0;
         if (_activeSceneRequestId != requestId && !state.InFlight) CleanupRequestTemporaryFiles(requestId, state);
+    }
+
+    private void SetCatalogForRequest(long requestId, UnityAssetCatalog catalog)
+    {
+        if (_catalogRequestLeases.Remove(requestId, out var previousLease)) previousLease.Dispose();
+        _catalog = catalog;
+        _catalogLifetime = new RetirableResource<UnityAssetCatalog>(catalog);
+        _catalogRequestLeases.Add(requestId, _catalogLifetime.Acquire());
     }
 
     private void CleanupRequestTemporaryFiles(long requestId, PreviewTemporaryState state)

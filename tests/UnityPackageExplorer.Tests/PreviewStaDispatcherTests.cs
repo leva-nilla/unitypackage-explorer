@@ -5,6 +5,22 @@ namespace UnityPackageExplorer.Tests;
 public sealed class PreviewStaDispatcherTests
 {
     [Fact]
+    public async Task DisposingStaAlsoShutsDownItsWpfDispatcher()
+    {
+        await Task.Run(() =>
+        {
+            using var owner = new PreviewStaDispatcher();
+            var wpf = owner.Invoke(() => System.Windows.Threading.Dispatcher.CurrentDispatcher);
+            var shutdownFinished = false;
+            owner.Invoke(() => wpf.ShutdownFinished += (_, _) => shutdownFinished = true);
+            owner.Dispose();
+            Assert.True(owner.IsStopped);
+            Assert.True(wpf.HasShutdownFinished);
+            Assert.True(shutdownFinished);
+        });
+    }
+
+    [Fact]
     public async Task CallsFromMtaAreSerializedOnStaAndDispatcherCanRestart()
     {
         var result = await Task.Run(() =>

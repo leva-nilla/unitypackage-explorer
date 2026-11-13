@@ -81,10 +81,13 @@ Windowsの「設定」→「アプリ」→「インストールされている�
 必要なものは.NET 10 SDK、Node.js 24、Windows 11 x64、Inno Setup 6です。セットアップ作成ではVisual Studioのx64 Visual C++再配布ファイルを使います。Node.jsはローカル描画コードのビルド時だけ使用し、利用者には要求しません。
 
 ```powershell
+.\tools\dependencies\Build-PatchedHelix.ps1
 .\tools\release\Build-WebViewer.ps1 -Test
 dotnet test .\UnityPackageExplorer.sln -c Release
 .\tools\release\Build-Setup.ps1 -Version 0.1.0
 ```
+
+軽量描画にはHelixToolkit 3.1.2の固定ソースへCOM参照の寿命修正2件を適用したローカルパッケージを使います。ビルド前に上の依存パッケージ生成が必要です（セットアップ生成・CIでは自動実行）。出典・修正内容は [`third_party/HelixToolkit.SharpDX/UPSTREAM.md`](third_party/HelixToolkit.SharpDX/UPSTREAM.md) に記録しています。
 
 配布物は `.artifacts\release\v0.1.0` に生成されます。GitHub ActionsのWindowsジョブでもReleaseビルド、テスト、セットアップ生成を行います。
 

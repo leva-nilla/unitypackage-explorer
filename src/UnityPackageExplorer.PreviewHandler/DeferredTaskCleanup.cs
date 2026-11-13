@@ -3,6 +3,17 @@ namespace UnityPackageExplorer.PreviewHandler;
 /// <summary>Transfers late task results and their temporary storage to completion cleanup.</summary>
 internal static class DeferredTaskCleanup
 {
+    public static Task<T> StartTracked<T>(object gate, CancellationToken token, Func<Task<T>> start, Action<Task> track)
+    {
+        lock (gate)
+        {
+            token.ThrowIfCancellationRequested();
+            var job = start();
+            track(job);
+            return job;
+        }
+    }
+
     public static async Task<T> WaitAsync<T>(
         Task<T> operation,
         CancellationToken cancellationToken,
