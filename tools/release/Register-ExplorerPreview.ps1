@@ -21,7 +21,7 @@ if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
     $priorState = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
     if ($priorState.Version -lt 2) {
         $unregisterScript = Join-Path $PSScriptRoot 'Unregister-ExplorerPreview.ps1'
-        & $unregisterScript -InstallDirectory $InstallDirectory -RegistryRoot $RegistryRoot -StatePath $StatePath
+        & $unregisterScript -InstallDirectory $InstallDirectory -RegistryRoot $RegistryRoot -StatePath $StatePath -MachineRegistryRoot $MachineRegistryRoot -MachineStatePath $MachineStatePath
         if (Test-Path -LiteralPath $StatePath) { throw 'The legacy per-user preview registration could not be restored before migration.' }
     }
 }

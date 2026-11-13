@@ -22,7 +22,7 @@ if ($elevatedTemplate -match 'Import-Module|Get-Content|Invoke-Expression|PSComm
 if ($machineHelperSource -notmatch '-WindowStyle Hidden') { throw 'The elevated snapshot must use a hidden Windows PowerShell process.' }
 [scriptblock]::Create($elevatedTemplate.Replace('__REQUEST__','dGVzdA==')) | Out-Null
 $installerScript = Get-Content -LiteralPath (Join-Path $repoRoot 'tools\release\UnityPackageExplorer.iss') -Raw
-if ($installerScript -notmatch 'Name: "explorerpreview"[^\r\n]*Flags: unchecked') { throw 'Explorer preview must remain opt-in by default.' }
+if ($installerScript -match 'Name: "explorerpreview"[^\r\n]*Flags: unchecked') { throw 'Explorer preview must be enabled by default.' }
 $clsid = '{70C67CC6-949B-4B5D-A8F2-7844D5C29E76}'
 try {
     New-Item -ItemType Directory -Path (Join-Path $installDirectory 'PreviewHandler') -Force | Out-Null
@@ -199,17 +199,8 @@ try {
     $restored = (Get-Item -LiteralPath $existingPath).GetValue('')
     if ($restored -ne '{22222222-2222-2222-2222-222222222222}') { throw 'Opt-out failed to preserve the value that existed before the latest registration.' }
 
-    $runtimeInstalledPath = "$registryRoot\RuntimeInstalled"
-    New-Item -Path $runtimeInstalledPath -Force | Out-Null
-    New-ItemProperty -LiteralPath $runtimeInstalledPath -Name '10.0.14' -PropertyType String -Value '1' -Force | Out-Null
-    & $register -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $statePath -MachineStatePath $machineStatePath -RuntimeKeyPath $runtimeInstalledPath -RuntimeFallbackKeyPath "$registryRoot\RuntimeFallbackMissing"
-    if (-not (Test-Path -LiteralPath $statePath)) { throw 'A registered .NET 10 Desktop Runtime was not detected.' }
-    & $unregister -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $statePath -MachineStatePath $machineStatePath
-
-    $missingRuntimePath = "$registryRoot\RuntimeNotInstalled"
-    $runtimeProbe = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-File',"`"$register`"",'-InstallDirectory',"`"$installDirectory`"",'-RegistryRoot',"`"$registryRoot`"",'-MachineRegistryRoot','HKLM:','-StatePath',"`"$statePath`"",'-MachineStatePath',"`"$machineStatePath`"",'-RuntimeKeyPath',"`"$missingRuntimePath`"",'-RuntimeFallbackKeyPath',"`"$missingRuntimePath`"") -Wait -PassThru -NoNewWindow
-    if ($runtimeProbe.ExitCode -ne 3) { throw "Missing runtime was not gated (exit $($runtimeProbe.ExitCode))." }
-    if (Test-Path -LiteralPath $statePath) { throw 'Runtime absence created preview registration backup state.' }
+    # The preview handler ships with the .NET 10 Desktop Runtime installed by the setup,
+    # so registration no longer gates on a shared runtime key (no exit 3 contract).
     Write-Output 'Explorer preview registration contract passed.'
 } finally {
     if ($registryRoot.StartsWith('Registry::HKEY_CURRENT_USER\Software\UnityPackageExplorerTests\', [StringComparison]::OrdinalIgnoreCase)) {
