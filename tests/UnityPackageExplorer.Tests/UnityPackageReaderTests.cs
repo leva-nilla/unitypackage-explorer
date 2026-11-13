@@ -72,13 +72,20 @@ public sealed class UnityPackageReaderTests
         Directory.CreateDirectory(spillDirectory);
         try
         {
+            var opens = 0;
             var reader = new UnityPackageReader(
-                () => new FileStream(package.Path, FileMode.Open, FileAccess.Read, FileShare.Read),
+                () =>
+                {
+                    opens++;
+                    return new FileStream(package.Path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                },
                 expandedCacheMaximumBytes: 64,
                 expandedCacheSpillDirectory: spillDirectory);
 
             Assert.Equal(new string('x', 4096), Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
             Assert.Equal(new string('x', 4096), Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
+            Assert.Equal(new string('x', 4096), Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
+            Assert.Equal(2, opens);
 
             reader.Dispose();
             Assert.Empty(Directory.GetFiles(spillDirectory));
@@ -87,6 +94,43 @@ public sealed class UnityPackageReaderTests
         {
             Directory.Delete(spillDirectory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void CancellationDuringSpillDeletesThePartialFile()
+    {
+        var guid = "a".PadLeft(32, '0');
+        using var cancellation = new CancellationTokenSource();
+        var bytes = CreateTarBytes($"{guid}/asset", 3 * 1024 * 1024);
+        var stream = new CancellationTriggeredStream(bytes, cancellation, 1024 * 1024 + 100);
+        var spillDirectory = Path.Combine(Path.GetTempPath(), $"unitypackage-test-spill-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(spillDirectory);
+        try
+        {
+            var reader = new UnityPackageReader(() => stream, expandedCacheMaximumBytes: 64, expandedCacheSpillDirectory: spillDirectory);
+            Assert.Throws<OperationCanceledException>(() =>
+                reader.ReadIndex(cancellation.Token, new ArchiveExpansionBudget(4 * 1024 * 1024)));
+            Assert.True(stream.CancellationWasTriggeredDuringRead);
+            Assert.Empty(Directory.GetFiles(spillDirectory));
+        }
+        finally
+        {
+            Directory.Delete(spillDirectory);
+        }
+    }
+
+    [Fact]
+    public void IndexedDuplicateAssetUsesTheFirstEntryLikeSequentialReads()
+    {
+        var guid = "a".PadLeft(32, '0');
+        using var package = TemporaryPackage.Create([
+            ($"{guid}/asset", "first"),
+            ($"{guid}/asset", "second")
+        ]);
+        var reader = new UnityPackageReader(package.Path);
+        Assert.Equal("first", Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
+        Assert.Equal("first", Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
+        Assert.Equal("first", Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
     }
 
     [Fact]

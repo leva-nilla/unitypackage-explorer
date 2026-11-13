@@ -19,13 +19,12 @@ public sealed class UnityPackageReader
     // second read turns the remaining material/texture reads into in-memory scans.
     private const long ExpandedCacheMaximumBytes = 1024L * 1024 * 1024;
     private const long TotalExpandedCacheMaximumBytes = 1536L * 1024 * 1024;
-    private readonly long _expandedCacheMaximumBytes;
+    private readonly long _expandedCacheMaximumBytes = ExpandedCacheMaximumBytes;
     private readonly string? _expandedCacheSpillDirectory;
     private static long _totalExpandedCacheBytes;
     private readonly object _cacheGate = new();
     private ExpandedCacheEntry? _expandedCache;
     private int _cacheableOpens;
-    private int _cacheDisabled;
 
     private abstract class ExpandedCacheEntry
     {
@@ -37,6 +36,8 @@ public sealed class UnityPackageReader
     private sealed class MemoryExpandedCacheEntry(byte[] buffer, int length) : ExpandedCacheEntry
     {
         public override Stream OpenContent() => new MemoryStream(buffer, 0, length, writable: false);
+
+        ~MemoryExpandedCacheEntry() => Interlocked.Add(ref _totalExpandedCacheBytes, -buffer.Length);
     }
 
     // The spill file is kept alive by a DeleteOnClose owner handle: the OS removes it once the
@@ -81,7 +82,7 @@ public sealed class UnityPackageReader
     public IReadOnlyList<UnityPackageEntry> ReadIndex(CancellationToken cancellationToken = default, ArchiveExpansionBudget? expansionBudget = null)
     {
         var records = new Dictionary<string, MutableEntry>(StringComparer.OrdinalIgnoreCase);
-        using var archive = OpenArchive(expansionBudget);
+        using var archive = OpenArchive(expansionBudget, cancellationToken);
         using var reader = new TarReader(archive, leaveOpen: false);
 
         var entryCount = 0;
@@ -136,6 +137,7 @@ public sealed class UnityPackageReader
         if (maximumBytes is <= 0 or > MaximumAssetBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
 
         var target = $"{guid}/{payloadName}";
+        cancellationToken.ThrowIfCancellationRequested();
         var cached = Volatile.Read(ref _expandedCache);
         if (cached?.Index.TryGetValue(target, out var slot) == true)
         {
@@ -155,7 +157,7 @@ public sealed class UnityPackageReader
             }
             return payload;
         }
-        using var archive = OpenArchive();
+        using var archive = OpenArchive(cancellationToken: cancellationToken);
         using var reader = new TarReader(archive, leaveOpen: false);
         TarEntry? entry;
         while ((entry = reader.GetNextEntry(copyData: false)) is not null)
@@ -215,7 +217,7 @@ public sealed class UnityPackageReader
             using (new FileStream(markerPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
             stagingOwned = true;
 
-            using var archive = OpenArchive();
+            using var archive = OpenArchive(cancellationToken: cancellationToken);
             using var reader = new TarReader(archive, leaveOpen: false);
             TarEntry? entry;
             while ((entry = reader.GetNextEntry(copyData: false)) is not null)
@@ -320,19 +322,19 @@ public sealed class UnityPackageReader
         return match.Success ? match.Groups[1].Value.ToLowerInvariant() : null;
     }
 
-    private static Dictionary<string, CachedTarEntry> BuildTarEntryIndex(byte[] buffer, int length)
+    private static Dictionary<string, CachedTarEntry> BuildTarEntryIndex(byte[] buffer, int length, CancellationToken cancellationToken)
     {
         using var stream = new MemoryStream(buffer, 0, length, writable: false);
-        return BuildTarEntryIndex(stream);
+        return BuildTarEntryIndex(stream, cancellationToken);
     }
 
-    private static Dictionary<string, CachedTarEntry> BuildTarEntryIndex(string path)
+    private static Dictionary<string, CachedTarEntry> BuildTarEntryIndex(string path, CancellationToken cancellationToken)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 64 * 1024, FileOptions.SequentialScan);
-        return BuildTarEntryIndex(stream);
+        return BuildTarEntryIndex(stream, cancellationToken);
     }
 
-    private static Dictionary<string, CachedTarEntry> BuildTarEntryIndex(Stream stream)
+    private static Dictionary<string, CachedTarEntry> BuildTarEntryIndex(Stream stream, CancellationToken cancellationToken)
     {
         var index = new Dictionary<string, CachedTarEntry>(StringComparer.OrdinalIgnoreCase);
         try
@@ -340,9 +342,10 @@ public sealed class UnityPackageReader
             using var reader = new TarReader(stream);
             while (reader.GetNextEntry(copyData: false) is { } entry)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (entry.EntryType is not TarEntryType.RegularFile) continue;
                 if (entry.DataOffset < 0) continue;
-                index[entry.Name.Replace('\\', '/').TrimEnd('/')] = new CachedTarEntry(entry.DataOffset, entry.Length);
+                index.TryAdd(entry.Name.Replace('\\', '/').TrimEnd('/'), new CachedTarEntry(entry.DataOffset, entry.Length));
             }
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException)
@@ -352,11 +355,11 @@ public sealed class UnityPackageReader
         return index;
     }
 
-    private Stream OpenArchive(ArchiveExpansionBudget? expansionBudget = null)
+    private Stream OpenArchive(ArchiveExpansionBudget? expansionBudget = null, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var cached = Volatile.Read(ref _expandedCache);
         if (cached is not null) return cached.OpenContent();
-        if (Volatile.Read(ref _cacheDisabled) != 0) return OpenUncachedArchive(expansionBudget);
         lock (_cacheGate)
         {
             cached = Volatile.Read(ref _expandedCache);
@@ -365,12 +368,12 @@ public sealed class UnityPackageReader
             // repeat read; single-read packages never pay the buffering cost.
             var opens = Interlocked.Increment(ref _cacheableOpens);
             if (expansionBudget is not null || opens >= 2)
-                return TryOpenCachedArchive(expansionBudget);
+                return TryOpenCachedArchive(expansionBudget, cancellationToken);
             return OpenUncachedArchive(expansionBudget);
         }
     }
 
-    private Stream TryOpenCachedArchive(ArchiveExpansionBudget? expansionBudget)
+    private Stream TryOpenCachedArchive(ArchiveExpansionBudget? expansionBudget, CancellationToken cancellationToken)
     {
         var file = _openStream();
         Stream? expanded = null;
@@ -382,8 +385,12 @@ public sealed class UnityPackageReader
             expanded = BuildExpandedArchiveStream(file, expansionBudget);
             var buffer = new byte[1024 * 1024];
             int read;
-            while ((read = expanded.Read(buffer, 0, buffer.Length)) > 0)
+            while (true)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                read = expanded.Read(buffer, 0, buffer.Length);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (read == 0) break;
                 if (spill is null && memory.Length + read > _expandedCacheMaximumBytes)
                 {
                     // Beyond the memory budget, spill the rest to a temp file instead of
@@ -405,7 +412,8 @@ public sealed class UnityPackageReader
             {
                 spill.Dispose();
                 spill = null;
-                var entry = new SpilledExpandedCacheEntry(spillPath!) { Index = BuildTarEntryIndex(spillPath!) };
+                var index = BuildTarEntryIndex(spillPath!, cancellationToken);
+                var entry = new SpilledExpandedCacheEntry(spillPath!) { Index = index };
                 Volatile.Write(ref _expandedCache, entry);
                 return entry.OpenContent();
             }
@@ -414,13 +422,26 @@ public sealed class UnityPackageReader
             var cachedLength = (int)memory.Length;
             memory.Dispose();
             memory = null!;
+            var memoryIndex = BuildTarEntryIndex(cachedBuffer, cachedLength, cancellationToken);
             if (Interlocked.Add(ref _totalExpandedCacheBytes, cachedBuffer.Length) > TotalExpandedCacheMaximumBytes)
             {
                 Interlocked.Add(ref _totalExpandedCacheBytes, -cachedBuffer.Length);
-                Volatile.Write(ref _cacheDisabled, 1);
-                return OpenUncachedArchive(expansionBudget);
+                spillPath = Path.Combine(_expandedCacheSpillDirectory ?? Path.GetTempPath(), $"unitypackage-explorer-expanded-{Guid.NewGuid():N}.tar");
+                using (var output = new FileStream(spillPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.SequentialScan))
+                {
+                    for (var offset = 0; offset < cachedLength;)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var count = Math.Min(1024 * 1024, cachedLength - offset);
+                        output.Write(cachedBuffer, offset, count);
+                        offset += count;
+                    }
+                }
+                var diskEntry = new SpilledExpandedCacheEntry(spillPath) { Index = memoryIndex };
+                Volatile.Write(ref _expandedCache, diskEntry);
+                return diskEntry.OpenContent();
             }
-            var memoryEntry = new MemoryExpandedCacheEntry(cachedBuffer, cachedLength) { Index = BuildTarEntryIndex(cachedBuffer, cachedLength) };
+            var memoryEntry = new MemoryExpandedCacheEntry(cachedBuffer, cachedLength) { Index = memoryIndex };
             Volatile.Write(ref _expandedCache, memoryEntry);
             return memoryEntry.OpenContent();
         }
@@ -430,11 +451,8 @@ public sealed class UnityPackageReader
             expanded?.Dispose();
             file.Dispose();
             memory?.Dispose();
-            if (spill is not null)
-            {
-                spill.Dispose();
-                TryDeleteSpill(spillPath);
-            }
+            spill?.Dispose();
+            TryDeleteSpill(spillPath);
             throw;
         }
     }
