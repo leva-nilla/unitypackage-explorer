@@ -42,6 +42,41 @@ public sealed class UnityPackageReaderTests
     }
 
     [Fact]
+    public void RepeatedReadsReturnEqualBytesThroughTheExpandedArchiveCache()
+    {
+        var guidA = "a".PadLeft(32, '0');
+        var guidB = "b".PadLeft(32, '0');
+        using var package = TemporaryPackage.Create([
+            ($"{guidA}/pathname", "Assets/Props/A.prefab"),
+            ($"{guidA}/asset", "payload A"),
+            ($"{guidB}/pathname", "Assets/Props/B.fbx"),
+            ($"{guidB}/asset", "payload B")
+        ]);
+        var reader = new UnityPackageReader(package.Path);
+
+        Assert.Equal("payload A", Encoding.UTF8.GetString(reader.ReadAsset(guidA)!));
+        Assert.Equal("payload A", Encoding.UTF8.GetString(reader.ReadAsset(guidA)!));
+        Assert.Equal("payload B", Encoding.UTF8.GetString(reader.ReadAsset(guidB)!));
+        Assert.Equal("payload B", Encoding.UTF8.GetString(reader.ReadAsset(guidB)!));
+    }
+
+    [Fact]
+    public void CacheFallsBackToStreamingWhenTheExpandedArchiveExceedsTheCacheLimit()
+    {
+        var guid = "a".PadLeft(32, '0');
+        using var package = TemporaryPackage.Create([
+            ($"{guid}/pathname", "Assets/Props/Item.prefab"),
+            ($"{guid}/asset", new string('x', 4096))
+        ]);
+        var reader = new UnityPackageReader(
+            () => new FileStream(package.Path, FileMode.Open, FileAccess.Read, FileShare.Read),
+            expandedCacheMaximumBytes: 64);
+
+        Assert.Equal(new string('x', 4096), Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
+        Assert.Equal(new string('x', 4096), Encoding.UTF8.GetString(reader.ReadAsset(guid)!));
+    }
+
+    [Fact]
     public void DisposesSourceWhenReadingThePackageSignatureFails()
     {
         var stream = new FailingReadStream();

@@ -144,7 +144,19 @@ CatalogIndexCache {
   - 実機 Explorer で 同ファイル2回連続選択: 1回目はモデル先行表示→テクスチャ後追い、2回目は index 分が速くなる。
   - 選択連打: 世代管理で旧シーンに触れない。
 
-## 6. 残課題(対象外の記録)
+## 6. 追加改善: ネスト unitypackage の展開キャッシュ(実測後に追加)
+
+実機ログで、フェーズ2(マテリアル/テクスチャ解決)が `11_Full` で約 10 秒かかることが判明。原因は `UnityPackageReader.ReadAsset` が**呼び出しごとに**外側 zip member を再展開し tar を全走査するため(マテリアル情報 n 件 + テクスチャ m 枚 ≒ n+m 回の全展開)。
+
+対策: `UnityPackageReader` に展開済み tar のメモリキャッシュを追加。
+
+- 外側カタログの index 読み(`expansionBudget` 付き)または 2 回目以降の open で、展開済み tar を一度メモリに読み込む(1 回きりの読み出しパッケージは従来どおり)。
+- 以降の `ReadAsset`/`ReadIndex` はメモリ走査(zip member の再展開なし)。
+- 上限: 1 reader あたり 512MB、プロセス合計 1GB(`Interlocked` 加算管理)。超えたらその reader はキャッシュ無効化して従来のストリーミングにフォールバック(機能は変わらない)。
+- キャッシュ済みデータは `MemoryStream(bytes, writable: false)` として渡すため、並列読み出しにも安全。
+- 予算(aggregate decompressed size limit)の意味論は変わらない: キャッシュ読みも同じ budget で消費され、超過時は従来と同じ例外経路。
+
+## 7. 残課題(対象外の記録)
 
 - ネスト prefab の GUID→FBX マテリアル解決失敗(灰色・近似表示)。
 - COM ストリーム一時コピーの完全撤去。

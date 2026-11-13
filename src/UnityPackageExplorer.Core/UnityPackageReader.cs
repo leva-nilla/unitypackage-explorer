@@ -14,6 +14,17 @@ public sealed class UnityPackageReader
     private readonly Func<Stream> _openStream;
     private readonly long _maximumExpandedArchiveBytes;
     private readonly int _maximumEntryCount;
+    // Expanded-tar caching: re-reading a nested unitypackage member decompresses the whole
+    // package on every ReadAsset call. Caching the expanded bytes after the first (index) or
+    // second read turns the remaining material/texture reads into in-memory scans.
+    private const long ExpandedCacheMaximumBytes = 512L * 1024 * 1024;
+    private readonly long _expandedCacheMaximumBytes;
+    private const long TotalExpandedCacheMaximumBytes = 1024L * 1024 * 1024;
+    private static long _totalExpandedCacheBytes;
+    private readonly object _cacheGate = new();
+    private byte[]? _expandedCache;
+    private int _cacheableOpens;
+    private int _cacheDisabled;
 
     public UnityPackageReader(string packagePath)
     {
@@ -23,13 +34,14 @@ public sealed class UnityPackageReader
         _maximumEntryCount = MaximumEntryCount;
     }
 
-    public UnityPackageReader(Func<Stream> openStream, long maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes, int maximumEntryCount = MaximumEntryCount)
+    public UnityPackageReader(Func<Stream> openStream, long maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes, int maximumEntryCount = MaximumEntryCount, long expandedCacheMaximumBytes = ExpandedCacheMaximumBytes)
     {
         _openStream = openStream ?? throw new ArgumentNullException(nameof(openStream));
         if (maximumExpandedArchiveBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maximumExpandedArchiveBytes));
         if (maximumEntryCount <= 0) throw new ArgumentOutOfRangeException(nameof(maximumEntryCount));
         _maximumExpandedArchiveBytes = maximumExpandedArchiveBytes;
         _maximumEntryCount = maximumEntryCount;
+        _expandedCacheMaximumBytes = expandedCacheMaximumBytes;
     }
 
     public IReadOnlyList<UnityPackageEntry> ReadIndex(CancellationToken cancellationToken = default, ArchiveExpansionBudget? expansionBudget = null)
@@ -257,43 +269,108 @@ public sealed class UnityPackageReader
 
     private Stream OpenArchive(ArchiveExpansionBudget? expansionBudget = null)
     {
+        var cached = Volatile.Read(ref _expandedCache);
+        if (cached is not null) return new MemoryStream(cached, writable: false);
+        if (Volatile.Read(ref _cacheDisabled) != 0) return OpenUncachedArchive(expansionBudget);
+        lock (_cacheGate)
+        {
+            cached = Volatile.Read(ref _expandedCache);
+            if (cached is not null) return new MemoryStream(cached, writable: false);
+            // Cache when this is the outer catalog index read (shared budget present) or a
+            // repeat read; single-read packages never pay the buffering cost.
+            var opens = Interlocked.Increment(ref _cacheableOpens);
+            if (expansionBudget is not null || opens >= 2)
+                return TryOpenCachedArchive(expansionBudget);
+            return OpenUncachedArchive(expansionBudget);
+        }
+    }
+
+    private Stream TryOpenCachedArchive(ArchiveExpansionBudget? expansionBudget)
+    {
+        var file = _openStream();
+        Stream? expanded = null;
+        var memory = new MemoryStream();
+        try
+        {
+            expanded = BuildExpandedArchiveStream(file, expansionBudget);
+            var buffer = new byte[1024 * 1024];
+            int read;
+            while ((read = expanded.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                if (memory.Length + read > _expandedCacheMaximumBytes)
+                {
+                    Volatile.Write(ref _cacheDisabled, 1);
+                    expanded.Dispose();
+                    memory.Dispose();
+                    return OpenUncachedArchive(expansionBudget);
+                }
+                memory.Write(buffer, 0, read);
+            }
+        }
+        catch
+        {
+            // Budget exhaustion or broken archive: report as the uncached flow would.
+            memory.Dispose();
+            expanded?.Dispose();
+            file.Dispose();
+            throw;
+        }
+        var bytes = memory.ToArray();
+        memory.Dispose();
+        if (Interlocked.Add(ref _totalExpandedCacheBytes, bytes.Length) > TotalExpandedCacheMaximumBytes)
+        {
+            Interlocked.Add(ref _totalExpandedCacheBytes, -bytes.Length);
+            Volatile.Write(ref _cacheDisabled, 1);
+            return OpenUncachedArchive(expansionBudget);
+        }
+        Volatile.Write(ref _expandedCache, bytes);
+        return new MemoryStream(bytes, writable: false);
+    }
+
+    private Stream OpenUncachedArchive(ArchiveExpansionBudget? expansionBudget = null)
+    {
         var file = _openStream();
         try
         {
-            if (!file.CanRead) throw new InvalidDataException("UnityPackage source must be readable.");
-
-            var signature = new byte[2];
-            var signatureLength = 0;
-            while (signatureLength < signature.Length)
-            {
-                var read = file.Read(signature, signatureLength, signature.Length - signatureLength);
-                if (read == 0) break;
-                signatureLength += read;
-            }
-
-            if (signatureLength != signature.Length) throw new InvalidDataException("Package is empty or truncated.");
-
-            Stream source;
-            if (file.CanSeek)
-            {
-                file.Position = 0;
-                source = file;
-            }
-            else
-            {
-                source = new PrefixReadStream(signature, file);
-            }
-
-            var archive = signature[0] == 0x1f && signature[1] == 0x8b
-                ? new GZipStream(source, CompressionMode.Decompress, leaveOpen: false)
-                : source;
-            return new ExpandedLimitStream(archive, expansionBudget ?? new ArchiveExpansionBudget(_maximumExpandedArchiveBytes));
+            return BuildExpandedArchiveStream(file, expansionBudget);
         }
         catch
         {
             file.Dispose();
             throw;
         }
+    }
+
+    private Stream BuildExpandedArchiveStream(Stream file, ArchiveExpansionBudget? expansionBudget)
+    {
+        if (!file.CanRead) throw new InvalidDataException("UnityPackage source must be readable.");
+
+        var signature = new byte[2];
+        var signatureLength = 0;
+        while (signatureLength < signature.Length)
+        {
+            var read = file.Read(signature, signatureLength, signature.Length - signatureLength);
+            if (read == 0) break;
+            signatureLength += read;
+        }
+
+        if (signatureLength != signature.Length) throw new InvalidDataException("Package is empty or truncated.");
+
+        Stream source;
+        if (file.CanSeek)
+        {
+            file.Position = 0;
+            source = file;
+        }
+        else
+        {
+            source = new PrefixReadStream(signature, file);
+        }
+
+        var archive = signature[0] == 0x1f && signature[1] == 0x8b
+            ? new GZipStream(source, CompressionMode.Decompress, leaveOpen: false)
+            : source;
+        return new ExpandedLimitStream(archive, expansionBudget ?? new ArchiveExpansionBudget(_maximumExpandedArchiveBytes));
     }
 
     private sealed class PrefixReadStream(byte[] prefix, Stream tail) : Stream
