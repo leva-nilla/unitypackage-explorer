@@ -39,6 +39,7 @@ public sealed class PreviewStaDispatcherTests
             Assert.True(restarted.IsStopped);
             return threadId;
         });
-        Assert.NotEqual(result.firstThread, restartedThread);
+        // Managed thread IDs can be reused by the OS once the first STA thread exits,
+        // so restart is validated by the working invoke above rather than a distinct ID.
     }
 }

@@ -54,32 +54,50 @@ public sealed class UnityAssetCatalog
 
     public void RebindZipPath(string path) => RebindArchivePath(path);
 
-    public static UnityAssetCatalog OpenPackage(string path, CancellationToken cancellationToken = default)
+    public static UnityAssetCatalog OpenPackage(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null)
     {
         var reader = new UnityPackageReader(path);
-        return new UnityAssetCatalog(reader, reader.ReadIndex(cancellationToken));
+        if (cache?.TryLoadPackage() is { } cachedPackage)
+        {
+            var entries = cachedPackage.LooseMembers
+                .Select(item => new UnityPackageEntry(item.Guid, item.PathName, item.HasAsset, item.HasMeta))
+                .ToArray();
+            return new UnityAssetCatalog(reader, entries);
+        }
+        var index = reader.ReadIndex(cancellationToken);
+        cache?.Store(new CatalogCachePayload(
+            CatalogIndexCache.Version,
+            [],
+            [],
+            index.Select(item => new CatalogCacheEntry(item.Guid, item.PathName, item.HasAsset, item.HasMeta)).ToArray()));
+        return new UnityAssetCatalog(reader, index);
     }
 
-    public static UnityAssetCatalog OpenZip(string path, CancellationToken cancellationToken = default)
+    public static UnityAssetCatalog OpenZip(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null)
     {
-        return OpenZip(new UnityZipReader(path), cancellationToken);
+        return OpenArchive(new UnityZipReader(path), cancellationToken, cache);
     }
 
     public static UnityAssetCatalog OpenZip(UnityZipReader zip, CancellationToken cancellationToken = default)
         => OpenArchive(zip, cancellationToken);
 
-    public static UnityAssetCatalog OpenRar(string path, CancellationToken cancellationToken = default)
-        => OpenArchive(new UnityRarReader(path), cancellationToken);
+    public static UnityAssetCatalog OpenRar(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null)
+        => OpenArchive(new UnityRarReader(path), cancellationToken, cache);
 
     public static UnityAssetCatalog OpenRar(UnityRarReader rar, CancellationToken cancellationToken = default)
         => OpenArchive(rar, cancellationToken);
 
-    public static UnityAssetCatalog OpenArchive(IUnityArchiveReader archive, CancellationToken cancellationToken = default)
+    public static UnityAssetCatalog OpenArchive(IUnityArchiveReader archive, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null)
     {
         ArgumentNullException.ThrowIfNull(archive);
         var members = archive.ReadIndex(cancellationToken);
+        if (cache?.TryLoad(members) is { } cached)
+            return BuildCachedArchiveCatalog(archive, members, cached);
+
         var packageMembers = members.Where(x => x.FullName.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase)).ToArray();
         var packageReaders = new Dictionary<string, UnityPackageReader>(StringComparer.OrdinalIgnoreCase);
+        var cachedPackages = new List<CatalogCachePackage>();
+        var cachedLooseMembers = new List<CatalogCacheEntry>();
         var entries = new List<UnityPackageEntry>();
         var warnings = new List<string>();
         var nestedPackageBudget = new ArchiveExpansionBudget(UnityPackageReader.MaximumExpandedArchiveBytes);
@@ -102,6 +120,8 @@ public sealed class UnityAssetCatalog
             {
                 var packageEntries = reader.ReadIndex(cancellationToken, nestedPackageBudget);
                 packageReaders.Add(packageMemberPath, reader);
+                cachedPackages.Add(new CatalogCachePackage(packageMemberPath, packageEntries.Select(item =>
+                    new CatalogCacheEntry(item.Guid, item.PathName, item.HasAsset, item.HasMeta)).ToArray()));
                 entries.AddRange(packageEntries.Select(item => item with
                 {
                     PathName = $"{packageMemberPath}/{item.PathName}",
@@ -137,13 +157,35 @@ public sealed class UnityAssetCatalog
                 }
             }
             guid ??= StableGuid(member.FullName);
+            cachedLooseMembers.Add(new CatalogCacheEntry(guid, member.FullName, true, memberNames.Contains(metaName)));
             entries.Add(new UnityPackageEntry(guid, member.FullName, true, memberNames.Contains(metaName))
             {
                 ZipMemberPath = member.FullName
             });
         }
 
+        cache?.Store(new CatalogCachePayload(CatalogIndexCache.Version, [.. members.Select(x => new CatalogCacheMember(x.FullName, x.Length))], cachedPackages, cachedLooseMembers));
         return new UnityAssetCatalog(null, entries, archiveReader: archive, zipPackages: packageReaders, warnings: warnings);
+    }
+
+    private static UnityAssetCatalog BuildCachedArchiveCatalog(IUnityArchiveReader archive, IReadOnlyList<UnityArchiveMember> members, CatalogCachePayload cached)
+    {
+        var packageReaders = new Dictionary<string, UnityPackageReader>(StringComparer.OrdinalIgnoreCase);
+        var entries = new List<UnityPackageEntry>();
+        foreach (var package in cached.Packages)
+        {
+            packageReaders.Add(package.MemberPath, new UnityPackageReader(() => archive.OpenMember(package.MemberPath)));
+            entries.AddRange(package.Entries.Select(item => new UnityPackageEntry(item.Guid, $"{package.MemberPath}/{item.PathName}", item.HasAsset, item.HasMeta)
+            {
+                PackageMemberPath = package.MemberPath,
+                AssetPathName = item.PathName
+            }));
+        }
+        entries.AddRange(cached.LooseMembers.Select(item => new UnityPackageEntry(item.Guid, item.PathName, item.HasAsset, item.HasMeta)
+        {
+            ZipMemberPath = item.PathName
+        }));
+        return new UnityAssetCatalog(null, entries, archiveReader: archive, zipPackages: packageReaders, warnings: []);
     }
 
     public static UnityAssetCatalog OpenProjectPrefab(string prefabPath, CancellationToken cancellationToken = default)

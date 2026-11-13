@@ -4,6 +4,7 @@ using System.Text;
 using HelixToolkit.SharpDX;
 using HelixToolkit.SharpDX.Assimp;
 using UnityPackageExplorer.Core;
+using MeshNode = HelixToolkit.SharpDX.Model.Scene.MeshNode;
 
 namespace UnityPackageExplorer.Rendering;
 
@@ -30,6 +31,56 @@ public sealed class PreparedPreview : IDisposable
     public IReadOnlyList<HelixToolkitScene> Scenes { get; }
     public IReadOnlyList<RenderingMaterialBinding> MaterialBindings { get; }
     public IReadOnlyList<string> Warnings { get; }
+    public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        foreach (var scene in Scenes) scene.Root.Dispose();
+    }
+}
+
+/// <summary>Material application instruction for one mesh. Resolution only; no scene mutation happens until applied on the UI thread.</summary>
+public sealed record MeshMaterialSpec(
+    MeshNode Mesh,
+    string? TexturePath,
+    UnityMaterialColor? Color,
+    UnityMaterialRenderMode Mode,
+    float? Cutoff,
+    bool Visible,
+    bool IsTransparent);
+
+/// <summary>Material plan for one imported scene.</summary>
+public sealed record SceneMaterialPlan(
+    HelixToolkitScene Scene,
+    IReadOnlyList<MeshMaterialSpec> Specs,
+    IReadOnlyList<RenderingMaterialBinding> Bindings,
+    IReadOnlyDictionary<MeshNode, RenderingMaterialBinding> ExportBindings);
+
+/// <summary>Phase-2 result: material specs to apply on the UI thread, plus material warnings.</summary>
+public sealed record MaterialApplyPlan(IReadOnlyList<SceneMaterialPlan> Plans, IReadOnlyList<string> Warnings);
+
+/// <summary>One imported scene whose materials are resolved later.</summary>
+public sealed record GeometryPendingMaterials(
+    HelixToolkitScene Scene,
+    UnityPackageEntry ModelEntry,
+    IReadOnlyList<UnityAssetReference> MaterialReferences,
+    IReadOnlyList<PrefabRendererMaterialAssignment> RendererAssignments,
+    IReadOnlyList<MeshNode> Meshes,
+    /// <summary>Meshes whose assimp placeholder material was neutralized during phase 1; unmatched ones are hidden in phase 2.</summary>
+    IReadOnlySet<MeshNode> PlaceholderMeshes,
+    bool IsPrefabPreview,
+    bool HasUnappliedMaterialOverrides);
+
+/// <summary>Phase-1 result: geometry only. Materials are resolved by CompleteMaterialsAsync while the scenes are being displayed.</summary>
+public sealed class GeometryPreview : IDisposable
+{
+    private int _disposed;
+    internal GeometryPreview(IReadOnlyList<HelixToolkitScene> scenes, IReadOnlyList<GeometryPendingMaterials> pending, IReadOnlyList<string> warnings)
+    { Scenes = scenes; Pending = pending; Warnings = warnings; }
+    public IReadOnlyList<HelixToolkitScene> Scenes { get; }
+    public IReadOnlyList<GeometryPendingMaterials> Pending { get; }
+    public IReadOnlyList<string> Warnings { get; }
+    public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
@@ -53,7 +104,60 @@ public static class LightweightPreviewLoader
         return await Task.Run(() => LoadCore(catalog, selectedEntry, temporaryRoot, cancellationToken, stageUnselectedSiblingImages), cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Phase 1: parse the prefab, extract referenced FBX files and import geometry. No Unity material I/O.</summary>
+    public static async Task<GeometryPreview> LoadGeometryAsync(
+        UnityAssetCatalog catalog,
+        UnityPackageEntry selectedEntry,
+        string temporaryRoot,
+        CancellationToken cancellationToken,
+        bool stageUnselectedSiblingImages = false)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(selectedEntry);
+        ArgumentException.ThrowIfNullOrWhiteSpace(temporaryRoot);
+        return await Task.Run(() => LoadGeometryCore(catalog, selectedEntry, temporaryRoot, cancellationToken, stageUnselectedSiblingImages), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Phase 2: resolve Unity materials for the imported scenes. Mutates no scene; returns specs to apply on the UI thread.</summary>
+    public static async Task<MaterialApplyPlan> CompleteMaterialsAsync(
+        GeometryPreview geometry,
+        UnityAssetCatalog catalog,
+        UnityPackageEntry selectedEntry,
+        string temporaryRoot,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(geometry);
+        ObjectDisposedException.ThrowIf(geometry.IsDisposed, geometry);
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(selectedEntry);
+        ArgumentException.ThrowIfNullOrWhiteSpace(temporaryRoot);
+        return await Task.Run(() => CompleteMaterialsCore(geometry, catalog, selectedEntry, temporaryRoot, cancellationToken), cancellationToken).ConfigureAwait(false);
+    }
+
     private static PreparedPreview LoadCore(UnityAssetCatalog catalog, UnityPackageEntry entry, string temporaryRoot, CancellationToken token, bool stageSiblings)
+    {
+        var geometry = LoadGeometryCore(catalog, entry, temporaryRoot, token, stageSiblings);
+        try
+        {
+            var plan = CompleteMaterialsCore(geometry, catalog, entry, temporaryRoot, token);
+            var bindings = new List<RenderingMaterialBinding>();
+            foreach (var pending in geometry.Pending)
+            {
+                var scenePlan = plan.Plans.FirstOrDefault(x => ReferenceEquals(x.Scene, pending.Scene));
+                if (scenePlan is null) continue;
+                foreach (var spec in scenePlan.Specs) ApplyMeshMaterialSpec(spec);
+                bindings.AddRange(scenePlan.Bindings);
+            }
+            return new PreparedPreview(geometry.Scenes, bindings, geometry.Warnings.Concat(plan.Warnings).Distinct(StringComparer.Ordinal).ToArray());
+        }
+        catch
+        {
+            geometry.Dispose();
+            throw;
+        }
+    }
+
+    private static GeometryPreview LoadGeometryCore(UnityAssetCatalog catalog, UnityPackageEntry entry, string temporaryRoot, CancellationToken token, bool stageSiblings)
     {
         var warnings = new List<string>();
         var placements = new List<PrefabModelPlacement>();
@@ -73,7 +177,7 @@ public static class LightweightPreviewLoader
         else warnings.Add($"Selected asset is not a Prefab or FBX: {entry.PathName}");
 
         var scenes = new List<HelixToolkitScene>();
-        var materialBindings = new List<RenderingMaterialBinding>();
+        var pending = new List<GeometryPendingMaterials>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
@@ -92,11 +196,27 @@ public static class LightweightPreviewLoader
                     var modelPath = catalog.StageAsset(modelEntry, temporaryRoot, token);
                     if (stageSiblings) StageSiblingImages(catalog, temporaryRoot, modelEntry, token);
                     var scene = ImportModel(modelPath, placement.Transform, token);
-                    var bindings = PrepareMaterialBindings(catalog, entry, temporaryRoot, placement.Materials, token, warnings);
-                    ApplyUnityMaterials(scene.Root, bindings, placement.Materials, placement.RendererAssignments,
-                        isPrefabPreview: !directModel, hasUnappliedMaterialOverrides: placement.MaterialOverrides.Count > 0,
-                        token, alphaTextureCache: null, warningSink: warnings);
-                    materialBindings.AddRange(bindings);
+                    var meshes = EnumerateMeshes(scene.Root).ToArray();
+                    var isPrefabPreview = !directModel;
+                    var placeholders = new HashSet<MeshNode>();
+                    if (isPrefabPreview)
+                    {
+                        // Neutralize assimp's saturated placeholder colors up front so the first paint never shows them,
+                        // while preserving the material name for phase-2 matching.
+                        foreach (var mesh in meshes)
+                        {
+                            if (mesh.Material is not HelixToolkit.SharpDX.Model.PhongMaterialCore imported
+                                || imported.DiffuseMap is not null
+                                || !IsSaturatedPrimaryColor(imported.DiffuseColor)) continue;
+                            var neutral = CreatePreviewMaterial(null, NeutralPreviewColor, 1f);
+                            neutral.Name = imported.Name;
+                            mesh.Material = neutral;
+                            placeholders.Add(mesh);
+                        }
+                    }
+                    pending.Add(new GeometryPendingMaterials(
+                        scene, modelEntry, placement.Materials, placement.RendererAssignments, meshes, placeholders,
+                        isPrefabPreview, placement.MaterialOverrides.Count > 0));
                     scenes.Add(scene);
                     if (placement.UsesRootTransformApproximation)
                         warnings.Add($"{placement.Node.Name}: Skinned FBX is shown as a whole-scene approximation using the Prefab root transform.");
@@ -112,13 +232,26 @@ public static class LightweightPreviewLoader
                         : $"{placement.Node.Name}: {ex.Message} (内側の例外: {baseException.Message})");
                 }
             }
-            return new PreparedPreview(scenes, materialBindings, warnings.Distinct(StringComparer.Ordinal).ToArray());
+            return new GeometryPreview(scenes, pending, warnings.Distinct(StringComparer.Ordinal).ToArray());
         }
         catch
         {
             foreach (var scene in scenes) scene.Root.Dispose();
             throw;
         }
+    }
+
+    private static MaterialApplyPlan CompleteMaterialsCore(GeometryPreview geometry, UnityAssetCatalog catalog, UnityPackageEntry entry, string temporaryRoot, CancellationToken token)
+    {
+        var plans = new List<SceneMaterialPlan>();
+        var warnings = new List<string>();
+        foreach (var pending in geometry.Pending)
+        {
+            token.ThrowIfCancellationRequested();
+            var bindings = PrepareMaterialBindings(catalog, entry, temporaryRoot, pending.MaterialReferences, token, warnings);
+            plans.Add(ResolveMaterialPlan(pending, bindings, warnings, token));
+        }
+        return new MaterialApplyPlan(plans, warnings.Distinct(StringComparer.Ordinal).ToArray());
     }
 
     public static PrefabParseResult ResolvePrefab(UnityAssetCatalog catalog, UnityPackageEntry? entry, byte[] prefabBytes, CancellationToken cancellationToken)
@@ -231,28 +364,68 @@ public static class LightweightPreviewLoader
         Func<string, RenderingMaterialBinding, IDictionary<string, string>, ICollection<string>, CancellationToken, string>? prepareTexture = null,
         ICollection<string>? warningSink = null)
     {
-        var exportBindings = new Dictionary<HelixToolkit.SharpDX.Model.Scene.MeshNode, RenderingMaterialBinding>();
+        var meshes = EnumerateMeshes(root).ToArray();
+        var placeholders = new HashSet<MeshNode>(CollectPlaceholderMeshes(meshes));
         var warnings = warningSink ?? new List<string>();
+        var resolution = ResolveSpecs(meshes, placeholders, bindings, materialReferences, rendererAssignments,
+            isPrefabPreview, hasUnappliedMaterialOverrides, alphaTextureCache, prepareTexture, warnings, token);
+        foreach (var spec in resolution.Specs) ApplyMeshMaterialSpec(spec);
+        return resolution.ExportBindings;
+    }
+
+    /// <summary>Applies resolved material specs to the live scene. Intended to run on the UI thread.</summary>
+    public static void ApplyMaterialSpecs(IEnumerable<MeshMaterialSpec> specs)
+    {
+        foreach (var spec in specs) ApplyMeshMaterialSpec(spec);
+    }
+
+    private sealed record MaterialResolution(
+        IReadOnlyList<MeshMaterialSpec> Specs,
+        IReadOnlyList<RenderingMaterialBinding> Bindings,
+        IReadOnlyDictionary<MeshNode, RenderingMaterialBinding> ExportBindings);
+
+    private static SceneMaterialPlan ResolveMaterialPlan(GeometryPendingMaterials pending, IReadOnlyList<RenderingMaterialBinding> bindings, ICollection<string> warnings, CancellationToken token)
+    {
+        var resolution = ResolveSpecs(pending.Meshes, pending.PlaceholderMeshes, bindings, pending.MaterialReferences,
+            pending.RendererAssignments, pending.IsPrefabPreview, pending.HasUnappliedMaterialOverrides, null, null, warnings, token);
+        return new SceneMaterialPlan(pending.Scene, resolution.Specs, resolution.Bindings, resolution.ExportBindings);
+    }
+
+    /// <summary>Mutates no scene node; produces per-mesh material instructions instead.</summary>
+    private static MaterialResolution ResolveSpecs(
+        IReadOnlyList<MeshNode> meshes,
+        IReadOnlySet<MeshNode> placeholderMeshes,
+        IReadOnlyList<RenderingMaterialBinding> bindings,
+        IReadOnlyList<UnityAssetReference> materialReferences,
+        IReadOnlyList<PrefabRendererMaterialAssignment> rendererAssignments,
+        bool isPrefabPreview,
+        bool hasUnappliedMaterialOverrides,
+        IDictionary<string, string>? alphaTextureCache,
+        Func<string, RenderingMaterialBinding, IDictionary<string, string>, ICollection<string>, CancellationToken, string>? prepareTexture,
+        ICollection<string> warnings,
+        CancellationToken token)
+    {
+        var exportBindings = new Dictionary<MeshNode, RenderingMaterialBinding>();
+        var specs = new List<MeshMaterialSpec>();
         alphaTextureCache ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (bindings.Count == 0)
         {
             if (isPrefabPreview)
             {
-                foreach (var mesh in EnumerateMeshes(root))
+                foreach (var mesh in meshes)
                 {
                     if (mesh.Material is not HelixToolkit.SharpDX.Model.PhongMaterialCore imported || imported.DiffuseMap is not null) continue;
                     if (imported.RenderDiffuseMap && imported.DiffuseColor.Alpha <= 0f)
-                        SetMaterial(mesh, null, null, UnityMaterialRenderMode.Opaque, null);
+                        specs.Add(CreateSpec(mesh, null, null, UnityMaterialRenderMode.Opaque, null));
                     else if (IsSaturatedPrimaryColor(imported.DiffuseColor))
-                        SetMaterial(mesh, null, NeutralPreviewColor, UnityMaterialRenderMode.Opaque, null);
+                        specs.Add(CreateSpec(mesh, null, NeutralPreviewColor, UnityMaterialRenderMode.Opaque, null));
                 }
                 warnings.Add(hasUnappliedMaterialOverrides
                     ? "Nested Prefab material override textures were inspected for diagnostics but not applied because their FBX submesh targets could not be identified safely."
                     : UnityMaterialPreviewDiagnostics.GetMissingSupportedTextureWarning(materialReferences.Count));
             }
-            return exportBindings;
+            return new MaterialResolution(specs, bindings, exportBindings);
         }
-        var meshes = EnumerateMeshes(root).ToArray();
         var applied = new HashSet<RenderingMaterialBinding>();
         foreach (var mesh in meshes)
         {
@@ -278,7 +451,7 @@ public static class LightweightPreviewLoader
             var binding = matching[0];
             var path = paths.SingleOrDefault();
             if (path is not null && prepareTexture is not null) path = prepareTexture(path, binding, alphaTextureCache, warnings, token);
-            SetMaterial(mesh, path, binding.Color, binding.RenderMode, binding.Cutoff);
+            specs.Add(CreateSpec(mesh, path, binding.Color, binding.RenderMode, binding.Cutoff));
             exportBindings[mesh] = binding;
             foreach (var item in matching) applied.Add(item);
         }
@@ -295,7 +468,7 @@ public static class LightweightPreviewLoader
                 fallbackPath = prepareTexture(fallbackPath, fallback, alphaTextureCache, warnings, token);
             foreach (var mesh in meshes)
             {
-                SetMaterial(mesh, fallbackPath, fallback.Color, fallback.RenderMode, fallback.Cutoff);
+                specs.Add(CreateSpec(mesh, fallbackPath, fallback.Color, fallback.RenderMode, fallback.Cutoff));
                 exportBindings[mesh] = fallback;
             }
             foreach (var binding in bindings) applied.Add(binding);
@@ -307,20 +480,39 @@ public static class LightweightPreviewLoader
             var unmatched = meshes.Where(mesh => !exportBindings.ContainsKey(mesh)).ToArray();
             foreach (var mesh in unmatched)
             {
-                var imported = mesh.Material as HelixToolkit.SharpDX.Model.PhongMaterialCore;
-                var isPlaceholder = imported is not null && imported.DiffuseMap is null && IsSaturatedPrimaryColor(imported.DiffuseColor);
-                if (isPlaceholder)
-                {
-                    // Hide saturated placeholder spheres (e.g. assimp's red) instead of leaving them visible.
-                    SetMaterial(mesh, null, NeutralPreviewColor, UnityMaterialRenderMode.Opaque, null);
-                    mesh.Visible = false;
-                }
-                // Otherwise keep the imported FBX material/color as-is.
+                if (!placeholderMeshes.Contains(mesh)) continue;
+                // Hide saturated placeholder spheres (e.g. assimp's red) instead of leaving them visible.
+                specs.Add(CreateSpec(mesh, null, NeutralPreviewColor, UnityMaterialRenderMode.Opaque, null) with { Visible = false });
             }
             if (unmatched.Length > 0)
                 warnings.Add($"{unmatched.Length:N0} FBX mesh(es) had no matching Unity material.");
         }
-        return exportBindings;
+        return new MaterialResolution(specs, bindings, exportBindings);
+    }
+
+    private static IEnumerable<MeshNode> CollectPlaceholderMeshes(IEnumerable<MeshNode> meshes)
+    {
+        foreach (var mesh in meshes)
+        {
+            if (mesh.Material is HelixToolkit.SharpDX.Model.PhongMaterialCore imported
+                && imported.DiffuseMap is null
+                && IsSaturatedPrimaryColor(imported.DiffuseColor)) yield return mesh;
+        }
+    }
+
+    private static MeshMaterialSpec CreateSpec(MeshNode mesh, string? path, UnityMaterialColor? color, UnityMaterialRenderMode mode, float? cutoff)
+    {
+        var visible = true;
+        if (path is null && UnityMaterialPreviewPolicy.CutoutThreshold(mode, cutoff) is { } threshold)
+            visible = (color?.A ?? 1f) >= threshold;
+        return new MeshMaterialSpec(mesh, path, color, mode, cutoff, visible, UnityMaterialPreviewPolicy.UsesTransparentPass(mode));
+    }
+
+    private static void ApplyMeshMaterialSpec(MeshMaterialSpec spec)
+    {
+        spec.Mesh.Material = CreatePreviewMaterial(spec.TexturePath, spec.Color, UnityMaterialPreviewPolicy.DisplayAlpha(spec.Color, spec.Mode));
+        spec.Mesh.IsTransparent = spec.IsTransparent;
+        spec.Mesh.Visible = spec.Visible;
     }
 
     private static readonly UnityMaterialColor NeutralPreviewColor = new(0.72f, 0.72f, 0.72f, 1f);

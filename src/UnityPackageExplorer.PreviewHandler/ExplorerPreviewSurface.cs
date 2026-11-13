@@ -29,7 +29,8 @@ internal sealed class ExplorerPreviewSurface : IDisposable
     private readonly TextBlock _warnings;
     private readonly HelixToolkit.SharpDX.DefaultEffectsManager _effectsManager;
     private IReadOnlyList<UnityPackageEntry> _candidateEntries = [];
-    private PreparedPreview? _prepared;
+    private GeometryPreview? _prepared;
+    private List<string> _activeWarnings = [];
     private string? _preparedTempRoot;
     private bool _disposed;
     private System.Windows.Media.Media3D.Point3D _modelCenter;
@@ -99,8 +100,9 @@ internal sealed class ExplorerPreviewSurface : IDisposable
 
     public void ShowStatus(string summary, IEnumerable<string>? warnings = null)
     {
+        _activeWarnings = [.. warnings ?? []];
         _summary.Text = summary;
-        _warnings.Text = string.Join("\r\n", (warnings ?? []).Take(4));
+        _warnings.Text = string.Join("\r\n", _activeWarnings.Take(4));
         _text.Text = summary;
     }
 
@@ -114,11 +116,12 @@ internal sealed class ExplorerPreviewSurface : IDisposable
         _text.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
     }
 
-    public void ShowPrepared(PreparedPreview prepared, string summary, string tempRoot, IReadOnlyList<string>? fallbackItems = null, int fallbackItemCount = 0)
+    public void ShowPrepared(GeometryPreview prepared, string summary, string tempRoot, IReadOnlyList<string>? fallbackItems = null, int fallbackItemCount = 0)
     {
         ClearPrepared();
         _prepared = prepared;
         _preparedTempRoot = tempRoot;
+        _activeWarnings = [.. prepared.Warnings];
         _models.Clear();
         foreach (var scene in prepared.Scenes) _models.AddNode(scene.Root);
         _viewport.Visibility = prepared.Scenes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -167,7 +170,29 @@ internal sealed class ExplorerPreviewSurface : IDisposable
             _text.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
         }
         _summary.Text = summary;
-        _warnings.Text = string.Join("\r\n", prepared.Warnings.Take(4));
+        _warnings.Text = string.Join("\r\n", _activeWarnings.Take(4));
+    }
+
+    /// <summary>
+    /// Applies the phase-2 material plan to the currently displayed geometry preview.
+    /// No-op when the preview has been replaced or disposed (the user picked another file).
+    /// </summary>
+    public void ApplyMaterialPlan(GeometryPreview owner, MaterialApplyPlan plan, IEnumerable<string> additionalWarnings)
+    {
+        if (_prepared is null || !ReferenceEquals(_prepared, owner) || owner.IsDisposed) return;
+        foreach (var scenePlan in plan.Plans)
+            LightweightPreviewLoader.ApplyMaterialSpecs(scenePlan.Specs);
+        _activeWarnings.AddRange(additionalWarnings);
+        _warnings.Text = string.Join("\r\n", _activeWarnings.Take(4));
+        MarkMaterialPhaseFinished();
+    }
+
+    /// <summary>Removes the "materials applying" indicator without touching the scene (used when phase 2 fails or is cancelled).</summary>
+    public void MarkMaterialPhaseFinished()
+    {
+        const string pendingSuffix = " · マテリアル適用中…";
+        if (_summary.Text.EndsWith(pendingSuffix, StringComparison.Ordinal))
+            _summary.Text = _summary.Text[..^pendingSuffix.Length];
     }
 
     public void ShowImage(Bitmap bitmap, string summary, IEnumerable<string>? warnings = null)
@@ -186,8 +211,9 @@ internal sealed class ExplorerPreviewSurface : IDisposable
         }
         finally { DeleteObject(handle); bitmap.Dispose(); }
         _image.Visibility = Visibility.Visible;
+        _activeWarnings = [.. warnings ?? []];
         _summary.Text = summary;
-        _warnings.Text = string.Join("\r\n", (warnings ?? []).Take(4));
+        _warnings.Text = string.Join("\r\n", _activeWarnings.Take(4));
     }
 
     public void SetCandidates(IEnumerable<UnityPackageEntry> candidates)
