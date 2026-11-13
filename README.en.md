@@ -60,6 +60,12 @@ Preview requests via COM stream create a temporary copy under LocalLow. Stream i
 
 Files downloaded from the internet may be blocked from preview by Windows (Mark of the Web). Unblock trusted files manually via right-click -> Properties -> General -> Unblock. MotW is not auto-cleared.
 
+To unblock a folder of trusted files (elevated PowerShell):
+```
+Get-ChildItem -Path "C:\path\to\trusted\folder" -Recurse -File | Unblock-File
+```
+Only run on folders you have verified.
+
 ## Explorer preview MotW note
 
 To make preview work for newly downloaded files, run as Administrator:
