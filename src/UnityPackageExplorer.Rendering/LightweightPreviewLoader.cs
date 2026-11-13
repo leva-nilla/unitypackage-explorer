@@ -75,6 +75,8 @@ public sealed record GeometryPendingMaterials(
 public sealed class GeometryPreview : IDisposable
 {
     private int _disposed;
+    private readonly object _lifetimeGate = new();
+    private int _materialReaders;
     internal GeometryPreview(IReadOnlyList<HelixToolkitScene> scenes, IReadOnlyList<GeometryPendingMaterials> pending, IReadOnlyList<string> warnings)
     { Scenes = scenes; Pending = pending; Warnings = warnings; }
     public IReadOnlyList<HelixToolkitScene> Scenes { get; }
@@ -83,8 +85,28 @@ public sealed class GeometryPreview : IDisposable
     public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        foreach (var scene in Scenes) scene.Root.Dispose();
+        lock (_lifetimeGate)
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            if (_materialReaders == 0)
+                foreach (var scene in Scenes) scene.Root.Dispose();
+        }
+    }
+    internal void BeginMaterials()
+    {
+        lock (_lifetimeGate)
+        {
+            ObjectDisposedException.ThrowIf(IsDisposed, this);
+            _materialReaders++;
+        }
+    }
+    internal void EndMaterials()
+    {
+        lock (_lifetimeGate)
+        {
+            if (--_materialReaders == 0 && IsDisposed)
+                foreach (var scene in Scenes) scene.Root.Dispose();
+        }
     }
 }
 
@@ -131,7 +153,12 @@ public static class LightweightPreviewLoader
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(selectedEntry);
         ArgumentException.ThrowIfNullOrWhiteSpace(temporaryRoot);
-        return await Task.Run(() => CompleteMaterialsCore(geometry, catalog, selectedEntry, temporaryRoot, cancellationToken), cancellationToken).ConfigureAwait(false);
+        geometry.BeginMaterials();
+        try
+        {
+            return await Task.Run(() => CompleteMaterialsCore(geometry, catalog, selectedEntry, temporaryRoot, cancellationToken), cancellationToken).ConfigureAwait(false);
+        }
+        finally { geometry.EndMaterials(); }
     }
 
     private static PreparedPreview LoadCore(UnityAssetCatalog catalog, UnityPackageEntry entry, string temporaryRoot, CancellationToken token, bool stageSiblings)

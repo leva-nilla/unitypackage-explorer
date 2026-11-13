@@ -4,7 +4,7 @@ using System.Globalization;
 
 namespace UnityPackageExplorer.Core;
 
-public sealed class UnityAssetCatalog
+public sealed class UnityAssetCatalog : IDisposable
 {
     private const long MaximumMetaBytes = 1024 * 1024;
     private static readonly Regex MaterialNamePattern = new("(?m)^[ \\t]*m_Name:\\s*(?<name>[^\\r\\n]*)", RegexOptions.Compiled);
@@ -50,6 +50,12 @@ public sealed class UnityAssetCatalog
     public IReadOnlyList<string> Warnings { get; }
     public bool IsPackage => _package is not null;
 
+    public void Dispose()
+    {
+        _package?.Dispose();
+        foreach (var reader in _zipPackages.Values) reader.Dispose();
+    }
+
     public void RebindArchivePath(string path) => (_archiveReader ?? throw new InvalidOperationException("This catalog is not reading an outer archive.")).RebindPath(path);
 
     public void RebindZipPath(string path) => RebindArchivePath(path);
@@ -64,7 +70,9 @@ public sealed class UnityAssetCatalog
                 .ToArray();
             return new UnityAssetCatalog(reader, entries);
         }
-        var index = reader.ReadIndex(cancellationToken);
+        IReadOnlyList<UnityPackageEntry> index;
+        try { index = reader.ReadIndex(cancellationToken); }
+        catch { reader.Dispose(); throw; }
         cache?.Store(new CatalogCachePayload(
             CatalogIndexCache.Version,
             [],
@@ -131,12 +139,19 @@ public sealed class UnityAssetCatalog
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException)
             {
+                reader.Dispose();
                 warnings.Add($"{packageMemberPath}: 読み込めませんでした ({exception.Message})");
                 if (nestedPackageBudget.IsExhausted)
                 {
                     warnings.Add($"{archive.FormatName}内の残りの unitypackage は合計展開サイズ上限のため読み込みを省略しました。");
                     break;
                 }
+            }
+            catch
+            {
+                reader.Dispose();
+                foreach (var previous in packageReaders.Values) previous.Dispose();
+                throw;
             }
         }
 

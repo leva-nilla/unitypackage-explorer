@@ -1,5 +1,16 @@
 # 設計仕様: プレビュー読み込みの段階化(モデル先表示・マテリアル後追い適用)と index キャッシュ
 
+## 最新の寿命管理方針（従来のキャッシュ保持方針より優先）
+
+- Explorer は選択時に読み込み、別ファイルへの切替・終了時に処理をキャンセルする。
+- catalog は reader 群を所有し、旧リクエストの実行ジョブ完了後に Dispose する。メモリキャッシュの参照と容量計上を解放し、スピル所有ハンドルを閉じる。
+- リクエストの元アーカイブコピーと選択用 staging フォルダーは、ジョブ完了後にも削除する。処理途中だけの削除で済ませない。
+- マテリアル処理が参照中の geometry は処理終了まで破棄を遅延する。
+- Explorer では永続indexキャッシュを使わない。選択間の再利用より、終了時の確実な解放を優先する。
+- spill は低整合性プロセスから書ける LocalLow を使用する。OS のセキュリティ設定を緩めない。
+- 検証条件は正常表示、繰返し選択時の速度、切替・終了後の一時ファイル残留、メモリの継続的増加。GCヒープやOSの予約領域の即時縮小は保証しない。
+- 過去のクラッシュ・強制終了による既存残留物の一括削除は、今回の新規リクエストの終了処理とは別に扱う。
+
 対象: `codex/feat-progressive-preview` ブランチ
 関連コード: `src/UnityPackageExplorer.Rendering/LightweightPreviewLoader.cs`, `src/UnityPackageExplorer.PreviewHandler/{PreviewHandlerCom,ExplorerPreviewSurface,PreparedScenePayload}.cs`, `src/UnityPackageExplorer.Core/UnityAssetCatalog.cs`
 

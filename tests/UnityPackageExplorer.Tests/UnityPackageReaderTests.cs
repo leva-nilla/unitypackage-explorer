@@ -94,11 +94,26 @@ public sealed class UnityPackageReaderTests
 
             reader.Dispose();
             Assert.Empty(Directory.GetFiles(spillDirectory));
+            reader.Dispose();
+            Assert.Throws<ObjectDisposedException>(() => reader.ReadAsset(guid));
         }
         finally
         {
             Directory.Delete(spillDirectory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void CacheIndexEnforcesEntryLimitBeforePublishingCache()
+    {
+        var guid = "a".PadLeft(32, '0');
+        using var package = TemporaryPackage.Create([
+            ($"{guid}/asset", "payload"),
+            ("ignored/readme", "too many")
+        ]);
+        using var reader = new UnityPackageReader(() => File.OpenRead(package.Path), maximumEntryCount: 1);
+        Assert.Throws<InvalidDataException>(() =>
+            reader.ReadIndex(expansionBudget: new ArchiveExpansionBudget(1024 * 1024)));
     }
 
     [Fact]

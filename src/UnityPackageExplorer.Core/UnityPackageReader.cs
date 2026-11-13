@@ -5,7 +5,7 @@ using System.Text;
 namespace UnityPackageExplorer.Core;
 
 /// <summary>Reads Unity's gzip/tar package without extracting it beside the source.</summary>
-public sealed class UnityPackageReader
+public sealed class UnityPackageReader : IDisposable
 {
     private const int MaximumPathNameBytes = 1024 * 1024;
     public const long MaximumAssetBytes = 512L * 1024 * 1024;
@@ -25,19 +25,28 @@ public sealed class UnityPackageReader
     private readonly object _cacheGate = new();
     private ExpandedCacheEntry? _expandedCache;
     private int _cacheableOpens;
+    private bool _disposed;
 
-    private abstract class ExpandedCacheEntry
+    private abstract class ExpandedCacheEntry : IDisposable
     {
         public Dictionary<string, CachedTarEntry> Index { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
         public abstract Stream OpenContent();
+        public virtual void Dispose() { }
     }
 
     private sealed class MemoryExpandedCacheEntry(byte[] buffer, int length) : ExpandedCacheEntry
     {
-        public override Stream OpenContent() => new MemoryStream(buffer, 0, length, writable: false);
+        private byte[]? _buffer = buffer;
+        public override Stream OpenContent() => new MemoryStream(_buffer ?? throw new ObjectDisposedException(nameof(MemoryExpandedCacheEntry)), 0, length, writable: false);
 
-        ~MemoryExpandedCacheEntry() => Interlocked.Add(ref _totalExpandedCacheBytes, -buffer.Length);
+        public override void Dispose()
+        {
+            var released = Interlocked.Exchange(ref _buffer, null);
+            if (released is not null) Interlocked.Add(ref _totalExpandedCacheBytes, -released.Length);
+            Index.Clear();
+        }
+        ~MemoryExpandedCacheEntry() => Dispose();
     }
 
     // The spill file is kept alive by a DeleteOnClose owner handle: the OS removes it once the
@@ -48,7 +57,11 @@ public sealed class UnityPackageReader
 
         public override Stream OpenContent() => new SpilledReadStream(this);
 
-        public void Dispose() => Interlocked.Exchange(ref _owner, null)?.Dispose();
+        public override void Dispose()
+        {
+            Interlocked.Exchange(ref _owner, null)?.Dispose();
+            Index.Clear();
+        }
 
         private sealed class SpilledReadStream(SpilledExpandedCacheEntry entry) : Stream
         {
@@ -109,8 +122,11 @@ public sealed class UnityPackageReader
     /// <summary>Deletes the disk spill file of the expanded archive cache, if one exists.</summary>
     public void Dispose()
     {
-        if (Volatile.Read(ref _expandedCache) is IDisposable spill) spill.Dispose();
-        Volatile.Write(ref _expandedCache, null);
+        lock (_cacheGate)
+        {
+            _disposed = true;
+            Interlocked.Exchange(ref _expandedCache, null)?.Dispose();
+        }
     }
 
     public IReadOnlyList<UnityPackageEntry> ReadIndex(CancellationToken cancellationToken = default, ArchiveExpansionBudget? expansionBudget = null)
@@ -167,6 +183,7 @@ public sealed class UnityPackageReader
     public byte[]? ReadAsset(string guid, string payloadName = "asset", CancellationToken cancellationToken = default, long maximumBytes = MaximumAssetBytes)
     {
         if (!IsGuid(guid)) throw new ArgumentException("GUID must contain 32 hexadecimal characters.", nameof(guid));
+        ObjectDisposedException.ThrowIf(_disposed, this);
         if (payloadName is not ("asset" or "asset.meta")) throw new ArgumentException("Unsupported Unity package payload.", nameof(payloadName));
         if (maximumBytes is <= 0 or > MaximumAssetBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
 
@@ -356,29 +373,25 @@ public sealed class UnityPackageReader
         return match.Success ? match.Groups[1].Value.ToLowerInvariant() : null;
     }
 
-    private static Dictionary<string, CachedTarEntry> BuildTarEntryIndex(byte[] buffer, int length, CancellationToken cancellationToken)
+    private Dictionary<string, CachedTarEntry> BuildTarEntryIndex(byte[] buffer, int length, CancellationToken cancellationToken)
     {
         using var stream = new MemoryStream(buffer, 0, length, writable: false);
         return BuildTarEntryIndex(stream, cancellationToken);
     }
 
-    private static Dictionary<string, CachedTarEntry> BuildTarEntryIndex(Stream stream, CancellationToken cancellationToken)
+    private Dictionary<string, CachedTarEntry> BuildTarEntryIndex(Stream stream, CancellationToken cancellationToken)
     {
         var index = new Dictionary<string, CachedTarEntry>(StringComparer.OrdinalIgnoreCase);
-        try
+        using var reader = new TarReader(stream);
+        var count = 0;
+        while (reader.GetNextEntry(copyData: false) is { } entry)
         {
-            using var reader = new TarReader(stream);
-            while (reader.GetNextEntry(copyData: false) is { } entry)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (entry.EntryType is not TarEntryType.RegularFile) continue;
-                if (entry.DataOffset < 0) continue;
-                index.TryAdd(entry.Name.Replace('\\', '/').TrimEnd('/'), new CachedTarEntry(entry.DataOffset, entry.Length));
-            }
-        }
-        catch (Exception exception) when (exception is IOException or InvalidDataException)
-        {
-            // Partial index; unknown targets fall back to the sequential scan path.
+            cancellationToken.ThrowIfCancellationRequested();
+            if (++count > _maximumEntryCount)
+                throw new InvalidDataException($"UnityPackage contains more than {_maximumEntryCount:N0} entries.");
+            if (entry.EntryType is not TarEntryType.RegularFile) continue;
+            if (entry.DataOffset < 0) continue;
+            index.TryAdd(entry.Name.Replace('\\', '/').TrimEnd('/'), new CachedTarEntry(entry.DataOffset, entry.Length));
         }
         return index;
     }
@@ -386,6 +399,7 @@ public sealed class UnityPackageReader
     private Stream OpenArchive(ArchiveExpansionBudget? expansionBudget = null, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(_disposed, this);
         var cached = Volatile.Read(ref _expandedCache);
         if (cached is not null) return cached.OpenContent();
         lock (_cacheGate)
