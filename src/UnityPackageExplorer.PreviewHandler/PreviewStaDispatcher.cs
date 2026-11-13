@@ -58,8 +58,16 @@ internal sealed class PreviewStaDispatcher : IDisposable
             var control = new Control();
             _ = control.Handle;
             _ready.TrySetResult(control);
-            Application.Run();
-            control.Dispose();
+            try { Application.Run(); }
+            finally
+            {
+                // ElementHost creates a WPF dispatcher on this WinForms STA. Exiting only
+                // the WinForms loop skips WPF shutdown (MediaContext/rendering cleanup).
+                var wpfDispatcher = System.Windows.Threading.Dispatcher.FromThread(Thread.CurrentThread);
+                if (wpfDispatcher is not null && !wpfDispatcher.HasShutdownStarted)
+                    wpfDispatcher.InvokeShutdown();
+                control.Dispose();
+            }
         }
         catch (Exception exception)
         {
