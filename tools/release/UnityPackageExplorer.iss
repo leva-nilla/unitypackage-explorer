@@ -441,6 +441,13 @@ var
   PreviewExitCode, ExitCode: Integer;
   MarkerText: AnsiString;
 begin
+  if CurStep = ssInstall then begin
+    // Clean up legacy install locations that can block the new install.
+    if DirExists(ExpandConstant('{pf}\UnityPackageExplorer')) then
+      DelTree(ExpandConstant('{pf}\UnityPackageExplorer'), True, True, True);
+    if DirExists(ExpandConstant('{localappdata}\Programs\UnityPackageExplorer\Release')) then
+      DelTree(ExpandConstant('{localappdata}\Programs\UnityPackageExplorer\Release'), True, True, True);
+  end;
   if CurStep = ssPostInstall then begin
     InstallDirectory := ExpandConstant('{app}');
     ApplicationPath := InstallDirectory + '\{#ProductExe}';
