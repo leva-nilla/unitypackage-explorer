@@ -58,6 +58,7 @@ Source: "{#SourceRoot}\tools\release\LegacyInstallSafety.psm1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\Register-ExplorerPreview.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\Unregister-ExplorerPreview.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\tools\release\PreviewMachineRegistration.ps1"; Flags: dontcopy
+Source: "{#SourceRoot}\tools\release\PreviewRegistration.Common.psm1"; Flags: dontcopy
 Source: "{#PublishRoot}\Tools\CurrentInstallFiles.txt"; Flags: dontcopy
 
 [Icons]
@@ -65,7 +66,6 @@ Name: "{group}\{#ProductName}"; Filename: "{app}\{#ProductExe}"; WorkingDir: "{a
 Name: "{userappdata}\Microsoft\Windows\SendTo\{#ProductName}"; Filename: "{app}\{#ProductExe}"; WorkingDir: "{app}"; Tasks: sendto
 
 [Registry]
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Policies\Attachments"; ValueType: dword; ValueName: "SaveZoneInformation"; ValueData: "1"; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: ""; ValueData: "UnityPackage Explorer で開く"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorer.Open"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#ProductExe},0"; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.unitypackage\shell\UnityPackageExplorer.Open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#ProductExe}"" ""%1"""; Tasks: contextmenu
