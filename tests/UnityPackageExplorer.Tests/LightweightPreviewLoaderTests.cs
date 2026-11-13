@@ -119,6 +119,46 @@ public sealed class LightweightPreviewLoaderTests
         }
     }
 
+    [Fact]
+    public async Task TwoPhaseLoadMatchesSinglePhaseLoad()
+    {
+        var root = CreateTemporaryDirectory();
+        var archive = Path.Combine(AppContext.BaseDirectory, "TestData", "UnityPackageExplorer-Showcase.zip");
+        var catalog = UnityAssetCatalog.OpenZip(archive);
+        var selected = Assert.Single(catalog.Entries, entry => entry.Extension == ".prefab");
+        var tempRoot = Path.Combine(root, "prepared");
+        try
+        {
+            using var reference = await LightweightPreviewLoader.LoadAsync(catalog, selected, tempRoot, CancellationToken.None);
+            using var geometry = await LightweightPreviewLoader.LoadGeometryAsync(catalog, selected, tempRoot, CancellationToken.None);
+
+            Assert.Equal(reference.Scenes.Count, geometry.Scenes.Count);
+            Assert.NotEmpty(geometry.Pending);
+            // Phase 2 must resolve materials without mutating the live scene.
+            var materialBefore = geometry.Pending[0].Meshes[0].Material?.Name;
+            var plan = await LightweightPreviewLoader.CompleteMaterialsAsync(geometry, catalog, selected, tempRoot, CancellationToken.None);
+            Assert.Equal(materialBefore, geometry.Pending[0].Meshes[0].Material?.Name);
+            Assert.NotEmpty(plan.Plans[0].Specs);
+
+            var bindings = new List<RenderingMaterialBinding>();
+            foreach (var scenePlan in plan.Plans)
+            {
+                LightweightPreviewLoader.ApplyMaterialSpecs(scenePlan.Specs);
+                bindings.AddRange(scenePlan.Bindings);
+            }
+            Assert.Equal(
+                reference.MaterialBindings.Select(binding => (binding.MaterialGuid, binding.MaterialName, binding.TextureName, binding.Slot, binding.AssetPath)),
+                bindings.Select(binding => (binding.MaterialGuid, binding.MaterialName, binding.TextureName, binding.Slot, binding.AssetPath)));
+            Assert.Equal(
+                reference.Warnings,
+                geometry.Warnings.Concat(plan.Warnings).Distinct(StringComparer.Ordinal).ToArray());
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static string CopyInnerPackage(string sampleZip, string outputDirectory)
     {
         using var archive = ZipFile.OpenRead(sampleZip);

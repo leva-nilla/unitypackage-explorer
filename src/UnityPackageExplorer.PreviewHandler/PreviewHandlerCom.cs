@@ -368,16 +368,16 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 AssimpNativeLoader.EnsureLoaded();
                 PreviewLog.Write($"LoadSelected prefab {entry.PathName} assimp preloaded");
                 var tempRoot = CreateRequestTempRoot();
-                var load = LightweightPreviewLoader.LoadAsync(catalog, entry, tempRoot, cancellationToken, stageUnselectedSiblingImages: false);
-                TrackJob(load);
-                var prepared = await DeferredTaskCleanup.WaitAsync(
-                    load, cancellationToken, static result => result.Dispose(), () => SafeDeleteOwnedTemp(tempRoot)).ConfigureAwait(false);
-                PreviewLog.Write($"LoadSelected prepared scenes={prepared.Scenes.Count} warnings={prepared.Warnings.Count} :: {string.Join(" | ", prepared.Warnings)}");
+                var geometryTask = LightweightPreviewLoader.LoadGeometryAsync(catalog, entry, tempRoot, cancellationToken, stageUnselectedSiblingImages: false);
+                TrackJob(geometryTask);
+                var geometry = await DeferredTaskCleanup.WaitAsync(
+                    geometryTask, cancellationToken, static result => result.Dispose(), () => SafeDeleteOwnedTemp(tempRoot)).ConfigureAwait(false);
+                PreviewLog.Write($"LoadSelected geometry scenes={geometry.Scenes.Count} warnings={geometry.Warnings.Count} :: {string.Join(" | ", geometry.Warnings)}");
                 var fallbackItems = catalog.Entries.Where(x => x.HasAsset).Select(x => x.PathName).Take(25).ToArray();
-                var preparedPayload = new PreparedScenePayload(prepared, tempRoot, fallbackItems, catalog.Entries.Count(x => x.HasAsset));
-                PostOwnedToSelectionUi(requestId, selectionId, preparedPayload,
-                    payload => { if (_surface is { } surface) payload.Attach(surface, $"{entry.PathName} · {BuildSummary(path, catalog, displayName)}"); else payload.Dispose(); });
-                if (prepared.Scenes.Count == 0)
+                var geometryPayload = new PreparedScenePayload(geometry, tempRoot, fallbackItems, catalog.Entries.Count(x => x.HasAsset));
+                PostOwnedToSelectionUi(requestId, selectionId, geometryPayload,
+                    payload => { if (_surface is { } surface) payload.Attach(surface, $"{entry.PathName} · {BuildSummary(path, catalog, displayName)} · マテリアル適用中…"); else payload.Dispose(); });
+                if (geometry.Scenes.Count == 0)
                 {
                     var fallback = AutomaticPreviewSelector.Select(GetPreviewableEntries(catalog.Entries).Where(candidate => candidate.Kind == "Image"), displayName);
                     if (fallback is not null)
@@ -391,9 +391,39 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                         {
                             var previewBitmap = ScaleImage((Bitmap)fallbackImage.Clone(), 2048);
                             PostOwnedToSelectionUi(requestId, selectionId, previewBitmap,
-                                bitmap => { if (_surface is { } surface) surface.ShowImage(bitmap, $"{fallback.PathName} · {BuildSummary(path, catalog, displayName)}", prepared.Warnings); else bitmap.Dispose(); });
+                                bitmap => { if (_surface is { } surface) surface.ShowImage(bitmap, $"{fallback.PathName} · {BuildSummary(path, catalog, displayName)}", geometry.Warnings); else bitmap.Dispose(); });
                         }
                     }
+                    return;
+                }
+                if (geometry.IsDisposed || cancellationToken.IsCancellationRequested) return;
+                try
+                {
+                    using var materialBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    materialBudget.CancelAfter(TimeSpan.FromSeconds(30));
+                    var materialTask = LightweightPreviewLoader.CompleteMaterialsAsync(geometry, catalog, entry, tempRoot, materialBudget.Token);
+                    TrackJob(materialTask);
+                    var plan = await DeferredTaskCleanup.WaitAsync(materialTask, materialBudget.Token,
+                        disposeLateResult: null, cleanup: static () => { }).ConfigureAwait(false);
+                    PreviewLog.Write($"LoadSelected materials specs={plan.Plans.Sum(x => x.Specs.Count)} warnings={plan.Warnings.Count} :: {string.Join(" | ", plan.Warnings)}");
+                    PostOwnedToSelectionUi(requestId, selectionId, new MaterialApplyPayload(geometry, plan, plan.Warnings),
+                        payload =>
+                        {
+                            if (_surface is { } surface) payload.Attach(surface);
+                            else { payload.Dispose(); SafeDeleteOwnedTemp(tempRoot); }
+                        });
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // No material payload was posted, so the staged files are no longer needed.
+                    SafeDeleteOwnedTemp(tempRoot);
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    PreviewLog.Write($"LoadSelected material phase failed {entry.PathName}", ex);
+                    SafeDeleteOwnedTemp(tempRoot);
+                    PostToSelectionUi(requestId, selectionId, () => _surface?.MarkMaterialPhaseFinished(), static () => { });
                 }
                 return;
             }
@@ -528,9 +558,9 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
 
     private static UnityAssetCatalog OpenCatalog(string path, CancellationToken token) => Path.GetExtension(path).ToLowerInvariant() switch
     {
-        ".unitypackage" => UnityAssetCatalog.OpenPackage(path, token),
-        ".zip" => UnityAssetCatalog.OpenZip(path, token),
-        ".rar" => UnityAssetCatalog.OpenRar(path, token),
+        ".unitypackage" => UnityAssetCatalog.OpenPackage(path, token, CatalogIndexCache.ForArchive(path)),
+        ".zip" => UnityAssetCatalog.OpenZip(path, token, CatalogIndexCache.ForArchive(path)),
+        ".rar" => UnityAssetCatalog.OpenRar(path, token, CatalogIndexCache.ForArchive(path)),
         ".prefab" => UnityAssetCatalog.OpenProjectPrefab(path, token),
         _ => throw new InvalidDataException("対応形式: .unitypackage / .zip / .rar / .prefab")
     };
