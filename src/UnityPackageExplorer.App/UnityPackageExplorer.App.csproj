@@ -3,6 +3,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="UnityPackageExplorer.Tests" />
     <ProjectReference Include="..\UnityPackageExplorer.Core\UnityPackageExplorer.Core.csproj" />
+    <ProjectReference Include="..\UnityPackageExplorer.Rendering\UnityPackageExplorer.Rendering.csproj" />
   </ItemGroup>
 
   <ItemGroup>
