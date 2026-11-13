@@ -347,8 +347,18 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                     tempRoot = CreateRequestTempRoot();
                     _selectionTempRoots.Add(tempRoot);
                 }
-                var geometryTask = LightweightPreviewLoader.LoadGeometryAsync(catalog, entry, tempRoot, cancellationToken, stageUnselectedSiblingImages: false);
-                TrackJob(geometryTask);
+                Task<GeometryPreview> geometryTask;
+                try
+                {
+                    geometryTask = StartTrackedJob(cancellationToken, () =>
+                        LightweightPreviewLoader.LoadGeometryAsync(catalog, entry, tempRoot, cancellationToken, stageUnselectedSiblingImages: false));
+                }
+                catch
+                {
+                    SafeDeleteOwnedTemp(tempRoot);
+                    lock (_activeJobsGate) _selectionTempRoots.Remove(tempRoot);
+                    throw;
+                }
                 var geometry = await DeferredTaskCleanup.WaitAsync(
                     geometryTask,
                     cancellationToken,
@@ -368,8 +378,8 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                     var fallback = AutomaticPreviewSelector.Select(GetPreviewableEntries(catalog.Entries).Where(candidate => candidate.Kind == "Image"), displayName);
                     if (fallback is not null)
                     {
-                        var fallbackTask = Task.Run(() => catalog.ReadAsset(fallback, cancellationToken: cancellationToken, maximumBytes: 64L * 1024 * 1024), cancellationToken);
-                        TrackJob(fallbackTask);
+                        var fallbackTask = StartTrackedJob(cancellationToken, () =>
+                            Task.Run(() => catalog.ReadAsset(fallback, cancellationToken: cancellationToken, maximumBytes: 64L * 1024 * 1024), cancellationToken));
                         var imageBytes = await fallbackTask.WaitAsync(cancellationToken).ConfigureAwait(false);
                         using var fallbackStream = imageBytes is null ? null : new MemoryStream(imageBytes);
                         using var fallbackImage = fallbackStream is null ? null : new Bitmap(fallbackStream);
@@ -387,8 +397,8 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 {
                     using var materialBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     materialBudget.CancelAfter(TimeSpan.FromSeconds(30));
-                    var materialTask = LightweightPreviewLoader.CompleteMaterialsAsync(geometry, catalog, entry, tempRoot, materialBudget.Token);
-                    TrackJob(materialTask);
+                    var materialTask = StartTrackedJob(materialBudget.Token, () =>
+                        LightweightPreviewLoader.CompleteMaterialsAsync(geometry, catalog, entry, tempRoot, materialBudget.Token));
                     var plan = await DeferredTaskCleanup.WaitAsync(
                         materialTask,
                         materialBudget.Token,
@@ -413,8 +423,8 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 }
                 return;
             }
-            var imageTask = Task.Run(() => catalog.ReadAsset(entry, cancellationToken: cancellationToken, maximumBytes: 64L * 1024 * 1024), cancellationToken);
-            TrackJob(imageTask);
+            var imageTask = StartTrackedJob(cancellationToken, () =>
+                Task.Run(() => catalog.ReadAsset(entry, cancellationToken: cancellationToken, maximumBytes: 64L * 1024 * 1024), cancellationToken));
             var bytes = await imageTask.WaitAsync(cancellationToken).ConfigureAwait(false);
             using var imageStream = bytes is null ? null : new MemoryStream(bytes);
             using var image = imageStream is null ? null : new Bitmap(imageStream);
@@ -566,6 +576,9 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
             PreviewLog.Write($"Request cleanup catalogs={(catalog is null ? 0 : 1)} roots={roots.Length}");
         }, TaskScheduler.Default);
     }
+
+    private Task<T> StartTrackedJob<T>(CancellationToken token, Func<Task<T>> start)
+        => DeferredTaskCleanup.StartTracked(_activeJobsGate, token, start, TrackJob);
 
     private static UnityAssetCatalog OpenCatalog(string path, CancellationToken token)
     {
