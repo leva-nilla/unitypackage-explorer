@@ -556,14 +556,20 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         return resized;
     }
 
-    private static UnityAssetCatalog OpenCatalog(string path, CancellationToken token) => Path.GetExtension(path).ToLowerInvariant() switch
+    private static UnityAssetCatalog OpenCatalog(string path, CancellationToken token)
     {
-        ".unitypackage" => UnityAssetCatalog.OpenPackage(path, token, CatalogIndexCache.ForArchive(path)),
-        ".zip" => UnityAssetCatalog.OpenZip(path, token, CatalogIndexCache.ForArchive(path)),
-        ".rar" => UnityAssetCatalog.OpenRar(path, token, CatalogIndexCache.ForArchive(path)),
-        ".prefab" => UnityAssetCatalog.OpenProjectPrefab(path, token),
-        _ => throw new InvalidDataException("対応形式: .unitypackage / .zip / .rar / .prefab")
-    };
+        // Explorer preview handlers run at low integrity and cannot write to the normal TEMP.
+        var spillDirectory = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "..", "LocalLow", "UnityPackageExplorer", "ExpandedCache"));
+        Directory.CreateDirectory(spillDirectory);
+        return Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".unitypackage" => UnityAssetCatalog.OpenPackage(path, token, CatalogIndexCache.ForArchive(path), spillDirectory),
+            ".zip" => UnityAssetCatalog.OpenZip(path, token, CatalogIndexCache.ForArchive(path), spillDirectory),
+            ".rar" => UnityAssetCatalog.OpenRar(path, token, CatalogIndexCache.ForArchive(path), spillDirectory),
+            ".prefab" => UnityAssetCatalog.OpenProjectPrefab(path, token),
+            _ => throw new InvalidDataException("対応形式: .unitypackage / .zip / .rar / .prefab")
+        };
+    }
 
     private static string CreateRequestTempRoot()
     {

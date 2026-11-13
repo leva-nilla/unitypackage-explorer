@@ -54,9 +54,9 @@ public sealed class UnityAssetCatalog
 
     public void RebindZipPath(string path) => RebindArchivePath(path);
 
-    public static UnityAssetCatalog OpenPackage(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null)
+    public static UnityAssetCatalog OpenPackage(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null, string? expandedCacheSpillDirectory = null)
     {
-        var reader = new UnityPackageReader(path);
+        var reader = new UnityPackageReader(path, expandedCacheSpillDirectory);
         if (cache?.TryLoadPackage() is { } cachedPackage)
         {
             var entries = cachedPackage.LooseMembers
@@ -73,26 +73,26 @@ public sealed class UnityAssetCatalog
         return new UnityAssetCatalog(reader, index);
     }
 
-    public static UnityAssetCatalog OpenZip(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null)
+    public static UnityAssetCatalog OpenZip(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null, string? expandedCacheSpillDirectory = null)
     {
-        return OpenArchive(new UnityZipReader(path), cancellationToken, cache);
+        return OpenArchive(new UnityZipReader(path), cancellationToken, cache, expandedCacheSpillDirectory);
     }
 
     public static UnityAssetCatalog OpenZip(UnityZipReader zip, CancellationToken cancellationToken = default)
         => OpenArchive(zip, cancellationToken);
 
-    public static UnityAssetCatalog OpenRar(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null)
-        => OpenArchive(new UnityRarReader(path), cancellationToken, cache);
+    public static UnityAssetCatalog OpenRar(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null, string? expandedCacheSpillDirectory = null)
+        => OpenArchive(new UnityRarReader(path), cancellationToken, cache, expandedCacheSpillDirectory);
 
     public static UnityAssetCatalog OpenRar(UnityRarReader rar, CancellationToken cancellationToken = default)
         => OpenArchive(rar, cancellationToken);
 
-    public static UnityAssetCatalog OpenArchive(IUnityArchiveReader archive, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null)
+    public static UnityAssetCatalog OpenArchive(IUnityArchiveReader archive, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null, string? expandedCacheSpillDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(archive);
         var members = archive.ReadIndex(cancellationToken);
         if (cache?.TryLoad(members) is { } cached)
-            return BuildCachedArchiveCatalog(archive, members, cached);
+            return BuildCachedArchiveCatalog(archive, members, cached, expandedCacheSpillDirectory);
 
         var packageMembers = members.Where(x => x.FullName.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase)).ToArray();
         var packageReaders = new Dictionary<string, UnityPackageReader>(StringComparer.OrdinalIgnoreCase);
@@ -115,7 +115,7 @@ public sealed class UnityAssetCatalog
                 warnings.Add($"{packageMemberPath}: unitypackage is empty and could not be read.");
                 continue;
             }
-            var reader = new UnityPackageReader(() => archive.OpenMember(packageMemberPath));
+            var reader = new UnityPackageReader(() => archive.OpenMember(packageMemberPath), expandedCacheSpillDirectory: expandedCacheSpillDirectory);
             try
             {
                 var packageEntries = reader.ReadIndex(cancellationToken, nestedPackageBudget);
@@ -168,13 +168,13 @@ public sealed class UnityAssetCatalog
         return new UnityAssetCatalog(null, entries, archiveReader: archive, zipPackages: packageReaders, warnings: warnings);
     }
 
-    private static UnityAssetCatalog BuildCachedArchiveCatalog(IUnityArchiveReader archive, IReadOnlyList<UnityArchiveMember> members, CatalogCachePayload cached)
+    private static UnityAssetCatalog BuildCachedArchiveCatalog(IUnityArchiveReader archive, IReadOnlyList<UnityArchiveMember> members, CatalogCachePayload cached, string? expandedCacheSpillDirectory)
     {
         var packageReaders = new Dictionary<string, UnityPackageReader>(StringComparer.OrdinalIgnoreCase);
         var entries = new List<UnityPackageEntry>();
         foreach (var package in cached.Packages)
         {
-            packageReaders.Add(package.MemberPath, new UnityPackageReader(() => archive.OpenMember(package.MemberPath)));
+            packageReaders.Add(package.MemberPath, new UnityPackageReader(() => archive.OpenMember(package.MemberPath), expandedCacheSpillDirectory: expandedCacheSpillDirectory));
             entries.AddRange(package.Entries.Select(item => new UnityPackageEntry(item.Guid, $"{package.MemberPath}/{item.PathName}", item.HasAsset, item.HasMeta)
             {
                 PackageMemberPath = package.MemberPath,

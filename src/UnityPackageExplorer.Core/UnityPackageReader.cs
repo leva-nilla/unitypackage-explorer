@@ -86,12 +86,13 @@ public sealed class UnityPackageReader
 
     private sealed record CachedTarEntry(long DataOffset, long Length);
 
-    public UnityPackageReader(string packagePath)
+    public UnityPackageReader(string packagePath, string? expandedCacheSpillDirectory = null)
     {
         var fullPath = Path.GetFullPath(packagePath);
         _openStream = () => new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024, FileOptions.SequentialScan);
         _maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes;
         _maximumEntryCount = MaximumEntryCount;
+        _expandedCacheSpillDirectory = expandedCacheSpillDirectory;
     }
 
     public UnityPackageReader(Func<Stream> openStream, long maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes, int maximumEntryCount = MaximumEntryCount, long expandedCacheMaximumBytes = ExpandedCacheMaximumBytes, string? expandedCacheSpillDirectory = null)
