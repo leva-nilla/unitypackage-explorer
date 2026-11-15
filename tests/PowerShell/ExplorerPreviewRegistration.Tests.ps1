@@ -215,3 +215,8 @@ try {
         Remove-Item -LiteralPath $installDirectory -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+# The runtime-missing check deliberately runs a script that exits 3, which leaves a non-zero
+# $LASTEXITCODE behind. End with an explicit success code so the caller (and CI) does not treat
+# that recorded exit code or a suppressed cleanup error as this test failing.
+exit 0
