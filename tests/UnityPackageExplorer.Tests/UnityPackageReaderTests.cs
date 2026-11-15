@@ -154,6 +154,85 @@ public sealed class UnityPackageReaderTests
     }
 
     [Fact]
+    public void UnavailableSpillDirectoryKeepsThePackageReadable()
+    {
+        var guid = "a".PadLeft(32, '0');
+        using var package = TemporaryPackage.Create([
+            ($"{guid}/pathname", "Assets/Props/Item.prefab"),
+            ($"{guid}/asset", "payload")
+        ]);
+        var missingDirectory = Path.Combine(Path.GetTempPath(), $"unitypackage-missing-spill-{Guid.NewGuid():N}");
+        using var reader = new UnityPackageReader(
+            () => File.OpenRead(package.Path),
+            expandedCacheMaximumBytes: 64,
+            expandedCacheSpillDirectory: missingDirectory);
+
+        var item = Assert.Single(reader.ReadIndex());
+        Assert.Equal("payload", Encoding.UTF8.GetString(reader.ReadAsset(item.Guid)!));
+        Assert.Equal("payload", Encoding.UTF8.GetString(reader.ReadAsset(item.Guid)!));
+        Assert.False(Directory.Exists(missingDirectory));
+    }
+
+    [Fact]
+    public void SymlinkEntriesAreNotTreatedAsAssetPayloads()
+    {
+        var guid = "a".PadLeft(32, '0');
+        var packagePath = Path.Combine(Path.GetTempPath(), $"unitypackage-symlink-{Guid.NewGuid():N}.unitypackage");
+        using (var file = File.Create(packagePath))
+        using (var gzip = new GZipStream(file, CompressionLevel.Optimal, leaveOpen: false))
+        using (var tar = new TarWriter(gzip, TarEntryFormat.Pax, leaveOpen: false))
+        {
+            tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, $"{guid}/pathname")
+            {
+                DataStream = new MemoryStream(Encoding.UTF8.GetBytes("Assets/Props/Item.prefab"), writable: false)
+            });
+            tar.WriteEntry(new PaxTarEntry(TarEntryType.SymbolicLink, $"{guid}/asset") { LinkName = "elsewhere" });
+        }
+
+        try
+        {
+            var reader = new UnityPackageReader(packagePath);
+            var item = Assert.Single(reader.ReadIndex());
+            Assert.False(item.HasAsset);
+            Assert.Null(reader.ReadAsset(guid));
+        }
+        finally
+        {
+            if (File.Exists(packagePath)) File.Delete(packagePath);
+        }
+    }
+
+    [Fact]
+    public void SafeRelativePathCollapsesWindowsNameAliases()
+    {
+        Assert.Equal(Path.Combine("Assets", "Foo", "bar.txt"), UnityPackageReader.GetSafeRelativePath("Assets/Foo. /bar.txt"));
+        Assert.Throws<InvalidDataException>(() => UnityPackageReader.GetSafeRelativePath("Assets/... /bar.txt"));
+    }
+
+    [Fact]
+    public void ExtractionRejectsPathsThatCollideAfterWindowsNormalization()
+    {
+        var first = "b".PadLeft(32, '0');
+        var second = "c".PadLeft(32, '0');
+        using var package = TemporaryPackage.Create([
+            ($"{first}/pathname", "Assets/Item.txt"),
+            ($"{first}/asset", "one"),
+            ($"{second}/pathname", "Assets/Item.txt. "),
+            ($"{second}/asset", "two")
+        ]);
+        var destination = Path.Combine(Path.GetTempPath(), $"unitypackage-collision-{Guid.NewGuid():N}");
+        try
+        {
+            Assert.Throws<InvalidDataException>(() => new UnityPackageReader(package.Path).ExtractTo(destination));
+            Assert.False(Directory.Exists(destination));
+        }
+        finally
+        {
+            if (Directory.Exists(destination)) Directory.Delete(destination, recursive: true);
+        }
+    }
+
+    [Fact]
     public void DisposesSourceWhenReadingThePackageSignatureFails()
     {
         var stream = new FailingReadStream();

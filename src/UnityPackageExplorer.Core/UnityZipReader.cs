@@ -43,6 +43,7 @@ public sealed class UnityZipReader : IUnityArchiveReader
         foreach (var entry in archive.Entries)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            // Archive extraction targets Windows, so names that differ only by case collide.
             if (!names.Add(entry.FullName)) throw new InvalidDataException($"ZIP contains a duplicate member name: {entry.FullName}");
             declaredTotal = checked(declaredTotal + entry.Length);
             if (declaredTotal > UnityArchiveLimits.MaximumDeclaredTotalBytes) throw new InvalidDataException("ZIP declares more than 8 GiB of uncompressed content.");
@@ -59,7 +60,7 @@ public sealed class UnityZipReader : IUnityArchiveReader
         try
         {
             archive = new ZipArchive(file, ZipArchiveMode.Read, leaveOpen: false);
-            var entry = archive.GetEntry(memberPath) ?? throw new FileNotFoundException($"ZIP member was not found: {memberPath}");
+            var entry = FindEntry(archive, memberPath) ?? throw new FileNotFoundException($"ZIP member was not found: {memberPath}");
             if (entry.Length > maximumBytes) throw new InvalidDataException($"ZIP member exceeds the {maximumBytes / 1024 / 1024} MiB read limit: {memberPath}");
             return new OwnedZipMemberStream(entry.Open(), archive, file);
         }
@@ -106,6 +107,19 @@ public sealed class UnityZipReader : IUnityArchiveReader
         }
         stream.Position = 0;
         return stream;
+    }
+
+    /// <summary>
+    /// Resolves a member name the same way <see cref="ReadIndex"/> validated it: exact match
+    /// first, then the case-insensitive match that duplicate detection proved unique.
+    /// </summary>
+    private static ZipArchiveEntry? FindEntry(ZipArchive archive, string memberPath)
+    {
+        var exact = archive.GetEntry(memberPath);
+        if (exact is not null) return exact;
+        foreach (var entry in archive.Entries)
+            if (string.Equals(entry.FullName, memberPath, StringComparison.OrdinalIgnoreCase)) return entry;
+        return null;
     }
 
     private sealed class OwnedZipMemberStream(Stream member, ZipArchive archive, Stream file) : Stream

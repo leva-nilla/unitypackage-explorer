@@ -77,13 +77,36 @@ public sealed class CatalogIndexCache
             var path = Path.Combine(_directory, _key + ".json");
             if (!File.Exists(path)) return null;
             var payload = System.Text.Json.JsonSerializer.Deserialize<CatalogCachePayload>(File.ReadAllBytes(path));
-            return payload is not null && payload.Version == Version ? payload : null;
+            return payload is not null && payload.Version == Version && IsUsable(payload) ? payload : null;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
             return null;
         }
     }
+
+    /// <summary>Rejects malformed cache files so a hand-edited entry cannot poison the catalog.</summary>
+    private static bool IsUsable(CatalogCachePayload payload)
+    {
+        if (payload.Members is null || payload.Packages is null || payload.LooseMembers is null) return false;
+        foreach (var member in payload.Members)
+            if (member is null || string.IsNullOrEmpty(member.Name) || member.Length < 0) return false;
+        foreach (var package in payload.Packages)
+        {
+            if (package is null || string.IsNullOrEmpty(package.MemberPath) || package.Entries is null) return false;
+            foreach (var entry in package.Entries)
+                if (!IsUsableEntry(entry)) return false;
+        }
+        foreach (var entry in payload.LooseMembers)
+            if (!IsUsableEntry(entry)) return false;
+        return true;
+    }
+
+    private static bool IsUsableEntry(CatalogCacheEntry? entry) =>
+        entry is not null
+        && !string.IsNullOrEmpty(entry.PathName)
+        && entry.Guid is { Length: 32 }
+        && entry.Guid.All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F');
 
     /// <summary>Stores the payload and evicts the oldest cache files beyond the cap. Failures are ignored.</summary>
     public void Store(CatalogCachePayload payload)
