@@ -38,6 +38,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
     private readonly object _comCallGate = new();
     private PendingUiPayloadQueue _pendingUiPayloads = new();
     private PreviewStaDispatcher? _uiDispatcher;
+    private static int _staleRequestCleanupStarted;
 
     public int Initialize(string filePath, uint mode)
     {
@@ -125,7 +126,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
 
     private int DoPreviewCore()
     {
-        PreviewLog.Write($"DoPreviewCore path={_path ?? "(stream)"}");
+        PreviewLog.Write($"DoPreviewCore file={(_path is null ? "(stream)" : Path.GetFileName(_path))}");
         var requestId = Interlocked.Increment(ref _generation);
         var initialDeadline = Stopwatch.GetTimestamp() + (long)(Stopwatch.Frequency * 30d);
         ResetPendingUiPayloads();
@@ -338,7 +339,6 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         {
             if (entry.Extension == ".prefab" || entry.Extension == ".fbx")
             {
-                AssimpNativeLoader.EnsureLoaded();
                 PreviewLog.Write($"LoadSelected prefab {entry.PathName} assimp preloaded");
                 string tempRoot;
                 lock (_activeJobsGate)
@@ -351,7 +351,10 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 try
                 {
                     geometryTask = StartTrackedJob(cancellationToken, () =>
-                        LightweightPreviewLoader.LoadGeometryAsync(catalog, entry, tempRoot, cancellationToken, stageUnselectedSiblingImages: false));
+                    {
+                        AssimpNativeLoader.EnsureLoaded();
+                        return LightweightPreviewLoader.LoadGeometryAsync(catalog, entry, tempRoot, cancellationToken, stageUnselectedSiblingImages: false);
+                    });
                 }
                 catch
                 {
@@ -398,7 +401,8 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                     using var materialBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     materialBudget.CancelAfter(TimeSpan.FromSeconds(30));
                     var materialTask = StartTrackedJob(materialBudget.Token, () =>
-                        LightweightPreviewLoader.CompleteMaterialsAsync(geometry, catalog, entry, tempRoot, materialBudget.Token));
+                        LightweightPreviewLoader.CompleteMaterialsAsync(geometry, catalog, entry, tempRoot, materialBudget.Token,
+                            (texturePath, binding, cache, warnings, token) => AlphaTexturePreparation.PrepareForMaterial(texturePath, binding, cache, warnings, token)));
                     var plan = await DeferredTaskCleanup.WaitAsync(
                         materialTask,
                         materialBudget.Token,
@@ -597,10 +601,34 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
 
     private static string CreateRequestTempRoot()
     {
+        CleanupStaleRequestRoots();
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "..", "LocalLow", "UnityPackageExplorer", "PreviewRequests", Guid.NewGuid().ToString("N"));
         root = Path.GetFullPath(root);
         Directory.CreateDirectory(root);
         return root;
+    }
+
+    /// <summary>Removes request folders left behind by crashed preview hosts; runs at most once per process.</summary>
+    private static void CleanupStaleRequestRoots()
+    {
+        if (Interlocked.Exchange(ref _staleRequestCleanupStarted, 1) != 0) return;
+        try
+        {
+            var owner = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "..", "LocalLow", "UnityPackageExplorer", "PreviewRequests"));
+            if (!Directory.Exists(owner)) return;
+            var cutoff = DateTime.UtcNow - TimeSpan.FromHours(2);
+            foreach (var directory in Directory.EnumerateDirectories(owner))
+            {
+                try
+                {
+                    if (Directory.GetLastWriteTimeUtc(directory) < cutoff) Directory.Delete(directory, recursive: true);
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     internal static void SafeDeleteOwnedTemp(string root)
@@ -755,68 +783,6 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         {
             return $"error: {ex.Message}";
         }
-    }
-
-    private static PreviewContent ReadStreamContent(System.Runtime.InteropServices.ComTypes.IStream stream)
-    {
-        string? name = null;
-        try
-        {
-            stream.Stat(out var statistics, 0);
-            name = statistics.pwcsName;
-        }
-        catch (Exception) { }
-
-        var adapter = new ComStreamReader(stream);
-        var extension = Path.GetExtension(name ?? string.Empty).ToLowerInvariant();
-        if (extension is not (".unitypackage" or ".prefab" or ".rar"))
-        {
-            var header = new byte[512];
-            var read = adapter.Read(header, 0, header.Length);
-            adapter.Position = 0;
-            if (read >= 4 && header[0] == (byte)'P' && header[1] == (byte)'K'
-                && ((header[2] == 0x03 && header[3] == 0x04) || (header[2] == 0x05 && header[3] == 0x06) || (header[2] == 0x07 && header[3] == 0x08))) extension = ".zip";
-            else if (read >= 7 && header[0] == (byte)'R' && header[1] == (byte)'a' && header[2] == (byte)'r' && header[3] == (byte)'!'
-                && header[4] == 0x1a && header[5] == 0x07 && (header[6] == 0x00 || (read >= 8 && header[6] == 0x01 && header[7] == 0x00))) extension = ".rar";
-            else if (read >= 2 && header[0] == 0x1f && header[1] == 0x8b) extension = ".unitypackage";
-            else if (read >= 262 && Encoding.ASCII.GetString(header, 257, 5) == "ustar") extension = ".unitypackage";
-            else
-            {
-                var text = Encoding.UTF8.GetString(header, 0, read).TrimStart('\uFEFF', ' ', '\t', '\r', '\n');
-                if (text.StartsWith("%YAML", StringComparison.Ordinal) || text.StartsWith("--- !u!", StringComparison.Ordinal)) extension = ".prefab";
-            }
-        }
-
-        var title = string.IsNullOrWhiteSpace(name) ? $"Unity Asset{extension}" : Path.GetFileName(name);
-        if (extension == ".unitypackage")
-            return PreviewContent.ReadPackage(title, new UnityPackageReader(() =>
-            {
-                var source = new ComStreamReader(stream);
-                source.Position = 0;
-                return source;
-            }));
-        if (extension == ".zip")
-            return PreviewContent.ReadZip(title, new UnityZipReader(() =>
-            {
-                var source = new ComStreamReader(stream);
-                source.Position = 0;
-                return source;
-            }));
-        if (extension == ".rar")
-            return PreviewContent.ReadRar(title, new UnityRarReader(() =>
-            {
-                var source = new ComStreamReader(stream);
-                source.Position = 0;
-                return source;
-            }));
-        if (extension == ".prefab")
-        {
-            adapter.Position = 0;
-            using var reader = new StreamReader(adapter, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: true);
-            return PreviewContent.ReadPrefab(title, reader.ReadToEnd());
-        }
-
-        return PreviewContent.Read(title);
     }
 }
 

@@ -5,6 +5,7 @@ namespace UnityPackageExplorer.PreviewHandler;
 /// <summary>Owns a message-pumped STA thread for all preview UI work.</summary>
 internal sealed class PreviewStaDispatcher : IDisposable
 {
+    private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(2);
     private readonly TaskCompletionSource<Control> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Thread _thread;
     private Control? _marshalControl;
@@ -88,9 +89,11 @@ internal sealed class PreviewStaDispatcher : IDisposable
                 try { control.BeginInvoke((Action)Application.ExitThread); }
                 catch (ObjectDisposedException) { }
                 catch (InvalidOperationException) { }
-                _thread.Join();
+                if (!_thread.Join(ShutdownTimeout))
+                    PreviewLog.Write("UI thread did not stop within the shutdown timeout; abandoning it.");
             }
         }
-        else if (_thread.IsAlive && !CheckAccess()) _thread.Join();
+        else if (_thread.IsAlive && !CheckAccess() && !_thread.Join(ShutdownTimeout))
+            PreviewLog.Write("UI thread did not stop within the shutdown timeout; abandoning it.");
     }
 }
