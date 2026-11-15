@@ -25,19 +25,19 @@ Unityを起動せずに、ダウンロードしたZIP/RARの中のUnityPackage�
 
 ## インストール
 
-1. [Releases](https://github.com/leva-nilla/unitypackage-explorer/releases) から `UnityPackageExplorer-Setup-0.1.0-x64.exe` をダウンロードします。
+1. [Releases](https://github.com/leva-nilla/unitypackage-explorer/releases) から最新の `UnityPackageExplorer-Setup-<version>-x64.exe` をダウンロードします。
 2. セットアップを実行します。アプリは現在のユーザーのみにインストールされます。
 3. セットアップで「従来の右クリックメニューに追加」を有効にすると、ファイルの右クリック→「その他のオプションを確認」に「UnityPackage Explorer で開く」が追加されます。Windows 11の新しい右クリックメニューには登録しません。
-4. 必要な場合はセットアップで「エクスプローラーのプレビュー欄にZIP / UnityPackageを表示」を選びます。既定では無効です。WindowsのプレビューホストがCOMクラスを有効化できるよう、この機能を選ぶときだけ確認ダイアログを経てCOM起動情報をPC共通の登録領域へ追加します。ZIP / UnityPackageのプレビュー関連付けはユーザー単位です。登録には.NET 10 Desktop Runtime x64が必要です。Runtimeがない場合は登録を行わず公式ダウンロード先を案内します。専用アプリは引き続き使えます。
+4. セットアップで「エクスプローラーのプレビュー欄にZIP / UnityPackageを表示」は既定で有効です。不要ならチェックを外します。WindowsのプレビューホストがCOMクラスを有効化できるよう、この機能を選ぶときだけ確認ダイアログを経てCOM起動情報をPC共通の登録領域へ追加します。ZIP / UnityPackageのプレビュー関連付けはユーザー単位です。登録には.NET 10 Desktop Runtime x64が必要で、セットアップが同梱のインストーラーで導入します。Runtimeを導入できない場合は登録を行わず公式ダウンロード先を案内します。専用アプリは引き続き使えます。
 5. ZIP/RARを右クリックして開くか、ファイルをアプリへドラッグ＆ドロップします。.zipまたは.unitypackageを選び、エクスプローラーの「表示」から「プレビュー ウィンドウ」を開くとプレビューできます。
 
 セットアップには自己完結型のアプリ本体、Explorer Preview Handler用の.NET 10 framework-dependent配置、FBX読込用ライブラリと必要なVisual C++ランタイムを含みます。プレビュー欄を使う場合は.NET 10 Desktop Runtime x64が必要です。利用者に.NET SDK、Unity、Visual Studio、C++開発ツールは必要ありません。インストーラーと実行ファイルは未署名のため、Windows SmartScreenが発行元を確認できないと表示する場合があります。配布元とSHA-256を確認してから実行してください。
 
-アプリ本体は.NETをアプリと一緒に配置するため、システム全体へのランタイム導入なしで動作します。Explorerプレビュー用の.NET Desktop Runtimeは既存のx64共有ランタイムを使い、セットアップから追加導入しません。Visual C++ランタイムはアプリと一緒に配置されます。
+アプリ本体は.NETをアプリと一緒に配置するため、システム全体へのランタイム導入なしで動作します。Explorerプレビュー用の.NET 10 Desktop Runtime x64は、セットアップに同梱した固定版（SHA-256検証済み）のインストーラーで導入します。既に導入済みの場合はそのまま利用します。Visual C++ランタイムはアプリと一緒に配置されます。
 
 lilToon互換ビューにはMicrosoft Edge WebView2 Runtimeが必要です。Windows 11の既存ランタイムを使用し、利用できない場合は軽量表示に戻ります。必要な場合は[Microsoft公式の配布ページ](https://developer.microsoft.com/microsoft-edge/webview2/)からEvergreen Runtimeを導入してください。モデル・材質・描画用コードはPC内で処理し、外部サイトへ送信しません。
 
-旧PowerShell版が同じユーザーの標準インストール先にある場合は、その場所へ更新します。旧版のPreview Handler登録は削除し、ほかのファイル関連付けやユーザーファイルには触れません。
+旧PowerShell版が同じユーザーの標準インストール先にあり、所有記録で当製品のものと確認できる場合は、その旧インストールフォルダーを整理してから更新します。所有記録がないフォルダーや、当製品と確認できないファイルが残る場合は、既存ファイルを保護するためセットアップを中止します。旧版のPreview Handler登録は削除し、ほかのファイル関連付けは変更しません。
 
 ## Prefab表示の制約
 
@@ -84,12 +84,12 @@ Windowsの「設定」→「アプリ」→「インストールされている�
 .\tools\dependencies\Build-PatchedHelix.ps1
 .\tools\release\Build-WebViewer.ps1 -Test
 dotnet test .\UnityPackageExplorer.sln -c Release
-.\tools\release\Build-Setup.ps1 -Version 0.1.0
+.\tools\release\Build-Setup.ps1 -Version <version>
 ```
 
 軽量描画にはHelixToolkit 3.1.2の固定ソースへCOM参照の寿命修正2件を適用したローカルパッケージを使います。ビルド前に上の依存パッケージ生成が必要です（セットアップ生成・CIでは自動実行）。出典・修正内容は [`third_party/HelixToolkit.SharpDX/UPSTREAM.md`](third_party/HelixToolkit.SharpDX/UPSTREAM.md) に記録しています。
 
-配布物は `.artifacts\release\v0.1.0` に生成されます。GitHub ActionsのWindowsジョブでもReleaseビルド、テスト、セットアップ生成を行います。
+配布物は `.artifacts\release\v<version>` に生成されます。GitHub ActionsのWindowsジョブでもReleaseビルド、テスト、セットアップ生成を行います。
 
 ## ライセンス
 

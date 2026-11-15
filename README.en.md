@@ -25,19 +25,19 @@ Try the [sample ZIP](tools/samples/UnityPackageExplorer-Showcase.zip) (CC0 asset
 
 ## Install
 
-1. Download `UnityPackageExplorer-Setup-0.1.3-x64.exe` from [Releases](https://github.com/leva-nilla/unitypackage-explorer/releases).
+1. Download the latest `UnityPackageExplorer-Setup-<version>-x64.exe` from [Releases](https://github.com/leva-nilla/unitypackage-explorer/releases).
 2. Run the setup. The app installs per-user.
 3. Enable "Add to legacy right-click menu" to get "Open with UnityPackage Explorer" under "Show more options" in Windows 11.
-4. Optionally enable "Show ZIP / UnityPackage in Explorer preview pane". Requires .NET 10 Desktop Runtime (x64). Preview association is per-user; COM activation info is machine-wide.
+4. "Show ZIP / UnityPackage in Explorer preview pane" is enabled by default; clear it if you do not want it. Requires .NET 10 Desktop Runtime (x64), which the setup installs from its bundled pinned installer. Preview association is per-user; COM activation info is machine-wide.
 5. Open a ZIP/RAR via right-click or drag & drop. Open the Preview pane in Explorer to preview `.zip` / `.unitypackage`.
 
 The setup includes a self-contained app, a framework-dependent Explorer Preview Handler, FBX libraries, and the required Visual C++ runtime. No .NET SDK, Unity, Visual Studio, or C++ tools are required. The installer and binaries are unsigned; SmartScreen may warn — verify the source and SHA-256.
 
-The app runs with a bundled .NET runtime. The Explorer preview uses the shared x64 .NET Desktop Runtime. Visual C++ runtime is deployed alongside the app.
+The app runs with a bundled .NET runtime. The Explorer preview uses the shared x64 .NET 10 Desktop Runtime; the setup installs a pinned, SHA-256-verified copy when it is missing and reuses an existing installation otherwise. Visual C++ runtime is deployed alongside the app.
 
 The lilToon view requires the Microsoft Edge WebView2 Runtime (usually present on Windows 11). If unavailable, the viewer falls back to lightweight mode. Model/material/rendering code runs locally; nothing is uploaded.
 
-Old PowerShell-based installs in the standard per-user location are upgraded in place. Legacy preview handler registration is removed; other file associations and user files are untouched.
+Old PowerShell-based installs in the standard per-user location are upgraded in place only when their ownership marker verifies them as this product; the legacy install folder is then cleaned up. If the folder has no ownership record or contains files that cannot be verified, the setup stops to protect them. Legacy preview handler registration is removed; other file associations are untouched.
 
 ## Prefab display limitations
 
