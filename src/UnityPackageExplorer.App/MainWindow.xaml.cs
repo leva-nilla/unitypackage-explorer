@@ -56,6 +56,7 @@ public partial class MainWindow : Window
     private bool _looking;
     private double _flightSpeed = 12;
     private long _lastMovementTimestamp;
+    private string? _statusBeforeDrag;
 
     private sealed record MaterialBinding(string MaterialGuid, string MaterialName, string TextureName, string Slot, string? AssetPath, UnityMaterialColor? Color, UnityMaterialRenderMode RenderMode, float? Cutoff)
     {
@@ -93,11 +94,12 @@ public partial class MainWindow : Window
         _initialPath = initialPath;
         KindFilter.ItemsSource = new[] { "すべて" };
         KindFilter.SelectedIndex = 0;
+        CleanupOrphanedTemporaryRoots();
         Loaded += async (_, _) =>
         {
             if (!string.IsNullOrWhiteSpace(_initialPath) && File.Exists(_initialPath)) await OpenPathAsync(_initialPath);
         };
-        Closed += (_, _) =>
+        Closed += async (_, _) =>
         {
             CancelPendingOperations();
             _catalogLifetime?.Retire();
@@ -105,9 +107,11 @@ public partial class MainWindow : Window
             _catalog = null;
             _activeSceneRequestId = null;
             CleanupTemporaryFiles();
+            DeleteTemporaryRootsOnExit();
             StopCameraInput();
             _effectsManager.Dispose();
-            _ = _lilToonHost.DisposeAsync();
+            try { await _lilToonHost.DisposeAsync(); }
+            catch (Exception ex) { Debug.WriteLine($"lilToon host disposal failed: {ex.Message}"); }
         };
     }
 
@@ -155,6 +159,7 @@ public partial class MainWindow : Window
 
     private void Window_DragEnter(object sender, DragEventArgs e)
     {
+        _statusBeforeDrag ??= StatusLabel.Text;
         var paths = GetDroppedPaths(e);
         if (paths.Length == 1 && IsSupportedDrop(paths[0]) && !_isOpeningSource)
         {
@@ -176,9 +181,23 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    private void Window_DragLeave(object sender, DragEventArgs e)
+    {
+        RestoreStatusAfterDrag();
+        e.Handled = true;
+    }
+
+    private void RestoreStatusAfterDrag()
+    {
+        if (_statusBeforeDrag is null) return;
+        SetStatus(_statusBeforeDrag);
+        _statusBeforeDrag = null;
+    }
+
     private async void Window_Drop(object sender, DragEventArgs e)
     {
         var paths = GetDroppedPaths(e);
+        _statusBeforeDrag = null;
         e.Handled = true;
         if (paths.Length != 1)
         {
@@ -1069,26 +1088,10 @@ public partial class MainWindow : Window
     }
 
     private static string PrepareTextureAlphaForPreview(string path, MaterialBinding binding, IDictionary<string, string> cache, ICollection<string> warnings, CancellationToken cancellationToken)
-    {
-        if (binding.RenderMode == UnityMaterialRenderMode.Opaque)
-        {
-            try { return AlphaTexturePreparation.PrepareOpaquePng(path, cache, cancellationToken); }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or ArgumentException or OverflowException)
-            {
-                warnings.Add($"Opaque texture alpha for material '{binding.MaterialName}' could not be removed ({ex.Message}); transparent pixels may still appear as holes.");
-                return path;
-            }
-        }
-        if (UnityMaterialPreviewPolicy.CutoutThreshold(binding.RenderMode, binding.Cutoff) is not { } cutoff) return path;
-        try { return AlphaTexturePreparation.PrepareCutoutPng(path, cutoff, binding.Color?.A ?? 1f, cache, cancellationToken); }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or ArgumentException)
-        {
-            warnings.Add($"Cutout texture for material '{binding.MaterialName}' could not be converted ({ex.Message}); the original texture is shown without cutoff masking.");
-            return path;
-        }
-    }
+        => AlphaTexturePreparation.PrepareForMaterial(
+            path,
+            new RenderingMaterialBinding(binding.MaterialGuid, binding.MaterialName, binding.TextureName, binding.Slot, binding.AssetPath, binding.Color, binding.RenderMode, binding.Cutoff),
+            cache, warnings, cancellationToken);
 
     // Retained for the existing diagnostic/test reflection seam; rendering ownership lives in Rendering.
     private static HelixToolkit.SharpDX.Model.PhongMaterialCore CreateTexturePreviewMaterial(string path) => CreatePreviewMaterial(path, null, 1f);
@@ -1190,17 +1193,29 @@ public partial class MainWindow : Window
         if (_activeLilToonRequestId != requestId || !_activeHasLilToonMaterial
             || !_requestTemporaryRoots.TryGetValue(requestId, out var temporaryState)
             || temporaryState.LilToonPreparationPlans.Count == 0) return;
-        using var catalogLease = _catalogLifetime?.Acquire();
-        var cancellation = new CancellationTokenSource();
-        var previousCancellation = Interlocked.Exchange(ref _lilToonCancellation, cancellation);
-        previousCancellation?.Cancel();
-        var loadVersion = ++_lilToonLoadVersion;
-        temporaryState.LilToonOperations++;
-        temporaryState.InFlight = true;
-        SetPreviewModeSelection(lilToon: false, lilToonLoading: true);
-        SetStatus("lilToon表示を準備しています…");
+
+        IDisposable? catalogLease = null;
+        if (_catalogLifetime is { } lifetime)
+        {
+            try { catalogLease = lifetime.Acquire(); }
+            catch (ObjectDisposedException) { return; }
+        }
+
+        CancellationTokenSource? cancellation = null;
+        var operationTracked = false;
+        var loadVersion = _lilToonLoadVersion;
         try
         {
+            cancellation = new CancellationTokenSource();
+            var previousCancellation = Interlocked.Exchange(ref _lilToonCancellation, cancellation);
+            previousCancellation?.Cancel();
+            loadVersion = ++_lilToonLoadVersion;
+            temporaryState.LilToonOperations++;
+            operationTracked = true;
+            temporaryState.InFlight = true;
+            SetPreviewModeSelection(lilToon: false, lilToonLoading: true);
+            SetStatus("lilToon表示を準備しています…");
+
             var token = cancellation.Token;
             await temporaryState.LilToonPreparationGate.WaitAsync(token);
             try
@@ -1260,7 +1275,11 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             if (loadVersion != _lilToonLoadVersion || _activeLilToonRequestId != requestId || !_previewRequests.IsCurrent(requestId)) return;
-            await _lilToonHost.ClearAsync();
+            try { await _lilToonHost.ClearAsync(); }
+            catch (Exception clearError)
+            {
+                SetStatus($"lilToon表示の終了処理に失敗しました: {clearError.Message}");
+            }
             LilToonHostContainer.Visibility = Visibility.Collapsed;
             Viewport.Visibility = Visibility.Visible;
             CameraHelp.Visibility = Visibility.Visible;
@@ -1270,12 +1289,19 @@ public partial class MainWindow : Window
         }
         finally
         {
-            Interlocked.CompareExchange(ref _lilToonCancellation, null, cancellation);
-            cancellation.Dispose();
-            temporaryState.LilToonOperations = Math.Max(0, temporaryState.LilToonOperations - 1);
-            temporaryState.InFlight = temporaryState.LilToonOperations > 0;
-            if (temporaryState.LilToonOperations == 0 && _activeSceneRequestId != requestId)
-                CleanupRequestTemporaryFiles(requestId, temporaryState);
+            if (cancellation is not null)
+            {
+                Interlocked.CompareExchange(ref _lilToonCancellation, null, cancellation);
+                cancellation.Dispose();
+            }
+            if (operationTracked)
+            {
+                temporaryState.LilToonOperations = Math.Max(0, temporaryState.LilToonOperations - 1);
+                temporaryState.InFlight = temporaryState.LilToonOperations > 0;
+                if (temporaryState.LilToonOperations == 0 && _activeSceneRequestId != requestId)
+                    CleanupRequestTemporaryFiles(requestId, temporaryState);
+            }
+            catalogLease?.Dispose();
         }
     }
 
@@ -1480,7 +1506,7 @@ public partial class MainWindow : Window
     {
         _lilToonLoadVersion++;
         CancelLilToonLoad();
-        _ = _lilToonHost.ClearAsync();
+        _ = ClearLilToonHostSafelyAsync();
         LilToonHostContainer.Visibility = Visibility.Collapsed;
         _activeLilToonScenePath = null;
         _activeLilToonRequestId = null;
@@ -1499,6 +1525,12 @@ public partial class MainWindow : Window
             && _requestTemporaryRoots.TryGetValue(requestId, out var state)
             && !state.InFlight)
             CleanupRequestTemporaryFiles(requestId, state);
+    }
+
+    private async Task ClearLilToonHostSafelyAsync()
+    {
+        try { await _lilToonHost.ClearAsync(); }
+        catch (Exception ex) { SetStatus($"lilToon表示の終了処理に失敗しました: {ex.Message}"); }
     }
 
     private string EnsureTemporaryRoot(long requestId)
@@ -1534,6 +1566,43 @@ public partial class MainWindow : Window
                 CleanupRequestTemporaryFiles(requestId, state);
     }
 
+    /// <summary>Removes request folders left behind by earlier runs; only folders older than a day are touched.</summary>
+    private static void CleanupOrphanedTemporaryRoots()
+    {
+        try
+        {
+            var baseDirectory = Path.Combine(Path.GetTempPath(), "UnityPackageExplorer");
+            if (!Directory.Exists(baseDirectory)) return;
+            var cutoff = DateTime.UtcNow - TimeSpan.FromDays(1);
+            foreach (var directory in Directory.EnumerateDirectories(baseDirectory))
+            {
+                try
+                {
+                    if (Directory.GetLastWriteTimeUtc(directory) < cutoff) Directory.Delete(directory, recursive: true);
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    /// <summary>Deletes every remaining request folder during shutdown; failures are retried by the next startup sweep.</summary>
+    private void DeleteTemporaryRootsOnExit()
+    {
+        foreach (var state in _requestTemporaryRoots.Values.ToArray())
+        {
+            try
+            {
+                if (Directory.Exists(state.Path)) Directory.Delete(state.Path, recursive: true);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+        _requestTemporaryRoots.Clear();
+    }
+
     private void CompletePreviewRequest(long requestId)
     {
         if (_catalogRequestLeases.Remove(requestId, out var catalogLease)) catalogLease.Dispose();
@@ -1553,14 +1622,15 @@ public partial class MainWindow : Window
     private void CleanupRequestTemporaryFiles(long requestId, PreviewTemporaryState state)
     {
         if (state.InFlight || state.LilToonOperations > 0) return;
-        if (!_requestTemporaryRoots.Remove(requestId)) return;
-        state.LilToonPreparationGate.Dispose();
+        if (!_requestTemporaryRoots.ContainsKey(requestId)) return;
         if (Directory.Exists(state.Path))
         {
             try { Directory.Delete(state.Path, recursive: true); }
-            catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
+            catch (IOException) { return; }
+            catch (UnauthorizedAccessException) { return; }
         }
+        if (!_requestTemporaryRoots.Remove(requestId)) return;
+        state.LilToonPreparationGate.Dispose();
     }
 
     private void SetBusy(bool busy, string? message = null)
@@ -1633,23 +1703,33 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ExtractButton_Click(object sender, RoutedEventArgs e)
+    private async void ExtractButton_Click(object sender, RoutedEventArgs e)
     {
         if (_packagePath is null) return;
         var dialog = new OpenFolderDialog { Title = "展開先フォルダーを選択", Multiselect = false };
         if (dialog.ShowDialog(this) != true) return;
+        var packagePath = _packagePath;
+        SetBusy(true, "展開しています…");
         try
         {
-            var target = Path.Combine(dialog.FolderName, Path.GetFileNameWithoutExtension(_packagePath) + "_extracted");
-            var output = new UnityPackageReader(_packagePath).ExtractTo(target);
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{output}\"") { UseShellExecute = true });
-            SetStatus($"展開しました: {output}");
+            var target = Path.Combine(dialog.FolderName, Path.GetFileNameWithoutExtension(packagePath) + "_extracted");
+            var output = await Task.Run(() => new UnityPackageReader(packagePath).ExtractTo(target));
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{output}\"") { UseShellExecute = true });
+                SetStatus($"展開しました: {output}");
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"展開しましたが、フォルダーを開けませんでした: {ex.Message}");
+            }
         }
         catch (Exception ex)
         {
             SetStatus($"展開に失敗しました: {ex.Message}");
             MessageBox.Show(this, ex.Message, "UnityPackage Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+        finally { SetBusy(false); }
     }
 
     private async void SearchBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
