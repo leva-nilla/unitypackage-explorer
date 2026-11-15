@@ -199,8 +199,13 @@ try {
     $restored = (Get-Item -LiteralPath $existingPath).GetValue('')
     if ($restored -ne '{22222222-2222-2222-2222-222222222222}') { throw 'Opt-out failed to preserve the value that existed before the latest registration.' }
 
-    # The preview handler ships with the .NET 10 Desktop Runtime installed by the setup,
-    # so registration no longer gates on a shared runtime key (no exit 3 contract).
+    # The preview handler is framework-dependent: registration must refuse to run and leave no
+    # state behind when the .NET 10 Desktop Runtime is missing (exit 3 contract used by the setup).
+    $missingRuntimeKey = $registryRoot + '-runtime-missing'
+    $missingRuntimeFallbackKey = $registryRoot + '-runtime-missing-fallback'
+    & $register -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $statePath -MachineStatePath $machineStatePath -RuntimeKeyPath $missingRuntimeKey -RuntimeFallbackKeyPath $missingRuntimeFallbackKey
+    if ($LASTEXITCODE -ne 3) { throw "Registration must report a missing runtime with exit code 3, got $LASTEXITCODE." }
+    if (Test-Path -LiteralPath $statePath) { throw 'A missing runtime left preview registration state behind.' }
     Write-Output 'Explorer preview registration contract passed.'
 } finally {
     if ($registryRoot.StartsWith('Registry::HKEY_CURRENT_USER\Software\UnityPackageExplorerTests\', [StringComparison]::OrdinalIgnoreCase)) {

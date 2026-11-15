@@ -182,6 +182,7 @@ New-Item -ItemType Directory -Force -Path $toolsDirectory | Out-Null
 foreach ($toolScript in @('Cleanup-LegacyExplorerRegistration.ps1', 'Migrate-LegacyInstallFiles.ps1', 'LegacyInstallSafety.psm1', 'Register-ExplorerPreview.ps1', 'Unregister-ExplorerPreview.ps1', 'PreviewMachineRegistration.ps1', 'PreviewRegistration.Common.psm1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $toolScript) -Destination (Join-Path $toolsDirectory $toolScript) -Force
 }
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Unblock-MotW-Folder.bat') -Destination $publishDirectory -Force
 $currentFilesManifest = Join-Path $toolsDirectory 'CurrentInstallFiles.txt'
 $currentInstallFiles = @(Get-ChildItem -LiteralPath $publishDirectory -File -Recurse -Force |
     Where-Object { -not $_.FullName.Equals($currentFilesManifest, [StringComparison]::OrdinalIgnoreCase) } |
@@ -189,13 +190,20 @@ $currentInstallFiles = @(Get-ChildItem -LiteralPath $publishDirectory -File -Rec
 $currentInstallFiles += 'Tools\CurrentInstallFiles.txt'
 Set-Content -LiteralPath $currentFilesManifest -Value $currentInstallFiles -Encoding UTF8
 
-# Download the .NET 10 Desktop Runtime installer (for preview handler) if not already present.
+# Pinned .NET 10 Desktop Runtime installer (required by the preview handler). Update the
+# version, URL, and hash together when bumping; the setup verifies the downloaded bytes so a
+# mutable 'latest' alias cannot silently change what ships inside the installer.
+$runtimeVersion = '10.0.15'
+$runtimeUrl = "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/$runtimeVersion/windowsdesktop-runtime-$runtimeVersion-win-x64.exe"
+$runtimeSha256 = 'e61b030c1673edfa3c0844502eff83198c46af9e7df70dfc6e2efc5b11ea513a'
 $dotnetRuntimeInstaller = Join-Path $publishDirectory 'dotnet-runtime-installer.exe'
-if (-not (Test-Path -LiteralPath $dotnetRuntimeInstaller -PathType Leaf)) {
-    $runtimeUrl = 'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe'
-    Write-Host "Downloading .NET 10 Desktop Runtime installer..."
-    Invoke-WebRequest -Uri $runtimeUrl -OutFile $dotnetRuntimeInstaller -UseBasicParsing
-    if (-not (Test-Path -LiteralPath $dotnetRuntimeInstaller -PathType Leaf)) { throw "Failed to download .NET 10 Desktop Runtime installer." }
+Write-Host "Downloading .NET $runtimeVersion Desktop Runtime installer..."
+Invoke-WebRequest -Uri $runtimeUrl -OutFile $dotnetRuntimeInstaller -UseBasicParsing
+if (-not (Test-Path -LiteralPath $dotnetRuntimeInstaller -PathType Leaf)) { throw "Failed to download the .NET $runtimeVersion Desktop Runtime installer." }
+$downloadedRuntimeHash = (Get-FileHash -LiteralPath $dotnetRuntimeInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($downloadedRuntimeHash -ne $runtimeSha256) {
+    Remove-Item -LiteralPath $dotnetRuntimeInstaller -Force
+    throw "The .NET $runtimeVersion Desktop Runtime installer hash did not match the pinned value (expected $runtimeSha256, got $downloadedRuntimeHash)."
 }
 
 $installer = if ($env:INNO_SETUP_COMPILER) { $env:INNO_SETUP_COMPILER } else { Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe' }

@@ -243,6 +243,14 @@ begin
   end;
 end;
 
+function LegacyDirectoryCanBeRemoved(const DirectoryName: String): Boolean;
+begin
+  Result := (not DirExists(DirectoryName)) or
+    DirectoryIsEmpty(DirectoryName) or
+    HasOwnedInstallMarker(DirectoryName, '.unitypackage-explorer-install.json') or
+    HasOwnedInstallMarker(DirectoryName, '.unitypackage-explorer-inno-install.json');
+end;
+
 function ShortcutTargetsApplication(const ShortcutFile, ApplicationPath: String): Boolean;
 var
   Shell, Shortcut: Variant;
@@ -290,6 +298,15 @@ begin
      not HasOwnedInstallMarker(InstallDirectory, '.unitypackage-explorer-install.json') and
      not HasOwnedInstallMarker(InstallDirectory, '.unitypackage-explorer-inno-install.json') then begin
     Result := 'インストール先に別のファイルがあります。内容を保護するため、既存のUnityPackage Explorerインストールと確認できないフォルダーへの上書きを中止しました。';
+    Exit;
+  end;
+
+  if not LegacyDirectoryCanBeRemoved(ExpandConstant('{pf}\UnityPackageExplorer')) then begin
+    Result := 'Program Files に当製品と確認できない UnityPackageExplorer フォルダーがあります。既存ファイルを保護するため、セットアップを中止しました。内容を確認して退避または削除してから再実行してください。';
+    Exit;
+  end;
+  if not LegacyDirectoryCanBeRemoved(ExpandConstant('{localappdata}\Programs\UnityPackageExplorer\Release')) then begin
+    Result := 'インストール先の Release フォルダーに当製品と確認できないファイルがあります。既存ファイルを保護するため、セットアップを中止しました。内容を確認して退避または削除してから再実行してください。';
     Exit;
   end;
 
@@ -437,15 +454,19 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   InstallDirectory, ApplicationPath, EscapedDirectory, MarkerPath, PowerShellPath, PreviewScript, PreviewParameters, DotNetInstaller: String;
+  LegacyDirectory: String;
   PreviewExitCode, ExitCode: Integer;
   MarkerText: AnsiString;
 begin
   if CurStep = ssInstall then begin
-    // Clean up legacy install locations that can block the new install.
-    if DirExists(ExpandConstant('{pf}\UnityPackageExplorer')) then
-      DelTree(ExpandConstant('{pf}\UnityPackageExplorer'), True, True, True);
-    if DirExists(ExpandConstant('{localappdata}\Programs\UnityPackageExplorer\Release')) then
-      DelTree(ExpandConstant('{localappdata}\Programs\UnityPackageExplorer\Release'), True, True, True);
+    // Remove legacy install locations only after re-verifying ownership. PrepareToInstall
+    // already stopped the setup when an unrecognized non-empty folder exists there.
+    LegacyDirectory := ExpandConstant('{pf}\UnityPackageExplorer');
+    if DirExists(LegacyDirectory) and LegacyDirectoryCanBeRemoved(LegacyDirectory) then
+      DelTree(LegacyDirectory, True, True, True);
+    LegacyDirectory := ExpandConstant('{localappdata}\Programs\UnityPackageExplorer\Release');
+    if DirExists(LegacyDirectory) and LegacyDirectoryCanBeRemoved(LegacyDirectory) then
+      DelTree(LegacyDirectory, True, True, True);
   end;
   if CurStep = ssPostInstall then begin
     InstallDirectory := ExpandConstant('{app}');
@@ -453,10 +474,17 @@ begin
     if WizardIsTaskSelected('contextmenu') then
       RegisterCurrentAssociationProgIdVerbs(ApplicationPath);
     PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
-    // Install .NET 10 Desktop Runtime (required for Explorer preview handler). Idempotent.
-    DotNetInstaller := ExpandConstant('{app}\dotnet-runtime-installer.exe');
-    if FileExists(DotNetInstaller) then
-      Exec(DotNetInstaller, '/quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ExitCode);
+    // Install the pinned .NET 10 Desktop Runtime required by the framework-dependent preview
+    // handler. The bundled installer is idempotent; 1638/3010 mean already present/reboot pending.
+    if WizardIsTaskSelected('explorerpreview') then begin
+      DotNetInstaller := ExpandConstant('{app}\dotnet-runtime-installer.exe');
+      if FileExists(DotNetInstaller) then begin
+        if not Exec(DotNetInstaller, '/install /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ExitCode) then
+          RaiseException('同梱の .NET 10 Desktop Runtime インストーラーを起動できませんでした。');
+        if (ExitCode <> 0) and (ExitCode <> 1638) and (ExitCode <> 3010) then
+          RaiseException('同梱の .NET 10 Desktop Runtime を導入できませんでした（終了コード ' + IntToStr(ExitCode) + '）。プレビュー欄を使うには .NET 10 Desktop Runtime (x64) をインストールしてからセットアップを再実行してください。');
+      end;
+    end;
     if WizardIsTaskSelected('explorerpreview') then begin
       PreviewScript := ExpandConstant('{app}\Tools\Register-ExplorerPreview.ps1');
       PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + InstallDirectory + #34;
@@ -476,13 +504,6 @@ begin
       if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) or (PreviewExitCode <> 0) then
         RaiseException('エクスプローラーのプレビュー欄の登録を復元できませんでした。');
     end;
-    if WizardIsTaskSelected('explorerpreview') then begin
-      // Machine-wide (HKLM) COM registration for the preview handler.
-      PreviewScript := ExpandConstant('{app}\Tools\PreviewMachineRegistration.ps1');
-      PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -Action Register -InstallDirectory ' + #34 + InstallDirectory + #34;
-      if not Exec(PowerShellPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, PreviewExitCode) or (PreviewExitCode <> 0) then
-        RaiseException('プレビュー ハンドラーのマシン登録に失敗しました。');
-    end;
     EscapedDirectory := InstallDirectory;
     StringChangeEx(EscapedDirectory, '\', '\\', True);
     MarkerPath := InstallDirectory + '\.unitypackage-explorer-inno-install.json';
@@ -490,14 +511,4 @@ begin
     if not SaveStringToFile(MarkerPath, MarkerText, False) then
       Log('Could not write the UnityPackage Explorer ownership marker: ' + MarkerPath);
   end;
-end;
-
-[Code]
-procedure CurPageChanged(CurPageID: Integer);
-var
-  i: Integer;
-begin
-  if CurPageID = wpSelectTasks then
-    for i := 0 to WizardForm.TasksList.Items.Count - 1 do
-      WizardForm.TasksList.Checked[i] := True;
 end;

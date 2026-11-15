@@ -329,7 +329,8 @@ function Get-RecordedProgIdVerbCount {
         $countValue = $state.GetValue('ProgIdVerbCount', $null)
         if ($null -eq $countValue) { return -1 }
         $count = [int]$countValue
-        if ($count -lt 0 -or $count -gt 3) { throw "Invalid recorded ProgID verb count: $count." }
+        # The setup records at most one ProgID per associated extension (.unitypackage, .prefab, .zip, .rar).
+        if ($count -lt 0 -or $count -gt 4) { throw "Invalid recorded ProgID verb count: $count." }
 
         for ($index = 0; $index -lt $count; $index++) {
             $progId = [string]$state.GetValue("ProgIdVerb${index}ProgId", '')
