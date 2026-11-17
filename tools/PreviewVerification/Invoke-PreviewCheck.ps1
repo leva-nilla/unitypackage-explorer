@@ -31,11 +31,14 @@ if (-not (Test-Path -LiteralPath $comhost -PathType Leaf)) {
 }
 
 function Get-RegisteredComhost {
-    $path = "Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\$clsid\InprocServer32"
-    if (-not (Test-Path -LiteralPath $path)) { return $null }
-    $value = (Get-Item -LiteralPath $path).GetValue('')
-    if (-not $value) { return $null }
-    return [IO.Path]::GetFullPath([string]$value)
+    # Per-user classes override machine classes, so check HKCU first like COM does.
+    foreach ($hive in @('HKEY_CURRENT_USER', 'HKEY_LOCAL_MACHINE')) {
+        $path = "Registry::${hive}\Software\Classes\CLSID\$clsid\InprocServer32"
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $value = (Get-Item -LiteralPath $path).GetValue('')
+        if ($value) { return [IO.Path]::GetFullPath([string]$value) }
+    }
+    return $null
 }
 
 $registered = Get-RegisteredComhost
