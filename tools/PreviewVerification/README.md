@@ -58,14 +58,15 @@ restores it after the run unless `-KeepRegistration` is passed.
 | Handler activates through the real surrogate | `CoCreateInstance` with `CLSCTX_LOCAL_SERVER` against the registered CLSID |
 | File and stream initialization both work | Runs once with `IInitializeWithFile`, once with `IInitializeWithStream` (disable with `-SkipStream`) |
 | Something actually rendered | PNG capture of the handler's child window with non-blank, colored, center-of-viewport pixel checks |
+| The render did not fail silently | New `prevhost.log` lines from the handler process are scanned; a logged load failure fails the run even when the error screen has colored pixels |
 | Preview does not hang Explorer on teardown | `Unload` is timed and must finish inside `--max-unload-ms` (default 5 s) |
 | The child window is really torn down | The captured HWND must be gone within 5 s of `Unload` |
 | Request scratch folders are cleaned up | Watches `%LOCALAPPDATA%\..\LocalLow\UnityPackageExplorer\PreviewRequests` during the run |
 | App temporary folders are cleaned up | `-IncludeApp` launches the app, closes it, and watches `%TEMP%\UnityPackageExplorer` |
 
-A pass means "the preview rendered content and shut down cleanly", not that the picture is
-correct. Look at the PNGs in the artifact folder for material, texture, and lighting
-judgement.
+A pass means "the preview rendered content, shut down cleanly, and the handler did not log
+a failure", not that the picture is correct. Look at the PNGs in the artifact folder for
+material, texture, and lighting judgement.
 
 ## Options
 
@@ -94,7 +95,7 @@ The low-level harness can be called directly:
 
 Its exit codes are `0` pass, `2` usage, `3` activation, `4` initialize or preview call,
 `5` unhandled exception, `6` no child window, `7` blank capture, `8` unload failed or too
-slow, and `9` the child window survived `Unload`.
+slow, `9` the child window survived `Unload`, and `10` the handler logged an error.
 
 ## Reading the metrics
 
@@ -108,8 +109,9 @@ slow, and `9` the child window survived `Unload`.
 
 ## Limitations
 
-- A broken package that the handler displays as an error message can still pass the pixel
-  thresholds. Use a valid sample for the render check, or inspect the PNG.
+- The handler-log check only sees failures the handler writes to `prevhost.log`. A package
+  the handler treats as valid but that has no previewable content shows a status screen;
+  the pixel checks catch that case.
 - The harness needs an interactive desktop; it is not part of CI.
 - The screen-copy fallback needs the verification window visible and unobstructed. Pass
   `--no-screen-capture` to the low-level harness if that is not acceptable.

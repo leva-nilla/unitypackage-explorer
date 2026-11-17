@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 
@@ -62,6 +63,7 @@ internal static class Program
         IPreviewHandler? preview = null;
         IStream? sourceStream = null;
         var unloaded = false;
+        var logStart = GetLogLength(ResolveLogPath());
         try
         {
             host.Show();
@@ -113,6 +115,16 @@ internal static class Program
             result.MeanLuminance = Math.Round(capture.Stats.MeanLuminance, 1);
             result.ChromaticRatio = Math.Round(capture.Stats.ChromaticRatio, 4);
             result.CenterNonUniformRatio = Math.Round(capture.Stats.CenterNonUniformRatio, 4);
+
+            // The handler answers failures with an error screen that still contains colored
+            // text, so pixels alone can pass. Its own log tells the difference.
+            var handlerPid = GetWindowProcessId(TryGetChildWindow(preview));
+            var logFailure = ReadHandlerFailure(ResolveLogPath(), logStart, handlerPid);
+            if (logFailure is not null)
+            {
+                result.HandlerLogError = logFailure;
+                return Fail(result, options, 10, $"The preview handler logged an error: {logFailure}");
+            }
 
             if (capture.Stats.NonUniformRatio < options.MinimumNonUniformRatio)
             {
@@ -381,6 +393,68 @@ internal static class Program
         }
     }
 
+    private static uint GetWindowProcessId(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return 0;
+        GetWindowThreadProcessId(hwnd, out var processId);
+        return processId;
+    }
+
+    private static string? ResolveLogPath()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "LocalLow", "UnityPackageExplorer", "logs", "prevhost.log"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UnityPackageExplorer", "logs", "prevhost.log")
+        };
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    private static long GetLogLength(string? path)
+    {
+        if (path is null) return 0;
+        try { return new FileInfo(path).Length; }
+        catch (IOException) { return 0; }
+        catch (UnauthorizedAccessException) { return 0; }
+    }
+
+    /// <summary>
+    /// Returns the first new error line that the handler process wrote after the run
+    /// started, so a rendered error screen cannot be mistaken for a successful preview.
+    /// </summary>
+    private static string? ReadHandlerFailure(string? path, long startOffset, uint processId)
+    {
+        if (path is null) return null;
+        try
+        {
+            var length = new FileInfo(path).Length;
+            var from = length < startOffset ? 0 : startOffset;
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            stream.Seek(from, SeekOrigin.Begin);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var text = reader.ReadToEnd();
+            var pidMarker = processId == 0 ? null : $"[pid {processId}]";
+            foreach (var rawLine in text.Split('\n'))
+            {
+                if (pidMarker is not null && !rawLine.Contains(pidMarker, StringComparison.Ordinal)) continue;
+                var line = rawLine.Trim();
+                if (line.Contains(" failed", StringComparison.OrdinalIgnoreCase)
+                    || line.Contains("exception", StringComparison.OrdinalIgnoreCase)
+                    || line.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+                {
+                    return line;
+                }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return null;
+    }
+
     private static bool WaitForWindowClose(IntPtr hwnd, TimeSpan timeout)
     {
         var deadline = Stopwatch.StartNew();
@@ -427,6 +501,9 @@ internal static class Program
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindowVisible(IntPtr hwnd);
 
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
     private sealed record CaptureStats(double NonUniformRatio, double BlackRatio, int DistinctColors, double MeanLuminance, double ChromaticRatio, double CenterNonUniformRatio);
 
     private sealed class CaptureAttempt(Bitmap image, CaptureStats stats, string method, int width, int height, IntPtr childWindow) : IDisposable
@@ -460,6 +537,7 @@ internal static class Program
         public double MeanLuminance { get; set; }
         public double ChromaticRatio { get; set; }
         public double CenterNonUniformRatio { get; set; }
+        public string? HandlerLogError { get; set; }
         public long UnloadMilliseconds { get; set; }
         public long UnloadLimitMilliseconds { get; set; }
         public bool ChildWindowClosed { get; set; }
@@ -478,14 +556,15 @@ internal static class Program
               --min-nonuniform <0-1>   fail when the capture is flatter than this ratio (default 0.005)
               --min-chromatic <0-1>    fail when the capture has fewer colored pixels than this ratio (default 0.02)
               --min-center-nonuniform <0-1>
-                                       fail when the center of the preview looks empty (default 0)
+                                       fail when the center of the preview looks empty (default 0.01)
               --max-unload-ms <n>      fail when Unload takes longer than this (default 5000)
               --width <n> --height <n> host window size (default 900x600)
               --no-screen-capture      never fall back to copying pixels from the screen
               --help                   show this text
 
             Exit codes: 0 pass, 2 usage, 3 activation, 4 initialize/preview, 5 exception,
-            6 no child window, 7 blank capture, 8 unload failed or too slow, 9 window survived Unload.
+            6 no child window, 7 blank capture, 8 unload failed or too slow, 9 window survived Unload,
+            10 the handler logged an error.
             """;
 
         public string FilePath { get; private init; } = string.Empty;
@@ -495,7 +574,7 @@ internal static class Program
         public int SettleMilliseconds { get; private init; } = 25_000;
         public double MinimumNonUniformRatio { get; private init; } = 0.005;
         public double MinimumChromaticRatio { get; private init; } = 0.02;
-        public double MinimumCenterNonUniformRatio { get; private init; }
+        public double MinimumCenterNonUniformRatio { get; private init; } = 0.01;
         public int MaxUnloadMilliseconds { get; private init; } = 5_000;
         public int Width { get; private init; } = 900;
         public int Height { get; private init; } = 600;
@@ -512,7 +591,7 @@ internal static class Program
             var settle = 25_000;
             var minimumNonUniform = 0.005;
             var minimumChromatic = 0.02;
-            var minimumCenterNonUniform = 0.0;
+            var minimumCenterNonUniform = 0.01;
             var maxUnload = 5_000;
             var width = 900;
             var height = 600;
