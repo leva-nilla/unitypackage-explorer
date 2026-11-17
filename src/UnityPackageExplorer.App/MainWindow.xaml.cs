@@ -765,165 +765,167 @@ public partial class MainWindow : Window
             StageSiblingImages(catalog, temp, guid, packageMemberPath, referenceEntry, modelEntry, cancellationToken);
             var materialBindings = new List<MaterialBinding>();
             var warnings = new List<string>();
-            foreach (var material in materials)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (material.Guid is null)
-                {
-                    if (material.FileId != 0) warnings.Add($"Material fileID {material.FileId} has no GUID and cannot be resolved.");
-                    continue;
-                }
-
-                var materialPath = catalog.ResolvePath(material.Guid, packageMemberPath, referenceEntry);
-                if (materialPath is null)
-                {
-                    warnings.Add($"Material GUID {material.Guid} was not found.");
-                    continue;
-                }
-                UnityMaterialInfo? materialInfo;
-                if (materialInfoCache is not null && materialInfoCache.TryGetValue(material.Guid, out var cachedMaterialInfo))
-                {
-                    materialInfo = cachedMaterialInfo;
-                }
-                else
-                {
-                    materialInfo = catalog.ReadMaterialInfo(material.Guid, cancellationToken, packageMemberPath, referenceEntry);
-                    materialInfoCache?.Add(material.Guid, materialInfo);
-                }
-                if (materialInfo is null)
-                {
-                    warnings.Add($"Material data is missing: {materialPath}");
-                    continue;
-                }
-
-                var materialName = materialInfo.Name ?? Path.GetFileNameWithoutExtension(materialPath);
-                var lilToonTexturePaths = new Dictionary<string, string>(StringComparer.Ordinal);
-                foreach (var feature in materialInfo.LilToon is null ? materialInfo.EnabledUnsupportedFeatures : [])
-                    warnings.Add($"Material '{materialName}' enables {feature}, which is not included in the simplified material preview.");
-                if (materialInfo.LilToon is null && materialInfo.RenderMode == UnityMaterialRenderMode.Cutout)
-                    warnings.Add(materialInfo.Cutoff is null
-                        ? $"Material '{materialName}' uses alpha cutout but has no readable cutoff; the texture alpha is not masked."
-                        : $"Material '{materialName}' uses alpha cutout. It is shown with a binary texture-alpha approximation; depth and sorting may differ from Unity.");
-                foreach (var textureGuid in materialInfo.LilToon is null ? materialInfo.UnsupportedTextureGuids : [])
-                {
-                    var unsupportedPath = catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
-                    warnings.Add(unsupportedPath is null
-                        ? $"Texture GUID {textureGuid} referenced by material '{materialName}' was not found."
-                        : $"Texture {unsupportedPath} is referenced by a material slot that this simplified viewer does not render.");
-                }
-                var bindingCountBeforeMaterial = materialBindings.Count;
-                foreach (var textureReference in materialInfo.SupportedTextures)
-                {
-                    var textureGuid = textureReference.Guid;
-                    var textureSourcePath = catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
-                    if (textureSourcePath is null)
-                    {
-                        warnings.Add($"Texture GUID {textureGuid} referenced by material '{materialName}' was not found.");
-                        continue;
-                    }
-
-                    var textureExtension = Path.GetExtension(textureSourcePath);
-                    if (textureExtension.Equals(".psd", StringComparison.OrdinalIgnoreCase)
-                        || !new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".tga" }.Contains(textureExtension, StringComparer.OrdinalIgnoreCase))
-                    {
-                        warnings.Add($"Texture format is not supported for 3D display: {textureSourcePath}");
-                        continue;
-                    }
-
-                    var texturePath = catalog.StageImage(textureGuid, temp, cancellationToken, packageMemberPath, referenceEntry);
-                    if (texturePath is null)
-                    {
-                        warnings.Add($"Texture data is missing: {textureSourcePath}");
-                        continue;
-                    }
-                    if (textureExtension.Equals(".tga", StringComparison.OrdinalIgnoreCase))
-                        texturePath = ConvertTgaToPng(texturePath);
-                    materialBindings.Add(new MaterialBinding(
-                        material.Guid,
-                        materialName,
-                        Path.GetFileNameWithoutExtension(textureSourcePath),
-                        textureReference.Slot,
-                        texturePath,
-                        materialInfo.Color,
-                        materialInfo.RenderMode,
-                        materialInfo.Cutoff)
-                    {
-                        LilToon = materialInfo.LilToon,
-                        LilToonTexturePaths = lilToonTexturePaths
-                    });
-                }
-                if (materialBindings.Count == bindingCountBeforeMaterial)
-                    materialBindings.Add(new MaterialBinding(material.Guid, materialName, string.Empty, string.Empty, null, materialInfo.Color, materialInfo.RenderMode, materialInfo.Cutoff)
-                    {
-                        LilToon = materialInfo.LilToon,
-                        LilToonTexturePaths = lilToonTexturePaths
-                    });
-                if (materialInfo.RenderMode == UnityMaterialRenderMode.Unknown && materialInfo.Color is { A: < 1f })
-                    warnings.Add($"Material '{materialName}' has alpha color but no explicit transparent mode; it remains opaque in this preview.");
-                else if (materialInfo.RenderMode == UnityMaterialRenderMode.Unknown && materialInfo.IsLilToonShaderAsset)
-                    warnings.Add($"Material '{materialName}' uses an unrecognized lilToon shader variant; its render mode is left opaque in this simplified preview.");
-            }
-
-            foreach (var materialOverride in materialOverrides ?? [])
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var target = $"target renderer fileID {materialOverride.TargetFileId}, material slot {materialOverride.MaterialSlot}";
-                if (materialOverride.Material.Guid is not { } overrideGuid)
-                {
-                    warnings.Add($"Nested Prefab override for {target} has no material GUID; it was not applied to the FBX.");
-                    continue;
-                }
-
-                var overridePath = catalog.ResolvePath(overrideGuid, packageMemberPath, referenceEntry);
-                if (overridePath is null)
-                {
-                    warnings.Add($"Nested Prefab override for {target} references missing material GUID {overrideGuid}; it was not applied to the FBX.");
-                    continue;
-                }
-
-                UnityMaterialInfo? overrideInfo;
-                if (materialInfoCache is not null && materialInfoCache.TryGetValue(overrideGuid, out var cachedOverrideInfo))
-                {
-                    overrideInfo = cachedOverrideInfo;
-                }
-                else
-                {
-                    overrideInfo = catalog.ReadMaterialInfo(overrideGuid, cancellationToken, packageMemberPath, referenceEntry);
-                    materialInfoCache?.Add(overrideGuid, overrideInfo);
-                }
-
-                if (overrideInfo is null)
-                {
-                    warnings.Add($"Nested Prefab override for {target} could not read material {overridePath}; it was not applied to the FBX.");
-                    continue;
-                }
-
-                var overrideName = overrideInfo.Name ?? Path.GetFileNameWithoutExtension(overridePath);
-                var resolvedOverrideTextures = overrideInfo.SupportedTextures
-                    .Select(texture => (texture.Guid, Path: catalog.ResolvePath(texture.Guid, packageMemberPath, referenceEntry)))
-                    .ToArray();
-                var texturePaths = resolvedOverrideTextures
-                    .Where(texture => texture.Path is not null)
-                    .Select(texture => texture.Path!)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToArray();
-                var textureDescription = texturePaths.Length > 0
-                    ? $"resolved texture(s) {string.Join(", ", texturePaths)}"
-                    : overrideInfo.SupportedTextures.Count > 0
-                        ? $"supported texture reference(s) could not be resolved: {string.Join(", ", resolvedOverrideTextures.Select(x => x.Guid))}"
-                        : overrideInfo.UnsupportedTextureGuids.Count > 0
-                            ? $"unsupported texture slot reference(s): {string.Join(", ", overrideInfo.UnsupportedTextureGuids)}"
-                            : "no supported texture reference";
-                warnings.Add($"Nested Prefab override for {target} references material '{overrideName}' ({textureDescription}); it was not applied because the FBX submesh could not be identified safely.");
-            }
-
             var scene = LightweightPreviewLoader.ImportModel(modelPath, transform, cancellationToken);
-            if (scene is null) throw new InvalidDataException("FBX を読み込めませんでした。");
             try
             {
+                var remaps = LightweightPreviewLoader.ReadMaterialRemaps(
+                    catalog, modelEntry ?? catalog.FindByGuid(guid, packageMemberPath, referenceEntry), warnings, cancellationToken);
+                var effectiveMaterials = LightweightPreviewLoader.IncludeRemappedMaterials(materials, scene.Root, remaps);
+                foreach (var material in effectiveMaterials)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (material.Guid is null)
+                    {
+                        if (material.FileId != 0) warnings.Add($"Material fileID {material.FileId} has no GUID and cannot be resolved.");
+                        continue;
+                    }
+
+                    var materialPath = catalog.ResolvePath(material.Guid, packageMemberPath, referenceEntry);
+                    if (materialPath is null)
+                    {
+                        warnings.Add($"Material GUID {material.Guid} was not found.");
+                        continue;
+                    }
+                    UnityMaterialInfo? materialInfo;
+                    if (materialInfoCache is not null && materialInfoCache.TryGetValue(material.Guid, out var cachedMaterialInfo))
+                    {
+                        materialInfo = cachedMaterialInfo;
+                    }
+                    else
+                    {
+                        materialInfo = catalog.ReadMaterialInfo(material.Guid, cancellationToken, packageMemberPath, referenceEntry);
+                        materialInfoCache?.Add(material.Guid, materialInfo);
+                    }
+                    if (materialInfo is null)
+                    {
+                        warnings.Add($"Material data is missing: {materialPath}");
+                        continue;
+                    }
+
+                    var materialName = materialInfo.Name ?? Path.GetFileNameWithoutExtension(materialPath);
+                    var lilToonTexturePaths = new Dictionary<string, string>(StringComparer.Ordinal);
+                    foreach (var feature in materialInfo.LilToon is null ? materialInfo.EnabledUnsupportedFeatures : [])
+                        warnings.Add($"Material '{materialName}' enables {feature}, which is not included in the simplified material preview.");
+                    if (materialInfo.LilToon is null && materialInfo.RenderMode == UnityMaterialRenderMode.Cutout)
+                        warnings.Add(materialInfo.Cutoff is null
+                            ? $"Material '{materialName}' uses alpha cutout but has no readable cutoff; the texture alpha is not masked."
+                            : $"Material '{materialName}' uses alpha cutout. It is shown with a binary texture-alpha approximation; depth and sorting may differ from Unity.");
+                    foreach (var textureGuid in materialInfo.LilToon is null ? materialInfo.UnsupportedTextureGuids : [])
+                    {
+                        var unsupportedPath = catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
+                        warnings.Add(unsupportedPath is null
+                            ? $"Texture GUID {textureGuid} referenced by material '{materialName}' was not found."
+                            : $"Texture {unsupportedPath} is referenced by a material slot that this simplified viewer does not render.");
+                    }
+                    var bindingCountBeforeMaterial = materialBindings.Count;
+                    foreach (var textureReference in materialInfo.SupportedTextures)
+                    {
+                        var textureGuid = textureReference.Guid;
+                        var textureSourcePath = catalog.ResolvePath(textureGuid, packageMemberPath, referenceEntry);
+                        if (textureSourcePath is null)
+                        {
+                            warnings.Add($"Texture GUID {textureGuid} referenced by material '{materialName}' was not found.");
+                            continue;
+                        }
+
+                        var textureExtension = Path.GetExtension(textureSourcePath);
+                        if (textureExtension.Equals(".psd", StringComparison.OrdinalIgnoreCase)
+                            || !new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".tga" }.Contains(textureExtension, StringComparer.OrdinalIgnoreCase))
+                        {
+                            warnings.Add($"Texture format is not supported for 3D display: {textureSourcePath}");
+                            continue;
+                        }
+
+                        var texturePath = catalog.StageImage(textureGuid, temp, cancellationToken, packageMemberPath, referenceEntry);
+                        if (texturePath is null)
+                        {
+                            warnings.Add($"Texture data is missing: {textureSourcePath}");
+                            continue;
+                        }
+                        if (textureExtension.Equals(".tga", StringComparison.OrdinalIgnoreCase))
+                            texturePath = ConvertTgaToPng(texturePath);
+                        materialBindings.Add(new MaterialBinding(
+                            material.Guid,
+                            materialName,
+                            Path.GetFileNameWithoutExtension(textureSourcePath),
+                            textureReference.Slot,
+                            texturePath,
+                            materialInfo.Color,
+                            materialInfo.RenderMode,
+                            materialInfo.Cutoff)
+                        {
+                            LilToon = materialInfo.LilToon,
+                            LilToonTexturePaths = lilToonTexturePaths
+                        });
+                    }
+                    if (materialBindings.Count == bindingCountBeforeMaterial)
+                        materialBindings.Add(new MaterialBinding(material.Guid, materialName, string.Empty, string.Empty, null, materialInfo.Color, materialInfo.RenderMode, materialInfo.Cutoff)
+                        {
+                            LilToon = materialInfo.LilToon,
+                            LilToonTexturePaths = lilToonTexturePaths
+                        });
+                    if (materialInfo.RenderMode == UnityMaterialRenderMode.Unknown && materialInfo.Color is { A: < 1f })
+                        warnings.Add($"Material '{materialName}' has alpha color but no explicit transparent mode; it remains opaque in this preview.");
+                    else if (materialInfo.RenderMode == UnityMaterialRenderMode.Unknown && materialInfo.IsLilToonShaderAsset)
+                        warnings.Add($"Material '{materialName}' uses an unrecognized lilToon shader variant; its render mode is left opaque in this simplified preview.");
+                }
+
+                foreach (var materialOverride in materialOverrides ?? [])
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var target = $"target renderer fileID {materialOverride.TargetFileId}, material slot {materialOverride.MaterialSlot}";
+                    if (materialOverride.Material.Guid is not { } overrideGuid)
+                    {
+                        warnings.Add($"Nested Prefab override for {target} has no material GUID; it was not applied to the FBX.");
+                        continue;
+                    }
+
+                    var overridePath = catalog.ResolvePath(overrideGuid, packageMemberPath, referenceEntry);
+                    if (overridePath is null)
+                    {
+                        warnings.Add($"Nested Prefab override for {target} references missing material GUID {overrideGuid}; it was not applied to the FBX.");
+                        continue;
+                    }
+
+                    UnityMaterialInfo? overrideInfo;
+                    if (materialInfoCache is not null && materialInfoCache.TryGetValue(overrideGuid, out var cachedOverrideInfo))
+                    {
+                        overrideInfo = cachedOverrideInfo;
+                    }
+                    else
+                    {
+                        overrideInfo = catalog.ReadMaterialInfo(overrideGuid, cancellationToken, packageMemberPath, referenceEntry);
+                        materialInfoCache?.Add(overrideGuid, overrideInfo);
+                    }
+
+                    if (overrideInfo is null)
+                    {
+                        warnings.Add($"Nested Prefab override for {target} could not read material {overridePath}; it was not applied to the FBX.");
+                        continue;
+                    }
+
+                    var overrideName = overrideInfo.Name ?? Path.GetFileNameWithoutExtension(overridePath);
+                    var resolvedOverrideTextures = overrideInfo.SupportedTextures
+                        .Select(texture => (texture.Guid, Path: catalog.ResolvePath(texture.Guid, packageMemberPath, referenceEntry)))
+                        .ToArray();
+                    var texturePaths = resolvedOverrideTextures
+                        .Where(texture => texture.Path is not null)
+                        .Select(texture => texture.Path!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    var textureDescription = texturePaths.Length > 0
+                        ? $"resolved texture(s) {string.Join(", ", texturePaths)}"
+                        : overrideInfo.SupportedTextures.Count > 0
+                            ? $"supported texture reference(s) could not be resolved: {string.Join(", ", resolvedOverrideTextures.Select(x => x.Guid))}"
+                            : overrideInfo.UnsupportedTextureGuids.Count > 0
+                                ? $"unsupported texture slot reference(s): {string.Join(", ", overrideInfo.UnsupportedTextureGuids)}"
+                                : "no supported texture reference";
+                    warnings.Add($"Nested Prefab override for {target} references material '{overrideName}' ({textureDescription}); it was not applied because the FBX submesh could not be identified safely.");
+                }
+
                 cancellationToken.ThrowIfCancellationRequested();
                 var exportBindings = new Dictionary<HelixToolkit.SharpDX.Model.Scene.MeshNode, MaterialBinding>();
-                warnings.AddRange(ApplyUnityMaterials(scene.Root, materialBindings, materials, rendererAssignments ?? [], isPrefabPreview, exportBindings, materialOverrides?.Count > 0, cancellationToken, alphaTextureCache));
+                warnings.AddRange(ApplyUnityMaterials(scene.Root, materialBindings, effectiveMaterials, rendererAssignments ?? [], isPrefabPreview, exportBindings, materialOverrides?.Count > 0, cancellationToken, alphaTextureCache, remaps));
                 var capturedBindings = new Dictionary<HelixToolkit.SharpDX.Model.Scene.MeshNode, MaterialBinding>(exportBindings);
                 var hasLilToonMaterial = capturedBindings.Values.Any(x => x.LilToon is not null);
                 Func<CancellationToken, LilToonScenePreparation>? prepareLilToon = capturedBindings.Count == 0 ? null
@@ -1038,7 +1040,8 @@ public partial class MainWindow : Window
         IDictionary<HelixToolkit.SharpDX.Model.Scene.MeshNode, MaterialBinding> exportBindings,
         bool hasUnappliedMaterialOverrides = false,
         CancellationToken cancellationToken = default,
-        IDictionary<string, string>? alphaTextureCache = null)
+        IDictionary<string, string>? alphaTextureCache = null,
+        IReadOnlyDictionary<string, UnityAssetReference>? materialRemaps = null)
     {
         exportBindings.Clear();
         var warnings = new List<string>();
@@ -1055,7 +1058,7 @@ public partial class MainWindow : Window
             (path, binding, cache, outputWarnings, token) => PrepareTextureAlphaForPreview(
                 path,
                 new MaterialBinding(binding.MaterialGuid, binding.MaterialName, binding.TextureName, binding.Slot, binding.AssetPath, binding.Color, binding.RenderMode, binding.Cutoff),
-                cache, outputWarnings, token), warnings);
+                cache, outputWarnings, token), warnings, materialRemaps);
         foreach (var pair in sharedExportBindings)
         {
             var binding = materialBindings.First(candidate => candidate.MaterialGuid.Equals(pair.Value.MaterialGuid, StringComparison.OrdinalIgnoreCase));
