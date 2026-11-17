@@ -53,16 +53,7 @@ internal static class PreviewLog
     /// <summary>Environment summary written once per process on the first log call.</summary>
     public static string EnvironmentSummary()
     {
-        var integrity = "unknown";
-        try
-        {
-            using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
-            integrity = identity.Owner?.ToString() ?? "unknown";
-        }
-        catch (Exception) { }
-
-        return $"env baseDir={AppContext.BaseDirectory} asm={typeof(PreviewLog).Assembly.Location} "
-            + $"owner={integrity} isElevated={Environment.IsPrivilegedProcess}";
+        return $"env baseDir={AppContext.BaseDirectory} asm={typeof(PreviewLog).Assembly.Location} isElevated={Environment.IsPrivilegedProcess}";
     }
 
     private static string? ResolvePath()

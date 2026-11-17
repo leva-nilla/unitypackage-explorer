@@ -67,6 +67,28 @@ public sealed class UnityPrefabParserTests
     }
 
     [Fact]
+    public void IgnoresFileIdsThatOverflowInt64()
+    {
+        const string yaml = """
+            %YAML 1.1
+            %TAG !u! tag:unity3d.com,2011:
+            --- !u!1 &99999999999999999999999999
+            GameObject:
+              m_Name: Overflow
+              m_Component:
+              - component: {fileID: 99999999999999999999999998}
+            --- !u!4 &4
+            Transform:
+              m_GameObject: {fileID: 99999999999999999999999997}
+              m_Father: {fileID: 0}
+            """;
+
+        var result = UnityPrefabParser.Parse(yaml);
+
+        Assert.Empty(result.Roots);
+    }
+
+    [Fact]
     public void ReportsEmptyOrUnrecognizedSerializedPrefab()
     {
         var result = UnityPrefabParser.Parse("not a Unity prefab");

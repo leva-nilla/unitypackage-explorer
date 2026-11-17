@@ -1,4 +1,5 @@
 using System.Text;
+using SharpCompress.Common;
 using System.Text.RegularExpressions;
 using System.Globalization;
 
@@ -141,7 +142,7 @@ public sealed class UnityAssetCatalog : IDisposable
                         AssetPathName = item.PathName
                     }));
                 }
-                catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException)
+                catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException or SharpCompressException)
                 {
                     reader.Dispose();
                     warnings.Add($"{packageMemberPath}: 読み込めませんでした ({exception.Message})");
@@ -169,7 +170,7 @@ public sealed class UnityAssetCatalog : IDisposable
                 if (memberNames.Contains(metaName))
                 {
                     try { guid = UnityPackageReader.ReadGuid(Encoding.UTF8.GetString(archive.ReadMember(metaName, MaximumMetaBytes, cancellationToken))); }
-                    catch (Exception exception) when (exception is IOException or InvalidDataException)
+                    catch (Exception exception) when (exception is IOException or InvalidDataException or SharpCompressException)
                     {
                         warnings.Add($"{metaName}: GUID metadata was ignored ({exception.Message})");
                     }

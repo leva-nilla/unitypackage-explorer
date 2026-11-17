@@ -3,7 +3,7 @@
 Build this Windows native console program with the Visual C++ toolchain:
 
 ```powershell
-cl /EHsc /std:c++17 PreviewHandlerSmokeTest.cpp ole32.lib shell32.lib user32.lib
+cl /EHsc /std:c++17 PreviewHandlerSmokeTest.cpp ole32.lib oleaut32.lib shell32.lib shlwapi.lib user32.lib
 ```
 
 Run it after the test package has registered the current user's preview handler:

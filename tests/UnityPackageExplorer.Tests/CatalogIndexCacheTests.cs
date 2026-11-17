@@ -41,7 +41,7 @@ public sealed class CatalogIndexCacheTests
                 CatalogIndexCache.Version,
                 members.Select(x => new CatalogCacheMember(x.FullName, x.Length)).ToArray(),
                 [],
-                [new CatalogCacheEntry("guid", "sample.unitypackage/asset", true, false)]));
+                [new CatalogCacheEntry("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sample.unitypackage/asset", true, false)]));
 
             Assert.NotNull(cache.TryLoad(members));
             var changed = members.Select(x => new UnityArchiveMember(x.FullName, x.Length + 1, x.CompressedLength)).ToArray();
@@ -63,7 +63,7 @@ public sealed class CatalogIndexCacheTests
             File.WriteAllText(file, "hello world");
             var cache = new CatalogIndexCache(file, root);
             cache.Store(new CatalogCachePayload(
-                CatalogIndexCache.Version, [], [], [new CatalogCacheEntry("guid", "asset", true, false)]));
+                CatalogIndexCache.Version, [], [], [new CatalogCacheEntry("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "asset", true, false)]));
             Assert.NotNull(cache.TryLoadPackage());
 
             File.AppendAllText(file, "!");
@@ -138,20 +138,38 @@ public sealed class CatalogIndexCacheTests
             }
 
             var catalog = UnityAssetCatalog.OpenZip(zipPath, default, cached ? cache : null, unavailableSpillDirectory);
-            if (cached)
-            {
-                var entry = Assert.Single(catalog.Entries);
-                Assert.Equal("payload", Encoding.UTF8.GetString(catalog.ReadAsset(entry)!));
-                Assert.Throws<DirectoryNotFoundException>(() => catalog.ReadAsset(entry));
-            }
-            else
-            {
-                Assert.Contains(catalog.Warnings, warning => warning.Contains(unavailableSpillDirectory, StringComparison.OrdinalIgnoreCase));
-            }
+            var entry = Assert.Single(catalog.Entries);
+            Assert.Equal("payload", Encoding.UTF8.GetString(catalog.ReadAsset(entry)!));
+            Assert.Equal("payload", Encoding.UTF8.GetString(catalog.ReadAsset(entry)!));
         }
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void MalformedCachePayloadIsIgnored()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var file = Path.Combine(root, "package.unitypackage");
+            File.WriteAllText(file, "hello world");
+            var cache = new CatalogIndexCache(file, root);
+            cache.Store(new CatalogCachePayload(
+                CatalogIndexCache.Version, [], [], [new CatalogCacheEntry("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "asset", true, false)]));
+            var cacheFile = Assert.Single(Directory.GetFiles(root, "*.json"));
+
+            File.WriteAllText(cacheFile, """{"Version":1,"Members":null,"Packages":[],"LooseMembers":[]}""");
+            Assert.Null(new CatalogIndexCache(file, root).TryLoadPackage());
+
+            File.WriteAllText(cacheFile, """{"Version":1,"Members":[],"Packages":[],"LooseMembers":[{"Guid":"not-a-guid","PathName":"asset","HasAsset":true,"HasMeta":false}]}""");
+            Assert.Null(new CatalogIndexCache(file, root).TryLoadPackage());
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
     }
 

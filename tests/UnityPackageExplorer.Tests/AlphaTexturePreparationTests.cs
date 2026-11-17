@@ -1,6 +1,6 @@
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using UnityPackageExplorer.App;
+using UnityPackageExplorer.Rendering;
 
 namespace UnityPackageExplorer.Tests;
 

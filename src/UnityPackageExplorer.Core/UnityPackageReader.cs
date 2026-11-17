@@ -144,7 +144,7 @@ public sealed class UnityPackageReader : IDisposable
                 throw new InvalidDataException($"UnityPackage contains more than {_maximumEntryCount:N0} entries.");
             var archiveName = entry.Name.Replace('\\', '/').TrimEnd('/');
             var pieces = archiveName.Split('/', 2);
-            if (pieces.Length == 2 && IsGuid(pieces[0]))
+            if (pieces.Length == 2 && IsGuid(pieces[0]) && IsRegularFile(entry))
             {
                 if (!records.TryGetValue(pieces[0], out var record))
                 {
@@ -214,7 +214,8 @@ public sealed class UnityPackageReader : IDisposable
         while ((entry = reader.GetNextEntry(copyData: false)) is not null)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (string.Equals(entry.Name.Replace('\\', '/').TrimEnd('/'), target, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(entry.Name.Replace('\\', '/').TrimEnd('/'), target, StringComparison.OrdinalIgnoreCase)
+                && IsRegularFile(entry))
             {
                 if (entry.DataStream is null) return [];
                 if (entry.Length > maximumBytes) throw new InvalidDataException($"Asset exceeds the {maximumBytes:N0} byte safety limit.");
@@ -283,7 +284,7 @@ public sealed class UnityPackageReader : IDisposable
                         "asset.meta" => relative + ".meta",
                         _ => null
                     };
-                    if (outputRelative is not null && entry.DataStream is not null)
+                    if (outputRelative is not null && entry.DataStream is not null && IsRegularFile(entry))
                     {
                         if (entry.Length > MaximumAssetBytes) throw new InvalidDataException("Archive asset exceeds the extraction size limit.");
                         var target = Path.GetFullPath(Path.Combine(stagingPath, outputRelative));
@@ -345,12 +346,21 @@ public sealed class UnityPackageReader : IDisposable
             throw new InvalidDataException($"Rooted asset paths are not allowed: {unityPath}");
 
         var parts = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0 || parts.Any(x => x is "." or ".." || x.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0))
-            throw new InvalidDataException($"Unsafe asset path: {unityPath}");
+        if (parts.Length == 0) throw new InvalidDataException($"Unsafe asset path: {unityPath}");
 
-        foreach (var part in parts)
+        // Collapse the Windows-specific aliases (trailing dots/spaces) so two archive paths
+        // that would land on the same file cannot silently overwrite each other on extraction.
+        var safeParts = new string[parts.Length];
+        for (var i = 0; i < parts.Length; i++)
         {
-            var fileName = Path.GetFileName(part).TrimEnd(' ', '.');
+            var part = parts[i];
+            if (part is "." or ".." || part.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                throw new InvalidDataException($"Unsafe asset path: {unityPath}");
+            var trimmed = part.TrimEnd(' ', '.');
+            if (trimmed.Length == 0) throw new InvalidDataException($"Unsafe asset path: {unityPath}");
+            safeParts[i] = trimmed;
+
+            var fileName = Path.GetFileName(trimmed);
             var firstDot = fileName.IndexOf('.');
             var stem = (firstDot >= 0 ? fileName[..firstDot] : fileName).TrimEnd(' ', '.');
             if (stem.Equals("CON", StringComparison.OrdinalIgnoreCase)
@@ -363,8 +373,12 @@ public sealed class UnityPackageReader : IDisposable
                 throw new InvalidDataException($"Reserved Windows path segment: {part}");
         }
 
-        return Path.Combine(parts);
+        return Path.Combine(safeParts);
     }
+
+    /// <summary>True for TAR entries that carry file content; links and devices are ignored.</summary>
+    private static bool IsRegularFile(TarEntry entry) =>
+        entry.EntryType is TarEntryType.RegularFile or TarEntryType.V7RegularFile or TarEntryType.ContiguousFile;
 
     public static string? ReadGuid(string? metaText)
     {
@@ -389,7 +403,7 @@ public sealed class UnityPackageReader : IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             if (++count > _maximumEntryCount)
                 throw new InvalidDataException($"UnityPackage contains more than {_maximumEntryCount:N0} entries.");
-            if (entry.EntryType is not TarEntryType.RegularFile) continue;
+            if (!IsRegularFile(entry)) continue;
             if (entry.DataOffset < 0) continue;
             index.TryAdd(entry.Name.Replace('\\', '/').TrimEnd('/'), new CachedTarEntry(entry.DataOffset, entry.Length));
         }
@@ -420,8 +434,8 @@ public sealed class UnityPackageReader : IDisposable
         var file = _openStream();
         Stream? expanded = null;
         var memory = new MemoryStream();
-        string? spillPath = null;
         FileStream? spill = null;
+        var spillUnavailable = false;
         try
         {
             expanded = BuildExpandedArchiveStream(file, expansionBudget);
@@ -433,17 +447,25 @@ public sealed class UnityPackageReader : IDisposable
                 read = expanded.Read(buffer, 0, buffer.Length);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (read == 0) break;
-                if (spill is null && memory.Length + read > _expandedCacheMaximumBytes)
+                if (spill is null && !spillUnavailable && memory.Length + read > _expandedCacheMaximumBytes)
                 {
                     // Beyond the memory budget, spill the rest to a temp file instead of
                     // disabling the cache: indexed seeks against the file stay fast for any
                     // package size without holding gigabytes of managed memory.
-                    spillPath = Path.Combine(_expandedCacheSpillDirectory ?? Path.GetTempPath(), $"unitypackage-explorer-expanded-{Guid.NewGuid():N}.tar");
-                    spill = new FileStream(spillPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read | FileShare.Delete, 1024 * 1024, FileOptions.DeleteOnClose | FileOptions.RandomAccess);
-                    memory.Position = 0;
-                    memory.CopyTo(spill);
-                    memory.Dispose();
-                    memory = null!;
+                    spill = TryCreateSpillFile();
+                    if (spill is null)
+                    {
+                        // Temp storage is unavailable. Keep buffering in memory so the package
+                        // still opens; the caller gets a working read at the cost of more RAM.
+                        spillUnavailable = true;
+                    }
+                    else
+                    {
+                        memory.Position = 0;
+                        memory.CopyTo(spill);
+                        memory.Dispose();
+                        memory = null!;
+                    }
                 }
                 if (spill is not null) spill.Write(buffer, 0, read);
                 else memory.Write(buffer, 0, read);
@@ -468,8 +490,13 @@ public sealed class UnityPackageReader : IDisposable
             if (Interlocked.Add(ref _totalExpandedCacheBytes, cachedBuffer.Length) > TotalExpandedCacheMaximumBytes)
             {
                 Interlocked.Add(ref _totalExpandedCacheBytes, -cachedBuffer.Length);
-                spillPath = Path.Combine(_expandedCacheSpillDirectory ?? Path.GetTempPath(), $"unitypackage-explorer-expanded-{Guid.NewGuid():N}.tar");
-                spill = new FileStream(spillPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read | FileShare.Delete, 1024 * 1024, FileOptions.DeleteOnClose | FileOptions.RandomAccess);
+                spill = spillUnavailable ? null : TryCreateSpillFile();
+                if (spill is null)
+                {
+                    // Both cache budgets require disk and disk is unavailable. Serve this read
+                    // from the buffered archive without registering it as a shared cache entry.
+                    return new MemoryStream(cachedBuffer, 0, cachedLength, writable: false);
+                }
                 for (var offset = 0; offset < cachedLength;)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -496,6 +523,18 @@ public sealed class UnityPackageReader : IDisposable
             spill?.Dispose();
             throw;
         }
+    }
+
+    /// <summary>Creates a delete-on-close spill file, or returns null when temporary storage is unavailable.</summary>
+    private FileStream? TryCreateSpillFile()
+    {
+        try
+        {
+            var path = Path.Combine(_expandedCacheSpillDirectory ?? Path.GetTempPath(), $"unitypackage-explorer-expanded-{Guid.NewGuid():N}.tar");
+            return new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read | FileShare.Delete, 1024 * 1024, FileOptions.DeleteOnClose | FileOptions.RandomAccess);
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
     }
 
     private Stream OpenUncachedArchive(ArchiveExpansionBudget? expansionBudget = null)

@@ -662,10 +662,10 @@ public static partial class UnityPrefabParser
         {
             var bodyStart = matches[i].Index + matches[i].Length;
             var bodyEnd = i + 1 < matches.Count ? matches[i + 1].Index : text.Length;
-            result.Add(new YamlDocument(
-                int.Parse(matches[i].Groups["class"].Value, CultureInfo.InvariantCulture),
-                long.Parse(matches[i].Groups["id"].Value, CultureInfo.InvariantCulture),
-                text[bodyStart..bodyEnd]));
+            if (!int.TryParse(matches[i].Groups["class"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var classId)
+                || !long.TryParse(matches[i].Groups["id"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var fileId))
+                continue;
+            result.Add(new YamlDocument(classId, fileId, text[bodyStart..bodyEnd]));
         }
         return result;
     }
@@ -698,8 +698,9 @@ public static partial class UnityPrefabParser
     {
         var match = FileReference.Match(text);
         if (!match.Success) return null;
+        if (!long.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var fileId)) return null;
         return new UnityAssetReference(
-            long.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture),
+            fileId,
             match.Groups[2].Success ? match.Groups[2].Value.ToLowerInvariant() : null);
     }
 
@@ -728,9 +729,10 @@ public static partial class UnityPrefabParser
             var propertyPath = Regex.Match(modification.Groups["block"].Value, "(?m)^\\s*propertyPath:\\s*(?<value>[^\\r\\n]+)");
             var value = Regex.Match(modification.Groups["block"].Value, "(?m)^\\s*value:\\s*(?<value>[^\\r\\n]+)");
             if (!target.Success || !propertyPath.Success || !value.Success) continue;
+            if (!long.TryParse(target.Groups["id"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var targetFileId)) continue;
             var targetKey = new PrefabTransformTarget(
                 target.Groups["guid"].Success ? target.Groups["guid"].Value.ToLowerInvariant() : null,
-                long.Parse(target.Groups["id"].Value, CultureInfo.InvariantCulture));
+                targetFileId);
             if (!values.TryGetValue(targetKey, out var targetValues))
             {
                 targetValues = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -752,11 +754,13 @@ public static partial class UnityPrefabParser
             var target = Regex.Match(modification.Groups["target"].Value, "fileID:\\s*(?<id>-?\\d+)(?:\\s*,\\s*guid:\\s*(?<guid>[0-9a-fA-F]{32}))?");
             if (!target.Success) continue;
             var reference = ReadSingleReference(modification.Groups["block"].Value, "objectReference");
-            if (reference is { Guid: not null, FileId: not 0 })
+            if (reference is { Guid: not null, FileId: not 0 }
+                && long.TryParse(target.Groups["id"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var targetFileId)
+                && int.TryParse(propertyPath.Groups["slot"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var materialSlot))
                 materials.Add(new PrefabMaterialOverride(
-                    long.Parse(target.Groups["id"].Value, CultureInfo.InvariantCulture),
+                    targetFileId,
                     target.Groups["guid"].Success ? target.Groups["guid"].Value.ToLowerInvariant() : null,
-                    int.Parse(propertyPath.Groups["slot"].Value, CultureInfo.InvariantCulture),
+                    materialSlot,
                     reference));
         }
         return materials.DistinctBy(x => (x.TargetFileId, x.TargetGuid, x.MaterialSlot, x.Material.FileId, x.Material.Guid)).ToArray();

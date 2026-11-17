@@ -4,7 +4,7 @@
         xmlns:hx="http://helix-toolkit.org/wpf/SharpDX"
         xmlns:local="clr-namespace:UnityPackageExplorer.App"
         Title="UnityPackage Explorer" Icon="Assets/UnityPackageExplorer.ico" Height="780" Width="1280" MinHeight="560" MinWidth="860" Deactivated="Window_Deactivated"
-        Background="#15191F" Foreground="#E5E9EF" WindowStartupLocation="CenterScreen" AllowDrop="True" DragEnter="Window_DragEnter" DragOver="Window_DragOver" Drop="Window_Drop">
+        Background="#15191F" Foreground="#E5E9EF" WindowStartupLocation="CenterScreen" AllowDrop="True" DragEnter="Window_DragEnter" DragOver="Window_DragOver" DragLeave="Window_DragLeave" Drop="Window_Drop">
     <Window.Resources>
         <Style x:Key="PreviewModeButtonStyle" TargetType="Button">
             <Setter Property="Template">
