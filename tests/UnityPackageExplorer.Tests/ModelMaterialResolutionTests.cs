@@ -72,7 +72,9 @@ public sealed class ModelMaterialResolutionTests
     [Fact]
     public async Task PreservesIdenticalLookingFbxMaterialsAndResolvesRenamedUnityMaterialsInBothPhases()
     {
-        var root = Path.Combine(Path.GetTempPath(), "UnityPackageExplorer.Tests", Guid.NewGuid().ToString("N"));
+        // Keep project fixtures beside the working tree, as the other loader tests do.
+        // CI's checkout and OS temp directory can be on different drives.
+        var root = Path.Combine(Environment.CurrentDirectory, ".artifacts", $"material-test-{Guid.NewGuid():N}");
         var assets = Path.Combine(root, "Assets");
         Directory.CreateDirectory(assets);
         var model = Path.Combine(assets, "TwoMaterials.fbx");
@@ -112,6 +114,7 @@ public sealed class ModelMaterialResolutionTests
             using var catalog = UnityAssetCatalog.OpenProjectPrefab(prefab);
             var selected = Assert.Single(catalog.Entries, entry => entry.Extension == ".fbx");
             using var geometry = await LightweightPreviewLoader.LoadGeometryAsync(catalog, selected, Path.Combine(root, "staged"), CancellationToken.None);
+            Assert.True(geometry.Scenes.Count == 1, string.Join(Environment.NewLine, geometry.Warnings));
             var plan = await LightweightPreviewLoader.CompleteMaterialsAsync(geometry, catalog, selected, Path.Combine(root, "staged"), CancellationToken.None);
             var bindings = Assert.Single(plan.Plans).ExportBindings;
             Assert.Equal(2, bindings.Count);
