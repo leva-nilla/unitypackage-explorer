@@ -81,6 +81,7 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXIT
 if (-not (Test-Path -LiteralPath (Join-Path $publishDirectory 'WebViewer\index.html') -PathType Leaf)) {
     throw 'The lilToon web viewer was not included in the published application.'
 }
+& (Join-Path $repoRoot 'tools\context-menu\Build-ShellExtension.ps1') -OutputDirectory $publishDirectory
 if (-not (Test-Path -LiteralPath $previewHandlerProject -PathType Leaf)) { throw "Preview handler project is missing: $previewHandlerProject" }
 $previewPublishArguments = @('publish', $previewHandlerProject, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'false', '-o', $previewPublishDirectory, '-p:DebugType=None', '-p:DebugSymbols=false', "-p:Version=$Version", "-p:FileVersion=$Version.0", "-p:BaseOutputPath=$buildOutputDirectory")
 if (-not [string]::IsNullOrWhiteSpace($env:UPX_RESTORE_CONFIG_FILE)) { $previewPublishArguments += "-p:RestoreConfigFile=$env:UPX_RESTORE_CONFIG_FILE" }

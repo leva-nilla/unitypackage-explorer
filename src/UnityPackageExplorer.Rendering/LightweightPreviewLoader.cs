@@ -69,7 +69,10 @@ public sealed record GeometryPendingMaterials(
     /// <summary>Meshes whose assimp placeholder material was neutralized during phase 1; unmatched ones are hidden in phase 2.</summary>
     IReadOnlySet<MeshNode> PlaceholderMeshes,
     bool IsPrefabPreview,
-    bool HasUnappliedMaterialOverrides);
+    bool HasUnappliedMaterialOverrides)
+{
+    public ImportedModelSelection? Selection { get; init; }
+}
 
 /// <summary>Phase-1 result: geometry only. Materials are resolved by CompleteMaterialsAsync while the scenes are being displayed.</summary>
 public sealed class GeometryPreview : IDisposable
@@ -254,6 +257,7 @@ public static class LightweightPreviewLoader
                     var modelPath = catalog.StageAsset(modelEntry, temporaryRoot, token);
                     if (stageSiblings) StageSiblingImages(catalog, temporaryRoot, modelEntry, token);
                     var scene = ImportModel(modelPath, placement.Transform, token);
+                    var selection = ResolveModelSelection(scene.Root, placement.Guid, placement.RendererAssignments, placement.MaterialOverrides, warnings);
                     var meshes = EnumerateMeshes(scene.Root).ToArray();
                     var isPrefabPreview = !directModel;
                     var placeholders = new HashSet<MeshNode>();
@@ -274,11 +278,11 @@ public static class LightweightPreviewLoader
                     }
                     pending.Add(new GeometryPendingMaterials(
                         scene, modelEntry, placement.Materials, placement.RendererAssignments, meshes, placeholders,
-                        isPrefabPreview, placement.MaterialOverrides.Count > 0));
+                        isPrefabPreview, selection.UnresolvedOverrides.Count > 0) { Selection = selection });
                     scenes.Add(scene);
                     if (placement.UsesRootTransformApproximation)
                         warnings.Add($"{placement.Node.Name}: Skinned FBX is shown as a whole-scene approximation using the Prefab root transform.");
-                    if (placement.MeshFileIds.Count > 0)
+                    if (placement.MeshFileIds.Count > 0 && !selection.MeshesIsolated)
                         warnings.Add($"{placement.Node.Name}: Unity Mesh fileID(s) {string.Join(", ", placement.MeshFileIds)} could not be mapped to individual FBX meshes; the complete FBX scene is shown as an approximation.");
                 }
                 catch (OperationCanceledException) { throw; }
@@ -309,7 +313,7 @@ public static class LightweightPreviewLoader
         {
             token.ThrowIfCancellationRequested();
             var remaps = ReadMaterialRemaps(catalog, pending.ModelEntry, warnings, token);
-            var references = IncludeRemappedMaterials(pending.MaterialReferences, pending.Meshes, remaps);
+            var references = IncludeRemappedMaterials(pending.MaterialReferences.Concat(pending.Selection?.Materials.Values ?? []).Distinct().ToArray(), pending.Meshes, remaps);
             var bindings = PrepareMaterialBindings(catalog, entry, temporaryRoot, references, token, warnings, textureCache, prepareTexture is not null);
             plans.Add(ResolveMaterialPlan(pending, bindings, warnings, token, textureCache, prepareTexture, remaps));
         }
@@ -355,12 +359,18 @@ public static class LightweightPreviewLoader
         try
         {
             token.ThrowIfCancellationRequested();
+            ImportedModelIdentity.Attach(scene.Root, FbxMaterialLayout.Read(modelPath, token));
             scene.Root.ModelMatrix *= transform;
             scene.Root.UpdateAllTransformMatrix();
             return scene;
         }
         catch { scene.Root.Dispose(); throw; }
     }
+
+    public static ImportedModelSelection ResolveModelSelection(
+        HelixToolkit.SharpDX.Model.Scene.SceneNode root, string modelGuid,
+        IReadOnlyList<PrefabRendererMaterialAssignment> assignments, IReadOnlyList<PrefabMaterialOverride> overrides,
+        ICollection<string> warnings) => ImportedModelIdentity.Resolve(root, modelGuid, assignments, overrides, warnings);
 
     public static IReadOnlyDictionary<string, UnityAssetReference> ReadMaterialRemaps(
         UnityAssetCatalog catalog, UnityPackageEntry? modelEntry, ICollection<string> warnings, CancellationToken token)
@@ -489,13 +499,14 @@ public static class LightweightPreviewLoader
         IDictionary<string, string>? alphaTextureCache,
         Func<string, RenderingMaterialBinding, IDictionary<string, string>, ICollection<string>, CancellationToken, string>? prepareTexture = null,
         ICollection<string>? warningSink = null,
-        IReadOnlyDictionary<string, UnityAssetReference>? materialRemaps = null)
+        IReadOnlyDictionary<string, UnityAssetReference>? materialRemaps = null,
+        ImportedModelSelection? selection = null)
     {
         var meshes = EnumerateMeshes(root).ToArray();
         var placeholders = new HashSet<MeshNode>(CollectPlaceholderMeshes(meshes));
         var warnings = warningSink ?? new List<string>();
         var resolution = ResolveSpecs(meshes, placeholders, bindings, materialReferences, rendererAssignments,
-            isPrefabPreview, hasUnappliedMaterialOverrides, alphaTextureCache, prepareTexture, warnings, token, materialRemaps);
+            isPrefabPreview, hasUnappliedMaterialOverrides, alphaTextureCache, prepareTexture, warnings, token, materialRemaps, selection);
         var textureCache = new Dictionary<string, HelixToolkit.SharpDX.TextureModel>(StringComparer.OrdinalIgnoreCase);
         foreach (var spec in resolution.Specs) ApplyMeshMaterialSpec(spec, textureCache);
         return resolution.ExportBindings;
@@ -519,7 +530,7 @@ public static class LightweightPreviewLoader
         IReadOnlyDictionary<string, UnityAssetReference>? materialRemaps = null)
     {
         var resolution = ResolveSpecs(pending.Meshes, pending.PlaceholderMeshes, bindings, pending.MaterialReferences,
-            pending.RendererAssignments, pending.IsPrefabPreview, pending.HasUnappliedMaterialOverrides, alphaTextureCache, prepareTexture, warnings, token, materialRemaps);
+            pending.RendererAssignments, pending.IsPrefabPreview, pending.HasUnappliedMaterialOverrides, alphaTextureCache, prepareTexture, warnings, token, materialRemaps, pending.Selection);
         return new SceneMaterialPlan(pending.Scene, resolution.Specs, resolution.Bindings, resolution.ExportBindings);
     }
 
@@ -536,7 +547,8 @@ public static class LightweightPreviewLoader
         Func<string, RenderingMaterialBinding, IDictionary<string, string>, ICollection<string>, CancellationToken, string>? prepareTexture,
         ICollection<string> warnings,
         CancellationToken token,
-        IReadOnlyDictionary<string, UnityAssetReference>? materialRemaps)
+        IReadOnlyDictionary<string, UnityAssetReference>? materialRemaps,
+        ImportedModelSelection? selection)
     {
         var exportBindings = new Dictionary<MeshNode, RenderingMaterialBinding>();
         var specs = new List<MeshMaterialSpec>();
@@ -565,17 +577,21 @@ public static class LightweightPreviewLoader
         {
             token.ThrowIfCancellationRequested();
             var name = mesh.Material?.Name;
+            if (selection?.ScopedMeshes.Contains(mesh) == true && !selection.Materials.ContainsKey(mesh)) continue;
+            var hasExplicit = selection?.Materials.TryGetValue(mesh, out _) == true;
             var matchedRenderers = rendererAssignments.Where(x => UnityMaterialNameMatcher.HaveSameNormalizedName(x.RendererName, mesh.Name)).ToArray();
-            if (matchedRenderers.Length > 1)
+            if (matchedRenderers.Length > 1 && !hasExplicit)
             {
                 warnings.Add($"Several Unity renderers match FBX mesh '{mesh.Name}'; no material settings were applied.");
                 continue;
             }
-            var scoped = matchedRenderers.Length == 1
+            var scoped = matchedRenderers.Length == 1 && !hasExplicit
                 ? bindings.Where(binding => matchedRenderers[0].Materials.Any(reference => string.Equals(reference.Guid, binding.MaterialGuid, StringComparison.OrdinalIgnoreCase)))
                 : bindings;
             IReadOnlyList<string> guids;
-            if (matchedRenderers.Length == 1 && matchedRenderers[0].Materials.Count == 1)
+            if (hasExplicit)
+                guids = selection!.Materials[mesh].Guid is { } explicitGuid ? [explicitGuid] : [];
+            else if (matchedRenderers.Length == 1 && matchedRenderers[0].Materials.Count == 1)
                 guids = matchedRenderers[0].Materials[0].Guid is { } rendererGuid ? [rendererGuid] : [];
             else if (matchedRenderers.Length == 0 && name is not null && materialRemaps?.TryGetValue(name, out var remap) == true)
                 guids = remap.Guid is { } remapGuid ? [remapGuid] : [];
@@ -607,6 +623,7 @@ public static class LightweightPreviewLoader
         var oneUnityMaterial = materialReferences.Count == 1 && bindings.Select(binding => binding.MaterialGuid).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1;
         var fallbackPaths = bindings.Where(binding => binding.AssetPath is not null).Select(binding => binding.AssetPath!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (exportBindings.Count == 0 && rendererAssignments.Count == 0 && (materialRemaps is null || materialRemaps.Count == 0)
+            && (selection is null || selection.ScopedMeshes.Count == 0)
             && oneUnityMaterial && singleNamedMaterial && fallbackPaths.Length <= 1)
         {
             var fallback = bindings[0];

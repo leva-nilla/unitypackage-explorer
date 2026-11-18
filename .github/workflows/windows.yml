@@ -230,6 +230,31 @@ jobs:
           & $harnessExe $fixtures[2]
           if ($LASTEXITCODE -ne 0) { throw 'The Preview Handler COM activation/lifecycle smoke test failed.' }
 
+          $bundleClsid = '{9C788FC3-5F0D-4B45-9ED1-65E3C905D752}'
+          $bundleClassPath = "Registry::HKEY_CURRENT_USER\Software\Classes\CLSID\$bundleClsid\InprocServer32"
+          $bundleVerbPath = 'Registry::HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Bundle'
+          $bundleDll = Join-Path $installDirectory 'UnityPackageExplorer.ShellExtension.dll'
+          if (-not (Test-Path -LiteralPath $bundleDll -PathType Leaf)) { throw 'Installed ZIP bundle command DLL was not found.' }
+          if ((Get-Item -LiteralPath $bundleClassPath -ErrorAction Stop).GetValue('') -ne $bundleDll) { throw 'ZIP bundle COM registration did not target the installed DLL.' }
+          $bundleVerb = Get-Item -LiteralPath $bundleVerbPath -ErrorAction Stop
+          if ($bundleVerb.GetValue('ExplorerCommandHandler') -ne $bundleClsid) { throw 'The ZIP bundle command was not registered.' }
+          if ($bundleVerb.GetValue('MultiSelectModel') -ne 'Player') { throw 'The ZIP bundle command does not support multiselect.' }
+          $bundleHarnessSource = Join-Path $env:GITHUB_WORKSPACE 'tools\COMTestHarness\ArchiveBundleSmokeTest.cpp'
+          $bundleHarnessExe = Join-Path $env:RUNNER_TEMP 'ArchiveBundleSmokeTest.exe'
+          $bundleObject = Join-Path $env:RUNNER_TEMP 'ArchiveBundleSmokeTest.obj'
+          $bundleBuild = 'call "{0}" >nul && cl.exe /nologo /EHsc /std:c++20 /DUNICODE /D_UNICODE "{1}" /Fe:"{2}" /Fo:"{3}" /link Ole32.lib Shell32.lib User32.lib' -f $vcvars, $bundleHarnessSource, $bundleHarnessExe, $bundleObject
+          & $env:ComSpec /d /s /c $bundleBuild
+          if ($LASTEXITCODE -ne 0) { throw 'The ZIP bundle native harness did not compile.' }
+          $bundleFolder = Join-Path $env:RUNNER_TEMP 'ZIP bundle isolated command'
+          New-Item -ItemType Directory -Force -Path $bundleFolder | Out-Null
+          Copy-Item -LiteralPath $bundleDll -Destination $bundleFolder -Force
+          $bundleFirst = Join-Path $bundleFolder '衣装 sample.zip'
+          $bundleSecond = Join-Path $bundleFolder '素材 & color.zip'
+          Copy-Item -LiteralPath $fixtures[2] -Destination $bundleFirst -Force
+          Copy-Item -LiteralPath $fixtures[2] -Destination $bundleSecond -Force
+          & $bundleHarnessExe (Join-Path $bundleFolder 'UnityPackageExplorer.ShellExtension.dll') $bundleFirst $bundleSecond $fixtures[1]
+          if ($LASTEXITCODE -ne 0) { throw 'The ZIP bundle multiselect/filtering/argv smoke test failed.' }
+
           $childEnvironment = @{
             PATH = (Join-Path $env:SystemRoot 'System32')
             DOTNET_ROOT = ''
@@ -271,6 +296,14 @@ jobs:
             if ($remainingCommand -eq $expectedCommand) { throw "An owned ProgID command still targets the uninstalled app: $verbPath" }
             if ($remainingLabel -eq 'UnityPackage Explorer で開く') { throw "An owned ProgID verb label remained after uninstall: $verbPath" }
             if ($remainingIcon -eq "$app,0" -or $remainingIcon -eq "`"$app`",0") { throw "An owned ProgID verb icon remained after uninstall: $verbPath" }
+          }
+          if ($bundleVerbPath -and (Test-Path -LiteralPath $bundleVerbPath)) {
+            $remainingBundle = Get-Item -LiteralPath $bundleVerbPath
+            if ([string]$remainingBundle.GetValue('ExplorerCommandHandler') -eq $bundleClsid) { throw 'ZIP bundle command registration remained after uninstall.' }
+          }
+          if (Test-Path -LiteralPath $bundleClassPath) {
+            $remainingBundleClass = Get-Item -LiteralPath $bundleClassPath
+            if ([string]$remainingBundleClass.GetValue('') -eq $bundleDll) { throw 'ZIP bundle COM registration remained after uninstall.' }
           }
           if (Test-Path -LiteralPath $installDirectory) { throw 'The isolated install directory remained after uninstall.' }
           $uninstalledClassPath = "Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\$handlerClsid"

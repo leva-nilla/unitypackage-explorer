@@ -68,6 +68,14 @@ A pass means "the preview rendered content, shut down cleanly, and the handler d
 a failure", not that the picture is correct. Look at the PNGs in the artifact folder for
 material, texture, and lighting judgement.
 
+Use `-WaitForMaterials -NoScreenCapture` when checking completed model materials.
+This waits for the handler's **successful UI application**, not merely delivery of a
+material payload, and captures the latest rendered frame. Without this flag a gray
+geometry-only frame can be a valid early-cancellation check, but is not evidence that
+materials work. A model without a successful material phase times out with this flag.
+Keep Explorer's preview pane closed during a run: the scratch-folder check compares
+process-global directory changes and must not include another user's preview request.
+
 ## Options
 
 | Option | Meaning |
@@ -84,6 +92,8 @@ material, texture, and lighting judgement.
 | `-SkipStream` | Skip the `IInitializeWithStream` run |
 | `-IncludeApp` | Also check the app's temporary-folder cleanup |
 | `-NoBuild` | Reuse the already-built harness |
+| `-WaitForMaterials` | Wait for successful material application before capturing a completed model |
+| `-NoScreenCapture` | Use only child-window capture; never copy desktop pixels |
 
 The low-level harness can be called directly:
 
@@ -96,6 +106,13 @@ The low-level harness can be called directly:
 Its exit codes are `0` pass, `2` usage, `3` activation, `4` initialize or preview call,
 `5` unhandled exception, `6` no child window, `7` blank capture, `8` unload failed or too
 slow, `9` the child window survived `Unload`, and `10` the handler logged an error.
+
+For cancellation during file switching, call the low-level harness with
+`--file first.unitypackage --next-file second.zip` (add `--stream` for stream input).
+It reuses the same COM instance without an intervening `Unload`, measures reinitialization
+against the existing teardown limit, and captures the second preview. Compare scratch
+folders around the whole run, as for the PowerShell wrapper. Omit `--wait-materials`
+to switch during the first model's material load.
 
 ## Reading the metrics
 

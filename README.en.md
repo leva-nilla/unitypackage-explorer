@@ -44,11 +44,11 @@ Old PowerShell-based installs in the standard per-user location are upgraded in 
 The screen is an approximation for asset organization. The lilToon view uses an unofficial `three-liltoon` port. Exact match with Unity's runtime lighting, physics, custom components, or full shader output is not guaranteed.
 
 - Reads Unity text Prefab hierarchy and transforms. Binary/unparseable parts show warnings.
-- FBX is loaded per file. If Unity Mesh fileIDs cannot be mapped to individual FBX meshes, the whole FBX is shown as an approximation.
+- Binary FBX model names are matched uniquely against Unity Mesh fileIDs to show only referenced meshes. Unsupported or unresolved identities fall back to a whole-FBX approximation with warnings.
 - Text Prefab Variants and nested Prefabs are followed when resolvable; overrides are applied when renderer slots can be identified. Cycles, depth, and size limits produce warnings.
 - Duplicate references to the same FBX mesh are deduplicated.
 - Skinned FBX uses the Prefab root transform; individual bone deformation is not reproduced.
-- FBX material names are preserved rather than merged. Explicit material-name → `.mat` remaps in `.fbx.meta` `externalObjects` are applied. A matching renderer/mesh name with one material also uses that explicit assignment. Other materials are matched by name; ambiguous mappings or missing textures produce warnings.
+- FBX material names are preserved rather than merged. Explicit material-name → `.mat` remaps in `.fbx.meta` `externalObjects` are applied. Identified renderers use polygon material indices to resolve multiple slots. Nested overrides take precedence only when their renderer fileID, hierarchy and slot are unambiguous; uncertain bindings are not guessed.
 - Known Standard/Lite opaque, cutout, transparent, outline variants, Hidden, and lilToonTwoPassTransparent pass values, colors, textures, and UV settings to the compatible view. Known Multi opaque/cutout/transparent modes are converted to standard rendering per official mode values; Multi-specific features may differ. Fur, refraction, gem, and tessellation families are not guessed into standard materials.
 - Lightweight view approximates base color and alpha only. MatCap, outlines, and emission are omitted. Some expressions are also omitted in the compatible view due to port/GPU limits.
 - If material remaps and renderer assignments cannot identify a match, Prefab colors may remain unapplied. Nested overrides whose renderer/slot cannot be identified still produce warnings; the FBX importer materials are shown instead of those overrides.

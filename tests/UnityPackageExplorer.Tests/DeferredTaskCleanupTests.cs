@@ -5,6 +5,58 @@ namespace UnityPackageExplorer.Tests;
 public sealed class DeferredTaskCleanupTests
 {
     [Fact]
+    public async Task RequestLeaseAlsoOutlivesLateResultDisposal()
+    {
+        var worker = new TaskCompletionSource<TrackedResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deferred = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = new CancellationTokenSource();
+        var events = new List<string>();
+        var waiting = DeferredTaskCleanup.WaitAsync(worker.Task, cancellation.Token,
+            result => result.Dispose(), () => events.Add("late cleanup"),
+            () => deferred.SetResult(), awaitCleanup: true);
+        cancellation.Cancel();
+        await deferred.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(waiting.IsCompleted);
+        var lease = new PreviewProcessLease(() => { }, () => events.Add("release"));
+        var release = DeferredTaskCleanup.ReleaseAfterAsync([waiting],
+            () => events.Add("request cleanup"), lease);
+        worker.SetResult(new TrackedResult(() => events.Add("dispose result")));
+        await release.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(new[] { "dispose result", "late cleanup", "request cleanup", "release" }, events);
+    }
+
+    [Fact]
+    public async Task SurrogateLeaseOutlivesCanceledAndFaultedWorkersAndCleanup()
+    {
+        var references = 0;
+        var worker = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleaned = false;
+        var lease = new PreviewProcessLease(() => references++, () => references--);
+        var task = DeferredTaskCleanup.ReleaseAfterAsync(
+            [worker.Task, Task.FromException(new IOException("worker failed")), Task.FromCanceled(new CancellationToken(true))],
+            () => { Assert.Equal(1, references); cleaned = true; }, lease);
+        Assert.Equal(1, references);
+        Assert.False(cleaned);
+        Assert.False(task.IsCompleted);
+        worker.SetResult();
+        await task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(cleaned);
+        Assert.Equal(0, references);
+        lease.Dispose();
+        Assert.Equal(0, references);
+    }
+
+    [Fact]
+    public async Task CleanupFailureStillReleasesSurrogateLease()
+    {
+        var releases = 0;
+        var lease = new PreviewProcessLease(() => { }, () => releases++);
+        await Assert.ThrowsAsync<IOException>(() => DeferredTaskCleanup.ReleaseAfterAsync(
+            [], () => throw new IOException("cleanup failed"), lease));
+        Assert.Equal(1, releases);
+    }
+
+    [Fact]
     public async Task StartedJobIsRegisteredBeforeUnloadCanTakeSnapshot()
     {
         var gate = new object();

@@ -17,6 +17,8 @@ namespace
 {
     const CLSID CLSID_UnityPackageExplorerCommand =
         { 0x1c490a47, 0x4d85, 0x4aa0, { 0xa2, 0xa3, 0x4a, 0x78, 0x27, 0xb5, 0xda, 0x79 } };
+    const CLSID CLSID_UnityPackageExplorerBundle =
+        { 0x9c788fc3, 0x5f0d, 0x4b45, { 0x9e, 0xd1, 0x65, 0xe3, 0xc9, 0x05, 0xd7, 0x52 } };
     std::atomic<long> g_objectCount = 0;
     std::atomic<long> g_serverLocks = 0;
 
@@ -123,6 +125,65 @@ namespace
         return S_OK;
     }
 
+    HRESULT GetSelectedZipPaths(IShellItemArray* items, std::vector<std::wstring>& paths)
+    {
+        if (items == nullptr) return E_INVALIDARG;
+        DWORD count = 0;
+        HRESULT result = items->GetCount(&count);
+        if (FAILED(result)) return result;
+        if (count < 2 || count > 64) return E_INVALIDARG;
+        for (DWORD index = 0; index < count; ++index)
+        {
+            IShellItem* item = nullptr;
+            result = items->GetItemAt(index, &item);
+            if (FAILED(result)) return result;
+            PWSTR path = nullptr;
+            result = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
+            item->Release();
+            if (FAILED(result)) return result;
+            const bool valid = IsSupportedPath(path) && _wcsicmp(PathFindExtensionW(path), L".zip") == 0;
+            if (valid) paths.emplace_back(path);
+            CoTaskMemFree(path);
+            if (!valid) return E_INVALIDARG;
+        }
+        return S_OK;
+    }
+
+    // Windows argv quoting, including a trailing backslash before the closing quote.
+    std::wstring QuoteArgument(const std::wstring& value)
+    {
+        std::wstring quoted = L"\"";
+        size_t slashes = 0;
+        for (const auto character : value)
+        {
+            if (character == L'\\') { ++slashes; continue; }
+            quoted.append(character == L'"' ? slashes * 2 + 1 : slashes, L'\\');
+            quoted.push_back(character);
+            slashes = 0;
+        }
+        quoted.append(slashes * 2, L'\\');
+        quoted.push_back(L'"');
+        return quoted;
+    }
+
+    HRESULT LaunchBundle(const std::vector<std::wstring>& paths)
+    {
+        std::wstring appPath;
+        HRESULT result = GetSiblingApplicationPath(appPath);
+        if (FAILED(result)) return result;
+        std::wstring commandLine = QuoteArgument(appPath) + L" --bundle-zips";
+        for (const auto& path : paths) commandLine += L" " + QuoteArgument(path);
+        if (commandLine.size() >= 32767) return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
+        STARTUPINFOW startupInfo{};
+        startupInfo.cb = sizeof(startupInfo);
+        PROCESS_INFORMATION processInfo{};
+        if (!CreateProcessW(appPath.c_str(), commandLine.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startupInfo, &processInfo))
+            return HRESULT_FROM_WIN32(GetLastError());
+        CloseHandle(processInfo.hThread);
+        CloseHandle(processInfo.hProcess);
+        return S_OK;
+    }
+
     HRESULT LaunchPreview(PCWSTR filePath)
     {
         std::wstring appPath;
@@ -175,7 +236,7 @@ namespace
     class ExplorerCommand final : public IExplorerCommand
     {
     public:
-        ExplorerCommand() { ++g_objectCount; }
+        explicit ExplorerCommand(bool bundle) : bundle_(bundle) { ++g_objectCount; }
         ~ExplorerCommand() { --g_objectCount; }
 
         IFACEMETHODIMP QueryInterface(REFIID iid, void** object) override
@@ -207,6 +268,7 @@ namespace
 
         IFACEMETHODIMP GetTitle(IShellItemArray*, PWSTR* title) override
         {
+            if (bundle_) return SHStrDupW(L"\u30D5\u30A9\u30EB\u30C0\u30FC\u306B\u307E\u3068\u3081\u3066\u7D71\u5408ZIP\u3092\u4F5C\u6210", title);
             return SHStrDupW(L"UnityPackage Explorer \u3067\u958B\u304F", title);
         }
 
@@ -243,7 +305,7 @@ namespace
             {
                 return E_POINTER;
             }
-            *commandName = CLSID_UnityPackageExplorerCommand;
+            *commandName = bundle_ ? CLSID_UnityPackageExplorerBundle : CLSID_UnityPackageExplorerCommand;
             return S_OK;
         }
 
@@ -256,7 +318,8 @@ namespace
             *state = ECS_HIDDEN;
 
             std::wstring path;
-            const HRESULT result = GetSelectedPath(items, path);
+            std::vector<std::wstring> paths;
+            const HRESULT result = bundle_ ? GetSelectedZipPaths(items, paths) : GetSelectedPath(items, path);
             if (SUCCEEDED(result))
             {
                 *state = ECS_ENABLED;
@@ -267,6 +330,12 @@ namespace
 
         IFACEMETHODIMP Invoke(IShellItemArray* items, IBindCtx*) override
         {
+            if (bundle_)
+            {
+                std::vector<std::wstring> paths;
+                const HRESULT result = GetSelectedZipPaths(items, paths);
+                return FAILED(result) ? result : LaunchBundle(paths);
+            }
             std::wstring path;
             const HRESULT result = GetSelectedPath(items, path);
             return FAILED(result) ? result : LaunchPreview(path.c_str());
@@ -292,13 +361,14 @@ namespace
         }
 
     private:
+        bool bundle_;
         std::atomic<ULONG> references_ = 1;
     };
 
     class ExplorerCommandFactory final : public IClassFactory
     {
     public:
-        ExplorerCommandFactory() { ++g_objectCount; }
+        explicit ExplorerCommandFactory(bool bundle) : bundle_(bundle) { ++g_objectCount; }
         ~ExplorerCommandFactory() { --g_objectCount; }
 
         IFACEMETHODIMP QueryInterface(REFIID iid, void** object) override
@@ -334,7 +404,7 @@ namespace
             {
                 return CLASS_E_NOAGGREGATION;
             }
-            auto* command = new (std::nothrow) ExplorerCommand();
+            auto* command = new (std::nothrow) ExplorerCommand(bundle_);
             if (command == nullptr)
             {
                 return E_OUTOFMEMORY;
@@ -358,18 +428,19 @@ namespace
         }
 
     private:
+        bool bundle_;
         std::atomic<ULONG> references_ = 1;
     };
 }
 
 STDAPI DllGetClassObject(REFCLSID classId, REFIID iid, void** object)
 {
-    if (classId != CLSID_UnityPackageExplorerCommand)
+    if (classId != CLSID_UnityPackageExplorerCommand && classId != CLSID_UnityPackageExplorerBundle)
     {
         return CLASS_E_CLASSNOTAVAILABLE;
     }
 
-    auto* factory = new (std::nothrow) ExplorerCommandFactory();
+    auto* factory = new (std::nothrow) ExplorerCommandFactory(classId == CLSID_UnityPackageExplorerBundle);
     if (factory == nullptr)
     {
         return E_OUTOFMEMORY;
