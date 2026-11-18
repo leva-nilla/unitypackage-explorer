@@ -68,7 +68,6 @@ public static class ArchiveBundleService
         {
             var sources = new List<(string Path, byte[] Hash)>();
             var expected = new Dictionary<string, (long Length, byte[] Hash)>(StringComparer.OrdinalIgnoreCase);
-            var directoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             long total = 0;
             using (var output = new FileStream(archivePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             using (var zip = new ZipArchive(output, ZipArchiveMode.Create))
@@ -83,27 +82,18 @@ public static class ArchiveBundleService
                     using var input = new ZipArchive(file, ZipArchiveMode.Read);
                     if (input.Entries.Count > UnityArchiveLimits.MaximumEntryCount)
                         throw new InvalidDataException("ZIP内の項目数が上限を超えています。");
-                    var sourceFolder = Path.GetFileNameWithoutExtension(source);
-                    ValidateLeafName(sourceFolder);
+                    var added = 0;
                     foreach (var entry in input.Entries)
                     {
                         token.ThrowIfCancellationRequested();
-                        var name = SafeMemberName(entry);
-                        name = sourceFolder + "/" + name;
+                        // Only packages carry over. Text files, textures and other members stay
+                        // in the original ZIP, which is kept in the destination folder.
+                        if (!IsPackageEntry(entry)) continue;
+                        // Packages are flattened to the ZIP root, so the member path itself is
+                        // discarded. It is still validated to reject links and unsafe entries.
+                        var name = Path.GetFileName(SafeMemberName(entry));
                         if (expected.Count >= UnityArchiveLimits.MaximumEntryCount || expected.ContainsKey(name))
-                            throw new InvalidDataException("ZIP内の項目数が上限を超えたか、同じ名前の項目があります。");
-                        var leaf = name.TrimEnd('/');
-                        var isDirectory = name.EndsWith('/');
-                        if (expected.ContainsKey(leaf) || (!isDirectory && directoryNames.Contains(leaf)))
-                            throw new InvalidDataException("ZIP内でファイル名とフォルダー名が衝突しています。");
-                        for (var slash = leaf.IndexOf('/'); slash >= 0; slash = leaf.IndexOf('/', slash + 1))
-                        {
-                            var ancestor = leaf[..slash];
-                            if (expected.ContainsKey(ancestor))
-                                throw new InvalidDataException("ZIP内でファイル名とフォルダー名が衝突しています。");
-                            directoryNames.Add(ancestor);
-                        }
-                        if (isDirectory) directoryNames.Add(leaf);
+                            throw new InvalidDataException($"同じ名前の .unitypackage が複数あります。名前を変えてから再実行してください。\n{name}");
                         if (entry.Length > UnityArchiveLimits.MaximumStreamedMemberBytes
                             || entry.Length > UnityArchiveLimits.MaximumDeclaredTotalBytes - total)
                             throw new InvalidDataException("ZIPの内容が安全な読込みサイズ上限を超えています。");
@@ -114,7 +104,10 @@ public static class ArchiveBundleService
                         var copied = CopyAndHash(from, to, entry.Length, token);
                         total = checked(total + copied.Length);
                         expected.Add(name, copied);
+                        added++;
                     }
+                    if (added == 0)
+                        throw new InvalidDataException($".unitypackage を含まない ZIP があります。元ZIPは移動していません。\n{Path.GetFileName(source)}");
                     sources.Add((source, sourceHash));
                 }
             }
@@ -251,6 +244,9 @@ public static class ArchiveBundleService
 
     private static byte[] Hash(Stream stream, CancellationToken token)
         => CopyAndHash(stream, Stream.Null, stream.Length, token).Hash;
+
+    private static bool IsPackageEntry(ZipArchiveEntry entry)
+        => entry.Name.Length > 0 && entry.Name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase);
 
     private static string SafeMemberName(ZipArchiveEntry entry)
     {

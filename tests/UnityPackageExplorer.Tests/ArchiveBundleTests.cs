@@ -15,7 +15,7 @@ public sealed class ArchiveBundleTests
         const string materialGuid = "11111111111111111111111111111111";
         var modelPackage = Package("22222222222222222222222222222222", "Assets/衣装.prefab", "Prefab");
         var materialPackage = Package(materialGuid, "Assets/赤.mat", "Material:\n  m_Name: Red\n");
-        fixture.Zip(fixture.Sources[0], ("モデル.unitypackage", modelPackage), ("説明.txt", "clothing"u8.ToArray()));
+        fixture.Zip(fixture.Sources[0], ("sub/モデル.unitypackage", modelPackage), ("説明.txt", "clothing"u8.ToArray()));
         fixture.Zip(fixture.Sources[1], ("素材.unitypackage", materialPackage), ("説明.txt", "materials"u8.ToArray()));
         var originalHashes = fixture.Sources.Select(path => SHA256.HashData(File.ReadAllBytes(path))).ToArray();
         var plan = ArchiveBundleService.Plan(fixture.Sources, "変更した名前");
@@ -28,8 +28,11 @@ public sealed class ArchiveBundleTests
         Assert.Equal("変更した名前_統合.zip", Path.GetFileName(result.ArchivePath));
         Assert.Empty(result.Warnings);
         using var zip = ZipFile.OpenRead(result.ArchivePath);
-        Assert.Equal(4, zip.Entries.Count);
-        using (var stream = zip.GetEntry("衣装/モデル.unitypackage")!.Open())
+        Assert.Equal(2, zip.Entries.Count);
+        Assert.Null(zip.GetEntry("説明.txt"));
+        Assert.Null(zip.GetEntry("sub/モデル.unitypackage"));
+        Assert.Null(zip.GetEntry("衣装/モデル.unitypackage"));
+        using (var stream = zip.GetEntry("モデル.unitypackage")!.Open())
         using (var buffer = new MemoryStream())
         {
             stream.CopyTo(buffer);
@@ -48,13 +51,26 @@ public sealed class ArchiveBundleTests
         Assert.Empty(Directory.GetDirectories(result.DirectoryPath));
     }
 
+    [Fact]
+    public async Task ZipWithoutAnyPackageIsRejectedBeforeMovingOriginals()
+    {
+        using var fixture = new Fixture();
+        fixture.Zip(fixture.Sources[1], ("説明.txt", "materials"u8.ToArray()));
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            ArchiveBundleService.CreateAsync(ArchiveBundleService.Plan(fixture.Sources, "統合")));
+        Assert.Contains(".unitypackage", error.Message);
+        Assert.Contains(Path.GetFileName(fixture.Sources[1]), error.Message);
+        fixture.AssertOriginals();
+        Assert.Empty(Directory.GetDirectories(fixture.Root));
+    }
+
     [Theory]
-    [InlineData("../outside.txt")]
-    [InlineData("/root.txt")]
-    [InlineData("C:/root.txt")]
-    [InlineData("folder/CON.txt")]
-    [InlineData("folder/a:stream")]
-    [InlineData("folder/a.")]
+    [InlineData("../outside.unitypackage")]
+    [InlineData("/root.unitypackage")]
+    [InlineData("C:/root.unitypackage")]
+    [InlineData("folder/CON.unitypackage")]
+    [InlineData("folder/a:stream.unitypackage")]
+    [InlineData("folder./a.unitypackage")]
     public async Task RejectsUnsafeMemberNamesBeforeMovingOriginals(string name)
     {
         using var fixture = new Fixture();
@@ -69,7 +85,7 @@ public sealed class ArchiveBundleTests
     public async Task RejectsCaseInsensitiveDuplicateMembersAndCorruptArchives()
     {
         using var fixture = new Fixture();
-        fixture.Zip(fixture.Sources[0], ("same.txt", [1]), ("SAME.txt", [2]));
+        fixture.Zip(fixture.Sources[0], ("same.unitypackage", [1]), ("SAME.unitypackage", [2]));
         await Assert.ThrowsAsync<InvalidDataException>(() =>
             ArchiveBundleService.CreateAsync(ArchiveBundleService.Plan(fixture.Sources, "統合")));
         fixture.AssertOriginals();
@@ -212,7 +228,13 @@ public sealed class ArchiveBundleTests
         {
             Directory.CreateDirectory(Root);
             Sources = [Path.Combine(Root, "衣装.zip"), Path.Combine(Root, "素材.zip")];
-            foreach (var source in Sources) Zip(source, ("readme.txt", "unchanged"u8.ToArray()));
+            for (var index = 0; index < Sources.Length; index++)
+            {
+                var guid = new string((char)('1' + index), 32);
+                Zip(Sources[index], ("readme.txt", "unchanged"u8.ToArray()),
+                    (Path.GetFileNameWithoutExtension(Sources[index]) + ".unitypackage",
+                        Package(guid, "Assets/fixture" + index + ".prefab", "Prefab")));
+            }
         }
         public void Zip(string path, params (string Name, byte[] Bytes)[] entries)
         {
