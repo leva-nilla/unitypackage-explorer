@@ -86,6 +86,7 @@ public sealed class TexturePreviewMaterialTests
             Activator.CreateInstance(typeof(Dictionary<,>).MakeGenericType(typeof(MeshNode), materialBindingType!)),
             false,
             CancellationToken.None,
+            null,
             null
         ]);
 
