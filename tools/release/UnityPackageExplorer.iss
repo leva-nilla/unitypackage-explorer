@@ -45,7 +45,7 @@ VersionInfoDescription={#ProductName} per-user setup
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 
 [Tasks]
-Name: "contextmenu"; Description: "従来の右クリックメニューに追加"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
+Name: "contextmenu"; Description: "従来の右クリックメニューに追加（開く・ZIPをまとめる）"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 Name: "startmenu"; Description: "スタートメニューに追加"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 Name: "sendto"; Description: "「送る」に追加"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 Name: "explorerpreview"; Description: "エクスプローラーのプレビュー欄にZIP / UnityPackageを表示"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
@@ -422,6 +422,13 @@ var
   ExitCode: Integer;
 begin
   Result := True;
+  if FileExists(ExpandConstant('{app}\{#ProductExe}')) then begin
+    if not Exec(ExpandConstant('{app}\{#ProductExe}'), '--bundle-menu unregister', '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then begin
+      MsgBox('ZIP統合メニューの登録を解除できなかったため、アンインストールを中止しました。', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+  end;
   PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   PreviewScript := ExpandConstant('{app}\Tools\Unregister-ExplorerPreview.ps1');
   PreviewParameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + #34 + PreviewScript + #34 + ' -InstallDirectory ' + #34 + ExpandConstant('{app}') + #34;
@@ -474,6 +481,12 @@ begin
     if WizardIsTaskSelected('contextmenu') then
       RegisterCurrentAssociationProgIdVerbs(ApplicationPath);
     PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    if WizardIsTaskSelected('contextmenu') then
+      PreviewParameters := '--bundle-menu register'
+    else
+      PreviewParameters := '--bundle-menu unregister';
+    if not Exec(ApplicationPath, PreviewParameters, '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+      RaiseException('ZIP統合メニューを設定できませんでした。別のインストールの登録が残っていないか確認してください。');
     // Install the pinned .NET 10 Desktop Runtime required by the framework-dependent preview
     // handler. The bundled installer is idempotent; 1638/3010 mean already present/reboot pending.
     if WizardIsTaskSelected('explorerpreview') then begin

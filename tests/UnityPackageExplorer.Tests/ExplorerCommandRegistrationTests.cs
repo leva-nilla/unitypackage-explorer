@@ -15,10 +15,10 @@ public sealed class ExplorerCommandRegistrationTests
 
         XNamespace foundation = "http://schemas.microsoft.com/appx/manifest/foundation/windows10";
         var identity = Assert.Single(manifest.Descendants(foundation + "Identity"));
-        Assert.Equal("1.0.0.6", (string?)identity.Attribute("Version"));
+        Assert.Equal("1.0.0.7", (string?)identity.Attribute("Version"));
         var itemType = Assert.Single(itemTypes);
         Assert.Equal("*", (string?)itemType.Attribute("Type"));
-        Assert.Single(itemType.Elements(desktop5 + "Verb"));
+        Assert.Equal(2, itemType.Elements(desktop5 + "Verb").Count());
 
         var source = File.ReadAllText(Path.Combine(testData, "UnityPackageExplorerShellCommand.cpp"));
         var start = source.IndexOf("bool IsSupportedPath(PCWSTR path)", StringComparison.Ordinal);
