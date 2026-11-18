@@ -29,6 +29,35 @@ function Get-Targets([string]$Directory) {
     )
 }
 
+function Test-OwnPreviewHandlerValue([string]$Name, [string]$Value) {
+    # Only the COM in-process server path names our handler DLL. Older releases
+    # registered it below a "Release" folder that no longer exists after an
+    # upgrade, so restoring such a saved value would leave HKLM pointing at a
+    # deleted file. Values that belong to this product are recorded as absent
+    # instead, which makes uninstall remove them rather than restore them.
+    if ($Name -cne '' -or [string]::IsNullOrWhiteSpace($Value)) { return $false }
+    $normalized = $Value.Trim().Trim('"')
+    if (-not [string]::Equals([IO.Path]::GetFileName($normalized), 'UnityPackageExplorer.PreviewHandler.comhost.dll', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    try { $full = [IO.Path]::GetFullPath($normalized) } catch { return $false }
+    $roots = @()
+    if (-not [string]::IsNullOrWhiteSpace($InstallDirectory)) { $roots += [IO.Path]::GetFullPath($InstallDirectory) }
+    $roots += Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\UnityPackageExplorer'
+    foreach ($root in $roots) {
+        if ($full.StartsWith($root.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    $segments = $full -split '[\\/]'
+    return [bool](@($segments | Where-Object { [string]::Equals($_, 'UnityPackageExplorer', [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0)
+}
+
+function Remove-StaleOwnPreviewSnapshot($Snapshot, [string]$InstalledValue, [string]$InstalledKind) {
+    if (-not [bool]$Snapshot.Exists) { return $Snapshot }
+    # A snapshot that merely repeats the value this product writes is our own earlier
+    # registration (the first install ran over it), not a foreign value to restore.
+    $mirrorsOurValue = ([string]$Snapshot.Kind -ceq $InstalledKind) -and ([string]$Snapshot.Value -ceq $InstalledValue)
+    if (-not $mirrorsOurValue -and -not (Test-OwnPreviewHandlerValue ([string]$Snapshot.Name) ([string]$Snapshot.Value))) { return $Snapshot }
+    return [pscustomobject]@{ Path=$Snapshot.Path; Name=$Snapshot.Name; Exists=$false }
+}
+
 function Read-State([object[]]$Targets) {
     if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { return $null }
     $state = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
@@ -190,7 +219,7 @@ $state = Read-State $targets
 
 if ($Action -eq 'Register') {
     if (-not $state) {
-        $values = foreach ($target in $targets) { Get-PreviewValueSnapshot $target.Path $target.Name }
+        $values = foreach ($target in $targets) { Remove-StaleOwnPreviewSnapshot (Get-PreviewValueSnapshot $target.Path $target.Name) $target.Value $target.Kind }
         $keys = foreach ($path in $keyPaths) { [pscustomobject]@{ Path=$path; Existed=(Test-Path -LiteralPath $path) } }
         $state = [pscustomobject]@{ Version=1; RegistryRoot=$RegistryRoot; Clsid=$clsid; AppId=$appId; Values=@($values); Keys=@($keys); Installed=@($targets | ForEach-Object { [pscustomobject]@{ Path=$_.Path; Name=$_.Name; Kind=$_.Kind; Value=$_.Value } }) }
     } else {
@@ -199,6 +228,7 @@ if ($Action -eq 'Register') {
             $isCurrentInstall = Test-PreviewValue $targets[$i].Path $targets[$i].Name $state.Installed[$i].Value $state.Installed[$i].Kind
             if (-not $isCurrentInstall -and -not (Test-SameSnapshot $current $state.Values[$i])) { throw "Machine preview registration was changed by another application; preserving it: $($targets[$i].Path)" }
         }
+        for ($i = 0; $i -lt 4; $i++) { $state.Values[$i] = Remove-StaleOwnPreviewSnapshot $state.Values[$i] $targets[$i].Value $targets[$i].Kind }
         $state.Installed = @($targets | ForEach-Object { [pscustomobject]@{ Path=$_.Path; Name=$_.Name; Kind=$_.Kind; Value=$_.Value } })
     }
     $stateDirectory = Split-Path -Parent ([IO.Path]::GetFullPath($StatePath))
@@ -211,6 +241,7 @@ if ($Action -eq 'Register') {
 }
 
 if (-not $state) { return }
+for ($i = 0; $i -lt 4; $i++) { $state.Values[$i] = Remove-StaleOwnPreviewSnapshot $state.Values[$i] $targets[$i].Value $targets[$i].Kind }
 if (Invoke-ElevatedMachineValues $state $targets) {
     Remove-Item -LiteralPath $StatePath -Force
     return
