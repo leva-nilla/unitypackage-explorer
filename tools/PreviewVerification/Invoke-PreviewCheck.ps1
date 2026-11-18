@@ -12,7 +12,9 @@ param(
     [int]$SettleMilliseconds = 60000,
     [switch]$SkipStream,
     [switch]$IncludeApp,
-    [switch]$NoBuild
+    [switch]$NoBuild,
+    [switch]$WaitForMaterials,
+    [switch]$NoScreenCapture
 )
 $ErrorActionPreference = 'Stop'
 
@@ -120,6 +122,8 @@ try {
                 '--min-center-nonuniform', $MinimumCenterNonUniformRatio
             )
             if ($mode -eq 'stream') { $arguments += '--stream' }
+            if ($WaitForMaterials) { $arguments += '--wait-materials' }
+            if ($NoScreenCapture) { $arguments += '--no-screen-capture' }
 
             Write-Host ("Checking {0} ({1} init)..." -f ([IO.Path]::GetFileName($fullPath)), $mode)
             & $exe @arguments

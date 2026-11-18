@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.IO;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -97,10 +98,36 @@ internal static class Program
             hr = preview.DoPreview();
             if (hr < 0) return Fail(result, options, 4, $"IPreviewHandler.DoPreview failed: 0x{hr:X8}.");
 
-            var capture = WaitForCapture(preview, host, options, result);
+            var capture = WaitForCapture(preview, host, options, result, logStart);
+            if (capture is not null && options.NextFilePath is not null)
+            {
+                capture.Dispose();
+                result.InitialFile = result.File;
+                result.File = Path.GetFullPath(options.NextFilePath);
+                logStart = GetLogLength(ResolveLogPath());
+                var switchTimer = Stopwatch.StartNew();
+                if (options.Stream)
+                {
+                    Marshal.ThrowExceptionForHR(SHCreateStreamOnFileEx(result.File, StgmRead, FileAttributeNormal, false, IntPtr.Zero, out var nextStream));
+                    try { ((IInitializeWithStream)preview).Initialize(nextStream, StgmRead); }
+                    catch { Marshal.ReleaseComObject(nextStream); throw; }
+                    if (sourceStream is not null) Marshal.ReleaseComObject(sourceStream);
+                    sourceStream = nextStream;
+                }
+                else ((IInitializeWithFile)preview).Initialize(result.File, StgmRead);
+                switchTimer.Stop();
+                result.ReinitializeMilliseconds = switchTimer.ElapsedMilliseconds;
+                if (switchTimer.ElapsedMilliseconds > options.MaxUnloadMilliseconds)
+                    return Fail(result, options, 8, "Reinitializing the existing handler exceeded the Unload time limit.");
+                Marshal.ThrowExceptionForHR(preview.DoPreview());
+                result.MaterialPhaseCompleted = false;
+                capture = WaitForCapture(preview, host, options, result, logStart);
+            }
             if (capture is null)
             {
-                return Fail(result, options, 6, "The preview handler did not create a capturable child window in time.");
+                return Fail(result, options, 6, options.WaitForMaterials
+                    ? "A completed material phase and capturable preview were not observed in time."
+                    : "The preview handler did not create a capturable child window in time.");
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(options.CapturePath))!);
@@ -201,7 +228,7 @@ internal static class Program
         }
     }
 
-    private static CaptureAttempt? WaitForCapture(IPreviewHandler preview, Form host, Options options, VerificationResult result)
+    private static CaptureAttempt? WaitForCapture(IPreviewHandler preview, Form host, Options options, VerificationResult result, long logStart)
     {
         var deadline = Stopwatch.StartNew();
         var stableSince = Stopwatch.StartNew();
@@ -210,16 +237,26 @@ internal static class Program
         {
             Pump(PollIntervalMilliseconds);
             var child = TryGetChildWindow(preview);
+            if (options.WaitForMaterials && !result.MaterialPhaseCompleted)
+            {
+                result.MaterialPhaseCompleted = ReadNewHandlerLines(ResolveLogPath(), logStart, GetWindowProcessId(child))
+                    .Any(line => line.Contains("Material plan applied specs=", StringComparison.Ordinal));
+                if (!result.MaterialPhaseCompleted) continue;
+                stableSince.Restart();
+            }
             if (child != IntPtr.Zero)
             {
                 result.ChildWindow = $"0x{child.ToInt64():X}";
                 result.ChildVisible = IsWindowVisible(child);
                 var candidate = CaptureWindow(child, "PrintWindow");
-                if (candidate is not null && Beats(candidate.Stats, best, options))
+                if (candidate is not null && (options.WaitForMaterials || Beats(candidate.Stats, best, options)))
                 {
+                    var first = best is null;
                     best?.Dispose();
                     best = candidate;
-                    stableSince.Restart();
+                    // Completed checks retain the latest frame, not an older,
+                    // busier untextured frame captured before the render updated.
+                    if (!options.WaitForMaterials || first) stableSince.Restart();
                 }
                 else
                 {
@@ -427,8 +464,14 @@ internal static class Program
     /// started, so a rendered error screen cannot be mistaken for a successful preview.
     /// </summary>
     private static string? ReadHandlerFailure(string? path, long startOffset, uint processId)
+        => ReadNewHandlerLines(path, startOffset, processId).FirstOrDefault(line =>
+            line.Contains(" failed", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("exception", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("timeout", StringComparison.OrdinalIgnoreCase));
+
+    private static string[] ReadNewHandlerLines(string? path, long startOffset, uint processId)
     {
-        if (path is null) return null;
+        if (path is null || processId == 0) return [];
         try
         {
             var length = new FileInfo(path).Length;
@@ -437,22 +480,12 @@ internal static class Program
             stream.Seek(from, SeekOrigin.Begin);
             using var reader = new StreamReader(stream, Encoding.UTF8);
             var text = reader.ReadToEnd();
-            var pidMarker = processId == 0 ? null : $"[pid {processId}]";
-            foreach (var rawLine in text.Split('\n'))
-            {
-                if (pidMarker is not null && !rawLine.Contains(pidMarker, StringComparison.Ordinal)) continue;
-                var line = rawLine.Trim();
-                if (line.Contains(" failed", StringComparison.OrdinalIgnoreCase)
-                    || line.Contains("exception", StringComparison.OrdinalIgnoreCase)
-                    || line.Contains("timeout", StringComparison.OrdinalIgnoreCase))
-                {
-                    return line;
-                }
-            }
+            var pidMarker = $"[pid {processId}]";
+            return text.Split('\n').Where(line => line.Contains(pidMarker, StringComparison.Ordinal)).Select(line => line.Trim()).ToArray();
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
-        return null;
+        return [];
     }
 
     private static bool WaitForWindowClose(IntPtr hwnd, TimeSpan timeout)
@@ -541,6 +574,9 @@ internal static class Program
         public long UnloadMilliseconds { get; set; }
         public long UnloadLimitMilliseconds { get; set; }
         public bool ChildWindowClosed { get; set; }
+        public bool MaterialPhaseCompleted { get; set; }
+        public string? InitialFile { get; set; }
+        public long? ReinitializeMilliseconds { get; set; }
     }
 
     private sealed class Options
@@ -560,6 +596,8 @@ internal static class Program
               --max-unload-ms <n>      fail when Unload takes longer than this (default 5000)
               --width <n> --height <n> host window size (default 900x600)
               --no-screen-capture      never fall back to copying pixels from the screen
+              --wait-materials         wait for successful UI material application before capture
+              --next-file PATH         reinitialize the same COM handler after its first preview
               --help                   show this text
 
             Exit codes: 0 pass, 2 usage, 3 activation, 4 initialize/preview, 5 exception,
@@ -579,6 +617,8 @@ internal static class Program
         public int Width { get; private init; } = 900;
         public int Height { get; private init; } = 600;
         public bool AllowScreenCapture { get; private init; } = true;
+        public bool WaitForMaterials { get; private init; }
+        public string? NextFilePath { get; private init; }
 
         public static bool TryParse(string[] args, out Options? options, out string error)
         {
@@ -596,6 +636,8 @@ internal static class Program
             var width = 900;
             var height = 600;
             var allowScreenCapture = true;
+            var waitForMaterials = false;
+            string? nextFile = null;
 
             for (var index = 0; index < args.Length; index++)
             {
@@ -622,6 +664,8 @@ internal static class Program
                         case "--width": width = int.Parse(NextValue()); break;
                         case "--height": height = int.Parse(NextValue()); break;
                         case "--no-screen-capture": allowScreenCapture = false; break;
+                        case "--wait-materials": waitForMaterials = true; break;
+                        case "--next-file": nextFile = NextValue(); break;
                         default:
                             error = $"Unknown argument: {argument}";
                             return false;
@@ -644,6 +688,11 @@ internal static class Program
                 error = $"Preview source does not exist: {file}";
                 return false;
             }
+            if (nextFile is not null && !File.Exists(nextFile))
+            {
+                error = $"Next preview source does not exist: {nextFile}";
+                return false;
+            }
             if (width < 200 || height < 150)
             {
                 error = "The host window must be at least 200x150.";
@@ -663,7 +712,9 @@ internal static class Program
                 MaxUnloadMilliseconds = maxUnload,
                 Width = width,
                 Height = height,
-                AllowScreenCapture = allowScreenCapture
+                AllowScreenCapture = allowScreenCapture,
+                WaitForMaterials = waitForMaterials,
+                NextFilePath = nextFile
             };
             return true;
         }
