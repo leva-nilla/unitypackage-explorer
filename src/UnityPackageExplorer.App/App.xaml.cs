@@ -27,7 +27,7 @@ public partial class App : Application
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message, "ZIPをまとめる", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(ex.Message, "UnityPackageをまとめる", MessageBoxButton.OK, MessageBoxImage.Warning);
                 Shutdown(2);
             }
             return;

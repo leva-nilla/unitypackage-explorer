@@ -45,8 +45,7 @@ public partial class ArchiveBundleWindow : Window
     {
         if (LayoutPreview is null) return;
         var name = FolderNameBox.Text;
-        LayoutPreview.Text = name + "/\n" + string.Join("\n", _sources.Select(source => "├─ " + Path.GetFileName(source)))
-            + "\n└─ " + name + "_統合.zip";
+        LayoutPreview.Text = name + "/\n├─ *.unitypackage（選択した" + _sources.Length + "個のZIPから）\n└─ " + name + "_統合.zip";
         if (!_finished) Status.Text = "";
     }
 
