@@ -44,11 +44,11 @@ lilToon互換ビューにはMicrosoft Edge WebView2 Runtimeが必要です。Win
 画面は素材整理用の近似表示です。lilToon互換ビューは非公式の `three-liltoon` 移植を使います。Unityの実行環境やライティング、物理、独自コンポーネント、全シェーダーの完成形との一致は保証しません。
 
 - Unityのテキスト形式Prefabの階層とTransformを読みます。バイナリPrefabや解析できない部分は警告を表示します。
-- 参照FBXはファイル単位で読み込みます。UnityのMesh fileIDからFBX内の個別メッシュを特定できない場合は、FBX全体を近似表示します。
+- 参照FBXを読み込み、バイナリFBXのモデル名とUnityのMesh fileIDが一意に一致すれば、参照対象のメッシュだけを表示します。特定できない形式では、警告付きのFBX全体表示へフォールバックします。
 - 参照元が見つかるテキスト形式のPrefab Variant・ネストPrefabは、階層とFBX参照をたどります。GUID・fileID・材質スロットを特定できる上書きを適用します。循環・深さ・読込み量の上限や未解決の参照は警告します。
 - 同じFBXの別メッシュを分けられない参照は、重複配置を避けて省略し、画面に理由を表示します。
 - スキン付きメッシュのFBX全体を表示するときはPrefabのルート位置・回転・大きさを使います。個別ボーンの配置や変形は再現しません。
-- FBXの材質名を統合せずに保持し、`.fbx.meta`の`externalObjects`にある材質名→`.mat`参照を適用します。renderer名とメッシュ名が一致して材質が1つの場合も、その指定を使います。その他は材質名で照合し、曖昧な対応や欠けたテクスチャは警告します。
+- FBXの材質名を統合せずに保持し、`.fbx.meta`の`externalObjects`にある材質名→`.mat`参照を適用します。識別できるRendererの複数材質は、FBXのpolygon材質インデックスからスロットを解決します。RendererのfileID・階層・スロットが一意なネスト上書きを優先し、曖昧な対応は推測せず警告します。
 - 既知の通常・Liteのopaque / cutout / transparent、輪郭線variant、Hidden/lilToonTwoPassTransparentは、`.mat`の数値・色・テクスチャ・UV設定を互換ビューへ渡します。既知MultiのOpaque・Cutout・Transparentも公式のモード値に従って通常描画へ変換し、Multi独自部分が異なることを警告します。Fur・屈折・Gem・Tessellationなどの未対応familyを通常材質へ推測で変換しません。
 - 軽量表示は基本色と透過をHelixで近似します。MatCap・輪郭線・発光などは省略します。互換ビューでも、移植の対応範囲やGPUの制限により省略される表現があります。
 - FBXの材質対応表やrenderer指定から対応を特定できない場合は、Prefabに色の指定があっても反映できないことがあります。ネストPrefabのRendererとスロットを特定できない上書き指定は引き続き警告し、上書きではなくFBXのインポート設定の材質で表示します。

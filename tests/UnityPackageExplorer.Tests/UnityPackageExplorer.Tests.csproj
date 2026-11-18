@@ -45,6 +45,7 @@
     <Compile Include="..\..\src\UnityPackageExplorer.PreviewHandler\PreviewLog.cs" Link="PreviewHandler\PreviewLog.cs" />
     <Compile Include="..\..\src\UnityPackageExplorer.PreviewHandler\PreviewStaDispatcher.cs" Link="PreviewHandler\PreviewStaDispatcher.cs" />
     <Compile Include="..\..\src\UnityPackageExplorer.PreviewHandler\DeferredTaskCleanup.cs" Link="PreviewHandler\DeferredTaskCleanup.cs" />
+    <Compile Include="..\..\src\UnityPackageExplorer.PreviewHandler\PreviewProcessLease.cs" Link="PreviewHandler\PreviewProcessLease.cs" />
   </ItemGroup>
 
 </Project>

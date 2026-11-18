@@ -39,6 +39,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
     private PendingUiPayloadQueue _pendingUiPayloads = new();
     private PreviewStaDispatcher? _uiDispatcher;
     private static int _staleRequestCleanupStarted;
+    private IDisposable? _requestProcessLease;
 
     public int Initialize(string filePath, uint mode)
     {
@@ -120,11 +121,13 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         {
             if (string.IsNullOrWhiteSpace(_path) && _stream is null) return unchecked((int)0x80070002);
             PreviewLog.Write("DoPreview enter");
-            return GetOrCreateUiDispatcher().Invoke(DoPreviewCore);
+            var processLease = PreviewProcessLease.Acquire(this, ex => PreviewLog.Write("Request lifetime reference failed", ex));
+            try { return GetOrCreateUiDispatcher().Invoke(() => DoPreviewCore(processLease)); }
+            catch { processLease?.Dispose(); throw; }
         }
     }
 
-    private int DoPreviewCore()
+    private int DoPreviewCore(IDisposable? processLease)
     {
         PreviewLog.Write($"DoPreviewCore file={(_path is null ? "(stream)" : Path.GetFileName(_path))}");
         var requestId = Interlocked.Increment(ref _generation);
@@ -134,10 +137,11 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         _requestCancellation?.Dispose();
         _requestCancellation = new CancellationTokenSource();
         CancelSelection();
-        ReleaseRequestResources();
-        _requestTempRoot = _stream is null ? null : CreateRequestTempRoot();
-        _panel?.Dispose();
         _surface?.Dispose();
+        _panel?.Dispose();
+        ReleaseRequestResources();
+        _requestProcessLease = processLease;
+        _requestTempRoot = _stream is null ? null : CreateRequestTempRoot();
         _surface = new ExplorerPreviewSurface();
         _surface.Host.BackColor = Color.FromArgb(22, 27, 34);
         _surface.Host.Padding = new Padding(0);
@@ -182,11 +186,11 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         _requestCancellation = null;
         CancelSelection();
         Interlocked.Increment(ref _selectionGeneration);
-        ReleaseRequestResources();
         _surface?.Dispose();
         _surface = null;
         _panel?.Dispose();
         _panel = null;
+        ReleaseRequestResources();
         _path = null;
         _stream = null;
         _parent = IntPtr.Zero;
@@ -258,11 +262,11 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         _requestCancellation = null;
         CancelSelection();
         Interlocked.Increment(ref _selectionGeneration);
-        ReleaseRequestResources();
         _surface?.Dispose();
         _surface = null;
         _panel?.Dispose();
         _panel = null;
+        ReleaseRequestResources();
         _path = null;
         _stream = null;
     }
@@ -370,7 +374,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                     {
                         SafeDeleteOwnedTemp(tempRoot);
                         lock (_activeJobsGate) _selectionTempRoots.Remove(tempRoot);
-                    }).ConfigureAwait(false);
+                    }, awaitCleanup: true).ConfigureAwait(false);
                 PreviewLog.Write($"LoadSelected geometry scenes={geometry.Scenes.Count} warnings={geometry.Warnings.Count} :: {string.Join(" | ", geometry.Warnings)}");
                 var fallbackItems = catalog.Entries.Where(x => x.HasAsset).Select(x => x.PathName).Take(25).ToArray();
                 var geometryPayload = new PreparedScenePayload(geometry, tempRoot, fallbackItems, catalog.Entries.Count(x => x.HasAsset));
@@ -407,7 +411,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                         materialTask,
                         materialBudget.Token,
                         disposeLateResult: null,
-                        () => SafeDeleteOwnedTemp(tempRoot)).ConfigureAwait(false);
+                        () => SafeDeleteOwnedTemp(tempRoot), awaitCleanup: true).ConfigureAwait(false);
                     PreviewLog.Write($"LoadSelected materials specs={plan.Plans.Sum(x => x.Specs.Count)} warnings={plan.Warnings.Count} :: {string.Join(" | ", plan.Warnings)}");
                     PostOwnedToSelectionUi(requestId, selectionId, new MaterialApplyPayload(geometry, plan, plan.Warnings),
                         payload =>
@@ -561,6 +565,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         Task[] jobs;
         UnityAssetCatalog? catalog;
         string[] roots;
+        IDisposable? processLease;
         lock (_activeJobsGate)
         {
             jobs = _activeJobs.ToArray();
@@ -571,14 +576,21 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
             _selectionTempRoots.Clear();
             _requestTempRoot = null;
             _activeRequest = null;
+            processLease = _requestProcessLease;
+            _requestProcessLease = null;
         }
-        _ = Task.WhenAll(jobs).ContinueWith(completed =>
+        _ = DeferredTaskCleanup.ReleaseAfterAsync(jobs, () =>
         {
-            _ = completed.Exception;
-            catalog?.Dispose();
-            foreach (var root in roots) SafeDeleteOwnedTemp(root);
-            PreviewLog.Write($"Request cleanup catalogs={(catalog is null ? 0 : 1)} roots={roots.Length}");
-        }, TaskScheduler.Default);
+            try
+            {
+                catalog?.Dispose();
+            }
+            finally
+            {
+                foreach (var root in roots) SafeDeleteOwnedTemp(root);
+                PreviewLog.Write($"Request cleanup catalogs={(catalog is null ? 0 : 1)} roots={roots.Length}");
+            }
+        }, processLease);
     }
 
     private Task<T> StartTrackedJob<T>(CancellationToken token, Func<Task<T>> start)

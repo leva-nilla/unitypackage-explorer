@@ -185,6 +185,7 @@ internal sealed class ExplorerPreviewSurface : IDisposable
         _activeWarnings.AddRange(additionalWarnings);
         _warnings.Text = string.Join("\r\n", _activeWarnings.Take(4));
         MarkMaterialPhaseFinished();
+        PreviewLog.Write($"Material plan applied specs={plan.Plans.Sum(scene => scene.Specs.Count)}");
     }
 
     /// <summary>Removes the "materials applying" indicator without touching the scene (used when phase 2 fails or is cancelled).</summary>
