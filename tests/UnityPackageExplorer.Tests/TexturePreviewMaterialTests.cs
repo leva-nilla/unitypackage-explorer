@@ -87,6 +87,7 @@ public sealed class TexturePreviewMaterialTests
             false,
             CancellationToken.None,
             null,
+            null,
             null
         ]);
 

@@ -68,7 +68,8 @@ public partial class MainWindow : Window
         HelixToolkitScene Scene,
         IReadOnlyList<string> Warnings,
         bool HasLilToonMaterial,
-        Func<CancellationToken, LilToonScenePreparation>? PrepareLilToon);
+        Func<CancellationToken, LilToonScenePreparation>? PrepareLilToon,
+        bool MeshesIsolated);
     private sealed record PrefabPreviewData(PrefabParseResult Parse, IReadOnlyList<PrefabNodeView> Tree, IReadOnlyList<PrefabModelPlacement> Models);
     private sealed class PreviewTemporaryState(string path)
     {
@@ -672,7 +673,7 @@ public partial class MainWindow : Window
                 SceneModels.AddNode(loaded.Scene.Root);
                 _activeSceneRequestId = requestId;
                 warnings.AddRange(loaded.Warnings.Select(x => $"{node.Name}: {x}"));
-                if (placement.MeshFileIds.Count > 0)
+                if (placement.MeshFileIds.Count > 0 && !loaded.MeshesIsolated)
                     warnings.Add($"{node.Name}: Unity Mesh fileID(s) {string.Join(", ", placement.MeshFileIds)} could not be mapped to individual FBX meshes; the complete FBX scene is shown as an approximation.");
             }
             catch (OperationCanceledException) { throw; }
@@ -768,9 +769,10 @@ public partial class MainWindow : Window
             var scene = LightweightPreviewLoader.ImportModel(modelPath, transform, cancellationToken);
             try
             {
+                var selection = LightweightPreviewLoader.ResolveModelSelection(scene.Root, guid, rendererAssignments ?? [], materialOverrides ?? [], warnings);
                 var remaps = LightweightPreviewLoader.ReadMaterialRemaps(
                     catalog, modelEntry ?? catalog.FindByGuid(guid, packageMemberPath, referenceEntry), warnings, cancellationToken);
-                var effectiveMaterials = LightweightPreviewLoader.IncludeRemappedMaterials(materials, scene.Root, remaps);
+                var effectiveMaterials = LightweightPreviewLoader.IncludeRemappedMaterials(materials.Concat(selection.Materials.Values).Distinct().ToArray(), scene.Root, remaps);
                 foreach (var material in effectiveMaterials)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -870,7 +872,7 @@ public partial class MainWindow : Window
                         warnings.Add($"Material '{materialName}' uses an unrecognized lilToon shader variant; its render mode is left opaque in this simplified preview.");
                 }
 
-                foreach (var materialOverride in materialOverrides ?? [])
+                foreach (var materialOverride in selection.UnresolvedOverrides)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var target = $"target renderer fileID {materialOverride.TargetFileId}, material slot {materialOverride.MaterialSlot}";
@@ -925,7 +927,7 @@ public partial class MainWindow : Window
 
                 cancellationToken.ThrowIfCancellationRequested();
                 var exportBindings = new Dictionary<HelixToolkit.SharpDX.Model.Scene.MeshNode, MaterialBinding>();
-                warnings.AddRange(ApplyUnityMaterials(scene.Root, materialBindings, effectiveMaterials, rendererAssignments ?? [], isPrefabPreview, exportBindings, materialOverrides?.Count > 0, cancellationToken, alphaTextureCache, remaps));
+                warnings.AddRange(ApplyUnityMaterials(scene.Root, materialBindings, effectiveMaterials, rendererAssignments ?? [], isPrefabPreview, exportBindings, selection.UnresolvedOverrides.Count > 0, cancellationToken, alphaTextureCache, remaps, selection));
                 var capturedBindings = new Dictionary<HelixToolkit.SharpDX.Model.Scene.MeshNode, MaterialBinding>(exportBindings);
                 var hasLilToonMaterial = capturedBindings.Values.Any(x => x.LilToon is not null);
                 Func<CancellationToken, LilToonScenePreparation>? prepareLilToon = capturedBindings.Count == 0 ? null
@@ -941,7 +943,7 @@ public partial class MainWindow : Window
                         lilToonTextureCache,
                         prepareToken);
                 cancellationToken.ThrowIfCancellationRequested();
-                return new ModelLoadResult(scene, warnings, hasLilToonMaterial, prepareLilToon);
+                return new ModelLoadResult(scene, warnings, hasLilToonMaterial, prepareLilToon, selection.MeshesIsolated);
             }
             catch
             {
@@ -1041,7 +1043,8 @@ public partial class MainWindow : Window
         bool hasUnappliedMaterialOverrides = false,
         CancellationToken cancellationToken = default,
         IDictionary<string, string>? alphaTextureCache = null,
-        IReadOnlyDictionary<string, UnityAssetReference>? materialRemaps = null)
+        IReadOnlyDictionary<string, UnityAssetReference>? materialRemaps = null,
+        ImportedModelSelection? selection = null)
     {
         exportBindings.Clear();
         var warnings = new List<string>();
@@ -1058,7 +1061,7 @@ public partial class MainWindow : Window
             (path, binding, cache, outputWarnings, token) => PrepareTextureAlphaForPreview(
                 path,
                 new MaterialBinding(binding.MaterialGuid, binding.MaterialName, binding.TextureName, binding.Slot, binding.AssetPath, binding.Color, binding.RenderMode, binding.Cutoff),
-                cache, outputWarnings, token), warnings, materialRemaps);
+                cache, outputWarnings, token), warnings, materialRemaps, selection);
         foreach (var pair in sharedExportBindings)
         {
             var binding = materialBindings.First(candidate => candidate.MaterialGuid.Equals(pair.Value.MaterialGuid, StringComparison.OrdinalIgnoreCase));
