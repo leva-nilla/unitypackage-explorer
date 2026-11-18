@@ -199,6 +199,37 @@ try {
     $restored = (Get-Item -LiteralPath $existingPath).GetValue('')
     if ($restored -ne '{22222222-2222-2222-2222-222222222222}') { throw 'Opt-out failed to preserve the value that existed before the latest registration.' }
 
+    # Previous releases registered the handler below <install>\Release\PreviewHandler, a folder
+    # that no longer exists after an upgrade. Uninstall must remove such a self-registration
+    # instead of restoring a path that points at a deleted file.
+    $staleHandler = Join-Path (Join-Path $installDirectory 'Release\PreviewHandler') 'UnityPackageExplorer.PreviewHandler.comhost.dll'
+    if (Test-Path -LiteralPath $staleHandler) { throw 'The stale handler fixture must not exist on disk.' }
+    $staleUserStatePath = Join-Path $installDirectory 'stale-registration.json'
+    $staleMachineStatePath = Join-Path $installDirectory 'stale-machine-registration.json'
+    Set-Item -LiteralPath $machineInprocKeyPath -Value $staleHandler
+    & $register -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $staleUserStatePath -MachineStatePath $staleMachineStatePath -SkipRuntimeCheck
+    $staleSnapshot = @((Get-Content -LiteralPath $staleMachineStatePath -Raw | ConvertFrom-Json).Values)[0]
+    if ($staleSnapshot.Exists) { throw 'A previous self registration was backed up as a foreign value.' }
+    & $unregister -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $staleUserStatePath -MachineStatePath $staleMachineStatePath
+    $staleInprocKey = Get-Item -LiteralPath $machineInprocKeyPath
+    if ($staleInprocKey.GetValueNames().Contains('')) { throw 'Uninstall restored a stale self handler path.' }
+
+    # A state file written by an older release already contains the stale self path. Uninstall
+    # must repair it; a value that belongs to this product is removed, not written back.
+    & $register -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $staleUserStatePath -MachineStatePath $staleMachineStatePath -SkipRuntimeCheck
+    $migratedState = Get-Content -LiteralPath $staleMachineStatePath -Raw | ConvertFrom-Json
+    $migratedState.Values = @([pscustomobject]@{ Path=$machineInprocKeyPath; Name=''; Exists=$true; Kind='String'; Value=$staleHandler }) + @($migratedState.Values | Select-Object -Skip 1)
+    $migratedState | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $staleMachineStatePath -Encoding UTF8
+    & $unregister -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $staleUserStatePath -MachineStatePath $staleMachineStatePath
+    if ((Get-Item -LiteralPath $machineInprocKeyPath).GetValueNames().Contains('')) { throw 'Uninstall restored the stale self path recorded by an older state file.' }
+
+    # A handler registered by another application must still be restored.
+    $foreignHandler = 'C:\OtherVendor\Preview\Other.PreviewHandler.comhost.dll'
+    Set-Item -LiteralPath $machineInprocKeyPath -Value $foreignHandler
+    & $register -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $staleUserStatePath -MachineStatePath $staleMachineStatePath -SkipRuntimeCheck
+    & $unregister -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $staleUserStatePath -MachineStatePath $staleMachineStatePath
+    if ([string](Get-Item -LiteralPath $machineInprocKeyPath).GetValue('') -ne $foreignHandler) { throw 'Uninstall did not restore another application preview handler path.' }
+
     # The preview handler is framework-dependent: registration must refuse to run and leave no
     # state behind when the .NET 10 Desktop Runtime is missing (exit 3 contract used by the setup).
     $missingRuntimeKey = $registryRoot + '-runtime-missing'
