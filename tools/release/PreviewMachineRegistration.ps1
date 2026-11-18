@@ -49,9 +49,12 @@ function Test-OwnPreviewHandlerValue([string]$Name, [string]$Value) {
     return [bool](@($segments | Where-Object { [string]::Equals($_, 'UnityPackageExplorer', [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0)
 }
 
-function Remove-StaleOwnPreviewSnapshot($Snapshot) {
+function Remove-StaleOwnPreviewSnapshot($Snapshot, [string]$InstalledValue, [string]$InstalledKind) {
     if (-not [bool]$Snapshot.Exists) { return $Snapshot }
-    if (-not (Test-OwnPreviewHandlerValue ([string]$Snapshot.Name) ([string]$Snapshot.Value))) { return $Snapshot }
+    # A snapshot that merely repeats the value this product writes is our own earlier
+    # registration (the first install ran over it), not a foreign value to restore.
+    $mirrorsOurValue = ([string]$Snapshot.Kind -ceq $InstalledKind) -and ([string]$Snapshot.Value -ceq $InstalledValue)
+    if (-not $mirrorsOurValue -and -not (Test-OwnPreviewHandlerValue ([string]$Snapshot.Name) ([string]$Snapshot.Value))) { return $Snapshot }
     return [pscustomobject]@{ Path=$Snapshot.Path; Name=$Snapshot.Name; Exists=$false }
 }
 
@@ -216,7 +219,7 @@ $state = Read-State $targets
 
 if ($Action -eq 'Register') {
     if (-not $state) {
-        $values = foreach ($target in $targets) { Remove-StaleOwnPreviewSnapshot (Get-PreviewValueSnapshot $target.Path $target.Name) }
+        $values = foreach ($target in $targets) { Remove-StaleOwnPreviewSnapshot (Get-PreviewValueSnapshot $target.Path $target.Name) $target.Value $target.Kind }
         $keys = foreach ($path in $keyPaths) { [pscustomobject]@{ Path=$path; Existed=(Test-Path -LiteralPath $path) } }
         $state = [pscustomobject]@{ Version=1; RegistryRoot=$RegistryRoot; Clsid=$clsid; AppId=$appId; Values=@($values); Keys=@($keys); Installed=@($targets | ForEach-Object { [pscustomobject]@{ Path=$_.Path; Name=$_.Name; Kind=$_.Kind; Value=$_.Value } }) }
     } else {
@@ -225,7 +228,7 @@ if ($Action -eq 'Register') {
             $isCurrentInstall = Test-PreviewValue $targets[$i].Path $targets[$i].Name $state.Installed[$i].Value $state.Installed[$i].Kind
             if (-not $isCurrentInstall -and -not (Test-SameSnapshot $current $state.Values[$i])) { throw "Machine preview registration was changed by another application; preserving it: $($targets[$i].Path)" }
         }
-        $state.Values = @($state.Values | ForEach-Object { Remove-StaleOwnPreviewSnapshot $_ })
+        for ($i = 0; $i -lt 4; $i++) { $state.Values[$i] = Remove-StaleOwnPreviewSnapshot $state.Values[$i] $targets[$i].Value $targets[$i].Kind }
         $state.Installed = @($targets | ForEach-Object { [pscustomobject]@{ Path=$_.Path; Name=$_.Name; Kind=$_.Kind; Value=$_.Value } })
     }
     $stateDirectory = Split-Path -Parent ([IO.Path]::GetFullPath($StatePath))
@@ -238,7 +241,7 @@ if ($Action -eq 'Register') {
 }
 
 if (-not $state) { return }
-$state.Values = @($state.Values | ForEach-Object { Remove-StaleOwnPreviewSnapshot $_ })
+for ($i = 0; $i -lt 4; $i++) { $state.Values[$i] = Remove-StaleOwnPreviewSnapshot $state.Values[$i] $targets[$i].Value $targets[$i].Kind }
 if (Invoke-ElevatedMachineValues $state $targets) {
     Remove-Item -LiteralPath $StatePath -Force
     return

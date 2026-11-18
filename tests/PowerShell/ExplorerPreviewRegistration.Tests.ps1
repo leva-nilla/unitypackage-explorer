@@ -223,6 +223,13 @@ try {
     & $unregister -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $staleUserStatePath -MachineStatePath $staleMachineStatePath
     if ((Get-Item -LiteralPath $machineInprocKeyPath).GetValueNames().Contains('')) { throw 'Uninstall restored the stale self path recorded by an older state file.' }
 
+    # A value that repeats this product's own registration is a leftover from an earlier
+    # install of this product, not a foreign setting to restore.
+    New-ItemProperty -LiteralPath $machineInprocKeyPath -Name ThreadingModel -PropertyType String -Value 'Apartment' -Force | Out-Null
+    & $register -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $staleUserStatePath -MachineStatePath $staleMachineStatePath -SkipRuntimeCheck
+    & $unregister -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $staleUserStatePath -MachineStatePath $staleMachineStatePath
+    if ((Get-Item -LiteralPath $machineInprocKeyPath).GetValueNames().Contains('ThreadingModel')) { throw 'Uninstall restored this product''s own threading model.' }
+
     # A handler registered by another application must still be restored.
     $foreignHandler = 'C:\OtherVendor\Preview\Other.PreviewHandler.comhost.dll'
     Set-Item -LiteralPath $machineInprocKeyPath -Value $foreignHandler
