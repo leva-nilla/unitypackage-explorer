@@ -47,7 +47,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         {
             ResetForInitializeOnUiThread();
             _path = Path.GetFullPath(filePath);
-            _stream = null;
+            ReleaseStream();
             return 0;
         }
     }
@@ -192,7 +192,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         _panel = null;
         ReleaseRequestResources();
         _path = null;
-        _stream = null;
+        ReleaseStream();
         _parent = IntPtr.Zero;
         _site = null;
     }
@@ -268,7 +268,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         _panel = null;
         ReleaseRequestResources();
         _path = null;
-        _stream = null;
+        ReleaseStream();
     }
 
     private void ResetForInitializeOnUiThread()
@@ -558,6 +558,29 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         }
         source.Dispose();
         return resized;
+    }
+
+    private void ReleaseStream()
+    {
+        // The handler receives Explorer's IStream wrapper around the previewed file.
+        // Dropping the field alone would keep the runtime callable wrapper alive until
+        // the surrogate is collected, which keeps the file handle open and prevents the
+        // file from being moved or deleted after its preview closes.
+        var stream = _stream;
+        _stream = null;
+        ReleaseStreamWrapper(stream);
+    }
+
+    private static void ReleaseStreamWrapper(object? stream)
+    {
+        if (stream is null) return;
+        try
+        {
+            if (!Marshal.IsComObject(stream)) return;
+            Marshal.ReleaseComObject(stream);
+            PreviewLog.Write("Source stream released");
+        }
+        catch (Exception ex) { PreviewLog.Write("Stream release failed", ex); }
     }
 
     private void ReleaseRequestResources()
