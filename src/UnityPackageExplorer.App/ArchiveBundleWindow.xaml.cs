@@ -63,6 +63,7 @@ public partial class ArchiveBundleWindow : Window
         }
         _operation = new CancellationTokenSource();
         var operation = _operation;
+        var succeeded = false;
         SourceBox.IsEnabled = FolderNameBox.IsEnabled = CreateButton.IsEnabled = false;
         Progress.Visibility = Visibility.Visible;
         try
@@ -76,6 +77,7 @@ public partial class ArchiveBundleWindow : Window
             OpenFolderButton.Visibility = Visibility.Visible;
             CancelButton.Visibility = Visibility.Collapsed;
             CreateButton.Content = "閉じる";
+            succeeded = true;
         }
         catch (ArchiveBundleRecoveryException ex)
         {
@@ -99,6 +101,10 @@ public partial class ArchiveBundleWindow : Window
             CancelButton.IsEnabled = true;
             CancelButton.Content = "キャンセル";
         }
+        if (!succeeded) return;
+        // Show the completion line briefly, then close like a finished command.
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        if (IsVisible) Close();
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
