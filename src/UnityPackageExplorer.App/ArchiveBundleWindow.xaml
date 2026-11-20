@@ -29,12 +29,15 @@
         </StackPanel>
         <Grid Grid.Row="1" Margin="0,0,0,16">
             <Grid.ColumnDefinitions><ColumnDefinition Width="140"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <Label Content="名前の元にするZIP" Target="{Binding ElementName=SourceBox}" Foreground="#E5E9EF" VerticalAlignment="Center" Padding="0"/>
+            <Label Content="名前の元にするファイル" Target="{Binding ElementName=SourceBox}" Foreground="#E5E9EF" VerticalAlignment="Center" Padding="0"/>
             <ComboBox x:Name="SourceBox" Grid.Column="1" Padding="8,6" DisplayMemberPath="Name" SelectionChanged="SourceBox_SelectionChanged"/>
         </Grid>
         <StackPanel Grid.Row="2" Margin="0,0,0,18">
             <Label Content="フォルダー名" Target="{Binding ElementName=FolderNameBox}" Foreground="#E5E9EF" Padding="0" Margin="0,0,0,6"/>
             <TextBox x:Name="FolderNameBox" FontSize="17" TextChanged="FolderNameBox_TextChanged"/>
+            <CheckBox x:Name="MergePackagesCheckBox" Content="1つのUnityPackageにまとめる" Margin="0,14,0,0"
+                      Foreground="#E5E9EF" Checked="MergePackages_Changed" Unchecked="MergePackages_Changed"/>
+            <TextBlock x:Name="PreferenceHint" Text="この選択は次回も使われます。" Foreground="#AEBBC9" Margin="20,3,0,0" TextWrapping="Wrap"/>
         </StackPanel>
         <Border Grid.Row="3" Background="#1C222B" BorderBrush="#303946" BorderThickness="1" Padding="14">
             <DockPanel>
@@ -45,7 +48,7 @@
             </DockPanel>
         </Border>
         <StackPanel Grid.Row="4" Margin="0,14,0,16">
-            <TextBlock Text="選択したZIP内の .unitypackage だけを統合ZIPにまとめ、検証後に元ZIPを移動します。元ZIPの内容は変更しません。" Foreground="#AEBBC9" TextWrapping="Wrap"/>
+            <TextBlock Text="ZIP・単体RARの中の .unitypackage だけを使います。検証後に元ファイルを移動します。元ファイルの内容は変更しません。" Foreground="#AEBBC9" TextWrapping="Wrap"/>
             <ProgressBar x:Name="Progress" Height="3" Margin="0,12,0,0" IsIndeterminate="True" Visibility="Collapsed"/>
             <TextBlock x:Name="Status" Foreground="#FFCA6E" Margin="0,9,0,0" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
         </StackPanel>

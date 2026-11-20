@@ -14,6 +14,7 @@ A Windows 11 tool to inspect UnityPackage / Prefab / FBX inside ZIP/RAR archives
 - Rotate / zoom the 3D view; fly-through camera (standalone app).
 - Drag & drop files or open via Explorer right-click.
 - ZIP and single-volume RAR classification runs from the app after preview; never overwrites existing files.
+- Bundle ZIPs and single-volume RARs into a ZIP. The optional merge into one `.unitypackage` remembers your last choice.
 - `.zip`, `.rar`, and `.unitypackage` can also be previewed in the Explorer preview pane (optional).
 - UnityPackage extraction validates paths and moves into a new temp folder first.
 
@@ -38,6 +39,10 @@ The app runs with a bundled .NET runtime. The Explorer preview uses the shared x
 The lilToon view requires the Microsoft Edge WebView2 Runtime (usually present on Windows 11). If unavailable, the viewer falls back to lightweight mode. Model/material/rendering code runs locally; nothing is uploaded.
 
 Old PowerShell-based installs in the standard per-user location are upgraded in place only when their ownership marker verifies them as this product; the legacy install folder is then cleaned up. If the folder has no ownership record or contains files that cannot be verified, the setup stops to protect them. Legacy preview handler registration is removed; other file associations are untouched.
+
+## Bundle archives into a ZIP
+
+Select two or more ZIPs or single-volume RARs in the same folder, then use the bundle command under **Show more options**. The resulting ZIP contains only `.unitypackage` files. The optional merge is off by default and remembers your choice. When enabled, it writes one `.unitypackage`, preserving GUIDs and asset paths and refusing conflicting assets without moving the originals. Split RARs are not accepted. The app moves the unchanged originals only after verifying the result.
 
 ## Split RAR
 

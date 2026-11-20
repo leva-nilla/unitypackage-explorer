@@ -40,7 +40,7 @@ int wmain(int argc, wchar_t** argv)
         CloseHandle(file);
         return ok ? 0 : 12;
     }
-    if (argc != 5) return 2; // isolated DLL, ZIP 1, ZIP 2, non-ZIP
+    if (argc != 5) return 2; // isolated DLL, ZIP, RAR, unsupported file
     const std::wstring dllPath = argv[1];
     const auto directory = dllPath.substr(0, dllPath.find_last_of(L"\\/") + 1);
     wchar_t executable[32768]{};
@@ -61,14 +61,16 @@ int wmain(int argc, wchar_t** argv)
     if (FAILED(created)) return 7;
     auto pair = Items({ argv[2], argv[3] });
     auto single = Items({ argv[2] });
-    auto mixed = Items({ argv[2], argv[4] });
-    if (!pair || !single || !mixed) return 8;
+    auto rarFirst = Items({ argv[3], argv[2] });
+    auto unsupported = Items({ argv[2], argv[4] });
+    if (!pair || !single || !rarFirst || !unsupported) return 8;
     EXPCMDSTATE state{};
     bool passed = SUCCEEDED(command->GetState(pair, FALSE, &state)) && state == ECS_ENABLED;
     passed = passed && SUCCEEDED(command->GetState(single, FALSE, &state)) && state == ECS_HIDDEN;
-    passed = passed && SUCCEEDED(command->GetState(mixed, FALSE, &state)) && state == ECS_HIDDEN;
+    passed = passed && SUCCEEDED(command->GetState(rarFirst, FALSE, &state)) && state == ECS_ENABLED;
+    passed = passed && SUCCEEDED(command->GetState(unsupported, FALSE, &state)) && state == ECS_HIDDEN;
     passed = passed && SUCCEEDED(command->Invoke(pair, nullptr));
-    pair->Release(); single->Release(); mixed->Release();
+    pair->Release(); single->Release(); rarFirst->Release(); unsupported->Release();
     command->Release();
     FreeLibrary(module);
     CoUninitialize();
@@ -85,6 +87,6 @@ int wmain(int argc, wchar_t** argv)
     CloseHandle(file);
     const std::wstring expected = std::wstring(L"--bundle-zips\n") + argv[2] + L"\n" + argv[3] + L"\n";
     passed = passed && std::wstring(contents.data(), read / sizeof(wchar_t)) == expected;
-    std::cout << (passed ? "PASS native ZIP multiselect, filtering and argv forwarding\n" : "FAIL native ZIP bundle command\n");
+    std::cout << (passed ? "PASS native ZIP/RAR multiselect, filtering and argv forwarding\n" : "FAIL native ZIP bundle command\n");
     return passed ? 0 : 1;
 }

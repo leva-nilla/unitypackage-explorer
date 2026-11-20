@@ -466,7 +466,8 @@ public sealed class UnityZipReaderTests
         return stream.ToArray();
     }
 
-    private static byte[] CreateStoredRar4(string name, byte[] contents, long? declaredLength = null, long? packedLength = null, bool isDirectory = false)
+    internal static byte[] CreateStoredRar4(string name, byte[] contents, long? declaredLength = null, long? packedLength = null,
+        bool isDirectory = false, uint attributes = 0, bool solid = false)
     {
         var nameBytes = Encoding.ASCII.GetBytes(name);
         var unpackedLength = declaredLength ?? contents.LongLength;
@@ -476,7 +477,7 @@ public sealed class UnityZipReaderTests
         var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
         writer.Write(new byte[] { 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00 }); // RAR4 signature
-        WriteRarHeader(writer, [0x73, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0]); // main header
+        WriteRarHeader(writer, [0x73, solid ? (byte)0x08 : (byte)0, 0, 13, 0, 0, 0, 0, 0, 0, 0]); // main header
 
         using var fileHeader = new MemoryStream();
         using (var fileWriter = new BinaryWriter(fileHeader, Encoding.UTF8, leaveOpen: true))
@@ -492,7 +493,7 @@ public sealed class UnityZipReaderTests
             fileWriter.Write((byte)20);
             fileWriter.Write((byte)0x30); // stored
             fileWriter.Write(checked((ushort)nameBytes.Length));
-            fileWriter.Write(0u);
+            fileWriter.Write(attributes);
             fileWriter.Write(nameBytes);
         }
         WriteRarHeader(writer, fileHeader.ToArray());
