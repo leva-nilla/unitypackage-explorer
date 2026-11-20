@@ -4,7 +4,10 @@ using System.Text.RegularExpressions;
 
 namespace UnityPackageExplorer.Core;
 
-public sealed record ArchiveBundlePlan(IReadOnlyList<string> SourcePaths, string DestinationDirectory, string ArchiveName);
+public sealed record ArchiveBundlePlan(IReadOnlyList<string> SourcePaths, string DestinationDirectory, string ArchiveName)
+{
+    public bool MergePackages { get; init; }
+}
 public sealed record ArchiveBundleProgress(string Stage, string? FileName = null);
 public sealed record ArchiveBundleResult(string DirectoryPath, string ArchivePath, IReadOnlyList<string> Warnings);
 
@@ -20,31 +23,33 @@ public static class ArchiveBundleService
 {
     public const int MaximumSourceCount = 64;
 
-    public static ArchiveBundlePlan Plan(IEnumerable<string> sourcePaths, string folderName)
+    public static ArchiveBundlePlan Plan(IEnumerable<string> sourcePaths, string folderName, bool mergePackages = false)
     {
         ValidateLeafName(folderName);
         var sources = sourcePaths.Select(Path.GetFullPath).ToArray();
         if (sources.Length is < 2 or > MaximumSourceCount)
-            throw new ArgumentException($"ZIPを2～{MaximumSourceCount}個選択してください。");
+            throw new ArgumentException($"ZIPまたは単体RARを2～{MaximumSourceCount}個選択してください。");
         if (sources.Distinct(StringComparer.OrdinalIgnoreCase).Count() != sources.Length)
-            throw new ArgumentException("同じZIPが複数回指定されています。");
+            throw new ArgumentException("同じファイルが複数回指定されています。");
         var parent = Path.GetDirectoryName(sources[0])!;
         foreach (var source in sources)
         {
             if (!string.Equals(parent, Path.GetDirectoryName(source), StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("同じフォルダーにあるZIPを選択してください。");
-            if (!Path.GetExtension(source).Equals(".zip", StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("統合できるのはZIPファイルだけです。");
+                throw new ArgumentException("同じフォルダーにあるファイルを選択してください。");
+            if (UnityRarReader.IsLegacyVolumePath(source))
+                throw new ArgumentException("分割RARは統合ZIPの対象外です。");
+            if (Path.GetExtension(source).ToLowerInvariant() is not (".zip" or ".rar"))
+                throw new ArgumentException("統合できるのはZIPと単体RARだけです。");
             AssertOrdinaryPath(source);
-            if (!File.Exists(source)) throw new FileNotFoundException("元ZIPが見つかりません。", source);
+            if (!File.Exists(source)) throw new FileNotFoundException("元ファイルが見つかりません。", source);
         }
         var destination = Path.Combine(parent, folderName);
         if (Path.Exists(destination)) throw new IOException("同名のフォルダーまたはファイルがあります。別の名前に変更してください。");
         var archiveName = folderName + "_統合.zip";
         ValidateLeafName(archiveName);
         if (sources.Any(source => Path.GetFileName(source).Equals(archiveName, StringComparison.OrdinalIgnoreCase)))
-            throw new IOException("統合ZIPの名前が元ZIPと重なります。フォルダー名を変更してください。");
-        return new ArchiveBundlePlan(Array.AsReadOnly(sources), destination, archiveName);
+            throw new IOException("統合ZIPの名前が元ファイルと重なります。フォルダー名を変更してください。");
+        return new ArchiveBundlePlan(Array.AsReadOnly(sources), destination, archiveName) { MergePackages = mergePackages };
     }
 
     public static Task<ArchiveBundleResult> CreateAsync(ArchiveBundlePlan plan,
@@ -54,7 +59,7 @@ public static class ArchiveBundleService
     private static ArchiveBundleResult Create(ArchiveBundlePlan requested, IProgress<ArchiveBundleProgress>? progress, CancellationToken token)
     {
         // Revalidate the public plan immediately before doing any filesystem work.
-        var plan = Plan(requested.SourcePaths, Path.GetFileName(requested.DestinationDirectory));
+        var plan = Plan(requested.SourcePaths, Path.GetFileName(requested.DestinationDirectory), requested.MergePackages);
         if (!string.Equals(plan.DestinationDirectory, requested.DestinationDirectory, StringComparison.OrdinalIgnoreCase)
             || plan.ArchiveName != requested.ArchiveName)
             throw new ArgumentException("保存先の指定が一致しません。");
@@ -66,51 +71,7 @@ public static class ArchiveBundleService
         var moved = new List<(string Original, string Staged)>();
         try
         {
-            var sources = new List<(string Path, byte[] Hash)>();
-            var expected = new Dictionary<string, (long Length, byte[] Hash)>(StringComparer.OrdinalIgnoreCase);
-            long total = 0;
-            using (var output = new FileStream(archivePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
-            using (var zip = new ZipArchive(output, ZipArchiveMode.Create))
-            {
-                foreach (var source in plan.SourcePaths)
-                {
-                    token.ThrowIfCancellationRequested();
-                    progress?.Report(new("ZIPをまとめています", Path.GetFileName(source)));
-                    using var file = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
-                    var sourceHash = Hash(file, token);
-                    file.Position = 0;
-                    using var input = new ZipArchive(file, ZipArchiveMode.Read);
-                    if (input.Entries.Count > UnityArchiveLimits.MaximumEntryCount)
-                        throw new InvalidDataException("ZIP内の項目数が上限を超えています。");
-                    var added = 0;
-                    foreach (var entry in input.Entries)
-                    {
-                        token.ThrowIfCancellationRequested();
-                        // Only packages carry over. Text files, textures and other members stay
-                        // in the original ZIP, which is kept in the destination folder.
-                        if (!IsPackageEntry(entry)) continue;
-                        // Packages are flattened to the ZIP root, so the member path itself is
-                        // discarded. It is still validated to reject links and unsafe entries.
-                        var name = Path.GetFileName(SafeMemberName(entry));
-                        if (expected.Count >= UnityArchiveLimits.MaximumEntryCount || expected.ContainsKey(name))
-                            throw new InvalidDataException($"同じ名前の .unitypackage が複数あります。名前を変えてから再実行してください。\n{name}");
-                        if (entry.Length > UnityArchiveLimits.MaximumStreamedMemberBytes
-                            || entry.Length > UnityArchiveLimits.MaximumDeclaredTotalBytes - total)
-                            throw new InvalidDataException("ZIPの内容が安全な読込みサイズ上限を超えています。");
-                        using var from = entry.Open();
-                        // unitypackage/PNG and other assets are commonly compressed already.
-                        var target = zip.CreateEntry(name, CompressionLevel.NoCompression);
-                        using var to = target.Open();
-                        var copied = CopyAndHash(from, to, entry.Length, token);
-                        total = checked(total + copied.Length);
-                        expected.Add(name, copied);
-                        added++;
-                    }
-                    if (added == 0)
-                        throw new InvalidDataException($".unitypackage を含まない ZIP があります。元ZIPは移動していません。\n{Path.GetFileName(source)}");
-                    sources.Add((source, sourceHash));
-                }
-            }
+            var (sources, expected) = BuildArchive(plan, staging, archivePath, progress, token);
             progress?.Report(new("統合ZIPを検証しています"));
             VerifyArchive(archivePath, expected, token);
             var warnings = VerifyReferences(archivePath, staging, token);
@@ -120,18 +81,18 @@ public static class ArchiveBundleService
             foreach (var source in sources)
             {
                 token.ThrowIfCancellationRequested();
-                progress?.Report(new("元ZIPをフォルダーへ移動しています", Path.GetFileName(source.Path)));
+                progress?.Report(new("元ファイルをフォルダーへ移動しています", Path.GetFileName(source.Path)));
                 AssertOrdinaryPath(source.Path);
                 using (var file = new FileStream(source.Path, FileMode.Open, FileAccess.Read, FileShare.Read))
                     if (!Hash(file, token).AsSpan().SequenceEqual(source.Hash))
-                        throw new IOException("作業中に元ZIPが変更されたため、中止しました。");
+                        throw new IOException("作業中に元ファイルが変更されたため、中止しました。");
                 AssertOrdinaryPath(staging);
                 var target = Path.Combine(staging, Path.GetFileName(source.Path));
                 File.Move(source.Path, target, overwrite: false);
                 moved.Add((source.Path, target));
                 using var movedFile = File.OpenRead(target);
                 if (!Hash(movedFile, token).AsSpan().SequenceEqual(source.Hash))
-                    throw new IOException("移動した元ZIPの内容が一致しません。");
+                    throw new IOException("移動した元ファイルの内容が一致しません。");
             }
             token.ThrowIfCancellationRequested();
             // Atomic publish in the same parent. A racing existing destination is never merged.
@@ -154,7 +115,7 @@ public static class ArchiveBundleService
             }
             if (rollbackErrors.Count > 0)
                 throw new ArchiveBundleRecoveryException(
-                    "一部の元ZIPを元の場所へ戻せませんでした。作業フォルダーに保管しています。削除せず内容を確認してください。\n" + staging,
+                    "一部の元ファイルを元の場所へ戻せませんでした。作業フォルダーに保管しています。削除せず内容を確認してください。\n" + staging,
                     staging, new AggregateException(new[] { error }.Concat(rollbackErrors)));
             // Delete only our known output and empty folders, never recursively remove originals.
             try
@@ -169,6 +130,102 @@ public static class ArchiveBundleService
         }
     }
 
+    private static (List<(string Path, byte[] Hash)> Sources, Dictionary<string, (long Length, byte[] Hash)> Expected)
+        BuildArchive(ArchiveBundlePlan plan, string staging, string archivePath, IProgress<ArchiveBundleProgress>? progress, CancellationToken token)
+    {
+        var sources = new List<(string Path, byte[] Hash)>();
+        var expected = new Dictionary<string, (long Length, byte[] Hash)>(StringComparer.OrdinalIgnoreCase);
+        var buffer = new byte[128 * 1024];
+        long total = 0;
+        var count = 0;
+        using var spool = plan.MergePackages ? CreateScratch(staging) : null;
+        using var pendingPackage = plan.MergePackages ? CreateScratch(staging) : null;
+        var merger = spool is null ? null : new UnityPackageMerger(spool, buffer);
+        using var output = new FileStream(archivePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+        using var zip = new ZipArchive(output, ZipArchiveMode.Create);
+        foreach (var source in plan.SourcePaths)
+        {
+            token.ThrowIfCancellationRequested();
+            progress?.Report(new("ZIP/RARをまとめています", Path.GetFileName(source)));
+            using var file = OpenSource(source);
+            var sourceHash = Hash(file, token);
+            file.Position = 0;
+            var before = count;
+            if (Path.GetExtension(source).Equals(".rar", StringComparison.OrdinalIgnoreCase))
+            {
+                // A stream-backed reader never searches for adjacent volumes. The original is
+                // held read-only throughout hashing and all reads, just like the ZIP branch.
+                new UnityRarReader(() => OpenSource(source)).VisitBundlePackages(
+                    (member, stream) => AddPackage(member.FullName, member.Length, stream), token);
+            }
+            else
+            {
+                using var input = new ZipArchive(file, ZipArchiveMode.Read);
+                if (input.Entries.Count > UnityArchiveLimits.MaximumEntryCount)
+                    throw new InvalidDataException("ZIP内の項目数が上限を超えています。");
+                foreach (var entry in input.Entries)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (!entry.Name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase)) continue;
+                    AssertRegularZipEntry(entry);
+                    using var member = entry.Open();
+                    AddPackage(entry.FullName, entry.Length, member);
+                }
+            }
+            if (count == before)
+                throw new InvalidDataException($".unitypackage を含まないファイルがあります。\n{Path.GetFileName(source)}");
+            sources.Add((source, sourceHash));
+        }
+        if (merger is not null)
+        {
+            progress?.Report(new("UnityPackageを1つにまとめています"));
+            using var merged = CreateScratch(staging);
+            merger.WriteAndVerify(merged, token);
+            if (merged.Length > UnityArchiveLimits.MaximumStreamedMemberBytes)
+                throw new InvalidDataException("統合したUnityPackageが読込みサイズ上限を超えています。");
+            merged.Position = 0;
+            WritePackage(Path.GetFileName(plan.DestinationDirectory) + ".unitypackage", merged.Length, merged);
+        }
+        return (sources, expected);
+
+        void AddPackage(string entryName, long length, Stream from)
+        {
+            var name = Path.GetFileName(SafeMemberName(entryName));
+            if (++count > UnityArchiveLimits.MaximumEntryCount)
+                throw new InvalidDataException("統合する .unitypackage の数が上限を超えています。");
+            if (length < 0 || length > UnityArchiveLimits.MaximumStreamedMemberBytes
+                || length > UnityArchiveLimits.MaximumDeclaredTotalBytes - total)
+                throw new InvalidDataException("ZIP/RARの内容が安全な読込みサイズ上限を超えています。");
+            total += length;
+            if (merger is null)
+            {
+                if (expected.ContainsKey(name))
+                    throw new InvalidDataException($"同じ名前の .unitypackage が複数あります。名前を変えるか、1つのUnityPackageにまとめてください。\n{name}");
+                WritePackage(name, length, from);
+                return;
+            }
+            // Finish consuming this outer member (including its integrity check) before
+            // parsing the inner TAR, which may stop reading at its end marker.
+            pendingPackage!.Position = 0;
+            pendingPackage.SetLength(0);
+            CopyAndHash(from, pendingPackage, length, token, buffer);
+            pendingPackage.Position = 0;
+            merger.AddPackage(pendingPackage, name, token);
+        }
+
+        void WritePackage(string name, long length, Stream from)
+        {
+            // UnityPackage is already compressed.
+            using var to = zip.CreateEntry(name, CompressionLevel.NoCompression).Open();
+            expected.Add(name, CopyAndHash(from, to, length, token, buffer));
+        }
+    }
+
+    private static FileStream OpenSource(string path) => new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+    private static FileStream CreateScratch(string staging)
+        => new(Path.Combine(staging, $".package-{Guid.NewGuid():N}.tmp"), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 64 * 1024, FileOptions.DeleteOnClose);
+
     private static void VerifyArchive(string path, Dictionary<string, (long Length, byte[] Hash)> expected, CancellationToken token)
     {
         using var zip = ZipFile.OpenRead(path);
@@ -181,7 +238,7 @@ public static class ArchiveBundleService
             using var input = entry.Open();
             var actual = CopyAndHash(input, Stream.Null, original.Length, token);
             if (!actual.Hash.AsSpan().SequenceEqual(original.Hash))
-                throw new InvalidDataException("統合ZIPの検証に失敗しました。元ZIPは移動しません。");
+                throw new InvalidDataException("統合ZIPの検証に失敗しました。元ファイルは移動しません。");
         }
     }
 
@@ -224,38 +281,41 @@ public static class ArchiveBundleService
         }
     }
 
-    private static (long Length, byte[] Hash) CopyAndHash(Stream input, Stream output, long maximum, CancellationToken token)
+    internal static (long Length, byte[] Hash) CopyAndHash(Stream input, Stream output, long maximum, CancellationToken token, byte[]? reusableBuffer = null)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        var buffer = new byte[128 * 1024];
+        var buffer = reusableBuffer ?? new byte[128 * 1024];
         long total = 0;
         int read;
-        while ((read = input.Read(buffer)) > 0)
+        while (true)
         {
             token.ThrowIfCancellationRequested();
+            read = input.Read(buffer, 0, buffer.Length);
+            if (read == 0) break;
             total = checked(total + read);
-            if (total > maximum) throw new InvalidDataException("ZIPの内容が宣言サイズを超えています。");
+            if (total > maximum) throw new InvalidDataException("アーカイブの内容が宣言サイズを超えています。");
             output.Write(buffer, 0, read);
             hash.AppendData(buffer, 0, read);
         }
-        if (total != maximum) throw new InvalidDataException("ZIPの内容が途中で途切れています。");
+        if (total != maximum) throw new InvalidDataException("アーカイブの内容が途中で途切れています。");
         return (total, hash.GetHashAndReset());
     }
 
     private static byte[] Hash(Stream stream, CancellationToken token)
         => CopyAndHash(stream, Stream.Null, stream.Length, token).Hash;
 
-    private static bool IsPackageEntry(ZipArchiveEntry entry)
-        => entry.Name.Length > 0 && entry.Name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase);
-
-    private static string SafeMemberName(ZipArchiveEntry entry)
+    private static void AssertRegularZipEntry(ZipArchiveEntry entry)
     {
-        var name = entry.FullName.Replace('\\', '/');
-        if (name.StartsWith('/') || name.Length == 0) throw new InvalidDataException("ZIP内に不正なパスがあります。");
         var unixType = (entry.ExternalAttributes >> 16) & 0xF000;
-        if (unixType is not (0 or 0x8000 or 0x4000) || (entry.ExternalAttributes & 0x400) != 0)
+        if (unixType is not (0 or 0x8000) || (entry.ExternalAttributes & (int)(FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
             throw new InvalidDataException("ZIP内のリンクや特殊ファイルは統合できません。");
-        foreach (var segment in name.TrimEnd('/').Split('/')) ValidateLeafName(segment);
+    }
+
+    private static string SafeMemberName(string entryName)
+    {
+        var name = entryName.Replace('\\', '/');
+        foreach (var segment in name.Split('/')) ValidateLeafName(segment);
+        UnityPackageReader.GetSafeRelativePath(name);
         return name;
     }
 
@@ -283,7 +343,7 @@ public static class ArchiveBundleService
             try
             {
                 using var input = new FileStream(source + ":Zone.Identifier", FileMode.Open, FileAccess.Read, FileShare.Read);
-                if (input.Length > 64 * 1024) throw new InvalidDataException("元ZIPのインターネット由来情報が大きすぎます。");
+                if (input.Length > 64 * 1024) throw new InvalidDataException("元ファイルのインターネット由来情報が大きすぎます。");
                 using var reader = new StreamReader(input);
                 var match = Regex.Match(reader.ReadToEnd(), @"(?m)^ZoneId=([0-4])\s*$");
                 if (match.Success) zone = Math.Max(zone, int.Parse(match.Groups[1].Value));

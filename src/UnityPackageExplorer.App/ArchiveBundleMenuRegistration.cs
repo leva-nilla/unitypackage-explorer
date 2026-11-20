@@ -13,7 +13,7 @@ internal static class ArchiveBundleMenuRegistration
     private const string StatePath = @"Software\UnityPackageExplorer\ArchiveBundleMenu";
     private const string ClassPath = @"Software\Classes\CLSID\" + ClassId + @"\InprocServer32";
 
-    internal static void Apply(string mode, string appPath, RegistryKey? registry = null, string? zipProgId = null)
+    internal static void Apply(string mode, string appPath, RegistryKey? registry = null, string? zipProgId = null, string? rarProgId = null)
     {
         var root = registry ?? Registry.CurrentUser;
         var dll = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(appPath))!, "UnityPackageExplorer.ShellExtension.dll");
@@ -29,12 +29,13 @@ internal static class ArchiveBundleMenuRegistration
         if (mode == "register")
         {
             if (!File.Exists(dll)) throw new FileNotFoundException("右クリックメニューのDLLがありません。", dll);
-            verbs.Add(@"Software\Classes\SystemFileAssociations\.zip" + Suffix);
-            zipProgId ??= EffectiveZipProgId(root);
-            if (zipProgId is not null)
+            foreach (var (extension, overrideProgId) in new[] { (".zip", zipProgId), (".rar", rarProgId) })
             {
-                if (!ValidProgId(zipProgId)) throw new IOException("ZIPの関連付け名が不正です。");
-                verbs.Add(@"Software\Classes\" + zipProgId + Suffix);
+                verbs.Add(@"Software\Classes\SystemFileAssociations\" + extension + Suffix);
+                var progId = overrideProgId ?? EffectiveProgId(root, extension);
+                if (progId is null) continue;
+                if (!ValidProgId(progId)) throw new IOException("統合元ファイルの関連付け名が不正です。");
+                verbs.Add(@"Software\Classes\" + progId + Suffix);
             }
             var expected = Values(verbs, appPath, dll).ToArray();
             // Validate every value before writing any of them.
@@ -104,13 +105,13 @@ internal static class ArchiveBundleMenuRegistration
         && value.Split('\\').All(segment => segment is not ("." or ".."));
     private static bool IsVerbPath(string path) => path.StartsWith(@"Software\Classes\", StringComparison.Ordinal)
         && path.EndsWith(Suffix, StringComparison.Ordinal) && ValidProgId(path[@"Software\Classes\".Length..^Suffix.Length]);
-    private static string? EffectiveZipProgId(RegistryKey root)
+    private static string? EffectiveProgId(RegistryKey root, string extension)
     {
-        using var choice = root.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.zip\UserChoice");
+        using var choice = root.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\" + extension + @"\UserChoice");
         var value = choice?.GetValue("ProgId") as string;
         if (value is not null && ValidProgId(value)) return value;
-        using var extension = Registry.ClassesRoot.OpenSubKey(".zip");
-        value = extension?.GetValue("") as string;
+        using var key = Registry.ClassesRoot.OpenSubKey(extension);
+        value = key?.GetValue("") as string;
         return value is not null && ValidProgId(value) ? value : null;
     }
     private static void RemoveEmpty(RegistryKey root, string path)

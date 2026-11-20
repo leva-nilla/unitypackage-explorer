@@ -45,7 +45,7 @@ VersionInfoDescription={#ProductName} per-user setup
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 
 [Tasks]
-Name: "contextmenu"; Description: "従来の右クリックメニューに追加（開く・ZIPをまとめる）"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
+Name: "contextmenu"; Description: "従来の右クリックメニューに追加（開く・統合ZIPを作成）"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 Name: "startmenu"; Description: "スタートメニューに追加"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 Name: "sendto"; Description: "「送る」に追加"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce
 Name: "explorerpreview"; Description: "エクスプローラーのプレビュー欄にZIP / RAR / UnityPackageを表示"; GroupDescription: "エクスプローラー連携:"; Flags: checkedonce

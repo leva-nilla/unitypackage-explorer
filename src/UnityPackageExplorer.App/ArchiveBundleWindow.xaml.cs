@@ -1,8 +1,10 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Security;
 using System.Windows;
 using System.Windows.Controls;
+using Microsoft.Win32;
 using UnityPackageExplorer.Core;
 
 namespace UnityPackageExplorer.App;
@@ -15,18 +17,30 @@ public partial class ArchiveBundleWindow : Window
     }
 
     private readonly string[] _sources;
+    private readonly ArchiveBundlePreferences _preferences;
     private CancellationTokenSource? _operation;
     private string? _lastSuggestedName;
     private string? _resultDirectory;
     private bool _finished;
+    private bool _preferencesReady;
 
     public ArchiveBundleWindow(IEnumerable<string> paths)
+        : this(paths, new ArchiveBundlePreferences(Registry.CurrentUser)) { }
+
+    internal ArchiveBundleWindow(IEnumerable<string> paths, ArchiveBundlePreferences preferences)
     {
         _sources = paths.Select(Path.GetFullPath).ToArray();
+        _preferences = preferences;
         // Reject unsupported selections before presenting a usable operation.
         ArchiveBundleService.Plan(_sources, "UnityPackageExplorer-selection-" + Guid.NewGuid().ToString("N"));
         InitializeComponent();
-        SelectionSummary.Text = $"{_sources.Length}個のZIP · 保存先: {Path.GetDirectoryName(_sources[0])}";
+        SelectionSummary.Text = $"{_sources.Length}個のファイル · 保存先: {Path.GetDirectoryName(_sources[0])}";
+        try { MergePackagesCheckBox.IsChecked = _preferences.MergePackages; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
+        {
+            PreferenceHint.Text = "前回の選択を読み込めませんでした。";
+        }
+        _preferencesReady = true;
         SourceBox.ItemsSource = _sources.Select(path => new SourceChoice(path)).ToArray();
         SourceBox.SelectedIndex = 0;
         Loaded += (_, _) => { FolderNameBox.Focus(); FolderNameBox.SelectAll(); };
@@ -42,10 +56,29 @@ public partial class ArchiveBundleWindow : Window
     }
 
     private void FolderNameBox_TextChanged(object sender, TextChangedEventArgs e)
+        => UpdateLayoutPreview();
+
+    private void MergePackages_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_preferencesReady) return;
+        UpdateLayoutPreview();
+        try
+        {
+            _preferences.MergePackages = MergePackagesCheckBox.IsChecked == true;
+            PreferenceHint.Text = "この選択は次回も使われます。";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
+        {
+            PreferenceHint.Text = "選択を保存できませんでした。今回の作成には適用されます。";
+        }
+    }
+
+    private void UpdateLayoutPreview()
     {
         if (LayoutPreview is null) return;
         var name = FolderNameBox.Text;
-        LayoutPreview.Text = name + "/\n├─ *.unitypackage（選択した" + _sources.Length + "個のZIPから）\n└─ " + name + "_統合.zip";
+        var packages = MergePackagesCheckBox.IsChecked == true ? name + ".unitypackage" : "*.unitypackage（別々に収録）";
+        LayoutPreview.Text = $"{name}/\n├─ 元ファイル（{_sources.Length}個）\n└─ {name}_統合.zip\n   └─ {packages}";
         if (!_finished) Status.Text = "";
     }
 
@@ -54,7 +87,7 @@ public partial class ArchiveBundleWindow : Window
         if (_finished) { Close(); return; }
         if (_operation is not null) return;
         ArchiveBundlePlan plan;
-        try { plan = ArchiveBundleService.Plan(_sources, FolderNameBox.Text); }
+        try { plan = ArchiveBundleService.Plan(_sources, FolderNameBox.Text, MergePackagesCheckBox.IsChecked == true); }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
         {
             Status.Text = ex.Message;
@@ -64,7 +97,7 @@ public partial class ArchiveBundleWindow : Window
         _operation = new CancellationTokenSource();
         var operation = _operation;
         var succeeded = false;
-        SourceBox.IsEnabled = FolderNameBox.IsEnabled = CreateButton.IsEnabled = false;
+        SourceBox.IsEnabled = FolderNameBox.IsEnabled = MergePackagesCheckBox.IsEnabled = CreateButton.IsEnabled = false;
         Progress.Visibility = Visibility.Visible;
         try
         {
@@ -89,14 +122,14 @@ public partial class ArchiveBundleWindow : Window
             CancelButton.Visibility = Visibility.Collapsed;
             CreateButton.Content = "閉じる";
         }
-        catch (OperationCanceledException) { Status.Text = "中止しました。元ZIPは元の場所にあります。"; }
-        catch (Exception ex) { Status.Text = "作成できませんでした。元ZIPは元の場所にあります。\n" + ex.Message; }
+        catch (OperationCanceledException) { Status.Text = "中止しました。元ファイルは元の場所にあります。"; }
+        catch (Exception ex) { Status.Text = "作成できませんでした。元ファイルは元の場所にあります。\n" + ex.Message; }
         finally
         {
             _operation = null;
             operation.Dispose();
             Progress.Visibility = Visibility.Collapsed;
-            SourceBox.IsEnabled = FolderNameBox.IsEnabled = !_finished;
+            SourceBox.IsEnabled = FolderNameBox.IsEnabled = MergePackagesCheckBox.IsEnabled = !_finished;
             CreateButton.IsEnabled = true;
             CancelButton.IsEnabled = true;
             CancelButton.Content = "キャンセル";
@@ -117,7 +150,7 @@ public partial class ArchiveBundleWindow : Window
     {
         _operation?.Cancel();
         CancelButton.IsEnabled = false;
-        Status.Text = "中止して元ZIPの位置を確認しています…";
+        Status.Text = "中止して元ファイルの位置を確認しています…";
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)

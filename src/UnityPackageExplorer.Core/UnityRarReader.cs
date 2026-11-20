@@ -37,35 +37,101 @@ public sealed class UnityRarReader : IUnityArchiveReader
         try
         {
             using var source = OpenArchive(cancellationToken);
-            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var result = new List<UnityArchiveMember>();
-            long declaredTotal = 0;
-            var entryCount = 0;
-            var hasEncryptedEntry = false;
-            foreach (var entry in source.Archive.Entries)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (++entryCount > UnityArchiveLimits.MaximumEntryCount)
-                    throw new InvalidDataException($"RARの項目数が上限（{UnityArchiveLimits.MaximumEntryCount:N0}）を超えています。");
-                if (!entry.IsComplete) throw RarVolumeResolver.Incomplete();
-                if (entry.IsDirectory) continue;
-                hasEncryptedEntry |= entry.IsEncrypted;
-                var key = entry.Key ?? throw new InvalidDataException("RAR内に名前のない項目があります。");
-                if (!names.Add(key)) throw new InvalidDataException($"RAR内に同名の項目があります: {key}");
-                var size = entry.Size;
-                if (size < 0 || size > UnityArchiveLimits.MaximumDeclaredTotalBytes - declaredTotal)
-                    throw new InvalidDataException($"RARの宣言展開サイズが上限（{FormatSize(UnityArchiveLimits.MaximumDeclaredTotalBytes)}）を超えるか、不明です。必要なファイルを取り出して開いてください。");
-                declaredTotal += size;
-                result.Add(new UnityArchiveMember(key, size, entry.CompressedSize));
-            }
-            if (source.IsMultiVolume && source.Archive.Volumes.Select((volume, index) => (volume, index))
-                .Any(part => part.volume is not RarVolume { IsMultiVolume: true } rar || (part.index > 0 && rar.IsFirstVolume)))
-                throw RarVolumeResolver.Incomplete();
-            if (hasEncryptedEntry) throw PasswordRequired();
+            var result = ReadIndex(source, cancellationToken);
             IsMultiVolume = source.IsMultiVolume;
             return result;
         }
         catch (Exception ex) when (IsArchiveError(ex)) { throw DescribeArchiveError(ex); }
+    }
+
+    /// <summary>Visits package streams once; a solid archive must be decoded in archive order.</summary>
+    internal void VisitBundlePackages(Action<UnityArchiveMember, Stream> visit, CancellationToken token)
+    {
+        try
+        {
+            using var source = OpenArchive(token, allowSplit: false);
+            var archive = source.Archive;
+            var packages = ReadIndex(source, token, forBundle: true)
+                .Where(entry => IsPackage(entry.FullName)).ToDictionary(entry => entry.FullName, StringComparer.OrdinalIgnoreCase);
+            if (packages.Count == 0) return;
+            if (!archive.IsSolid)
+            {
+                foreach (var entry in archive.Entries)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (entry.IsDirectory || !packages.TryGetValue(entry.Key!, out var member)) continue;
+                    if (member.Length > UnityArchiveLimits.MaximumStreamedMemberBytes)
+                        throw MemberTooLarge(member.FullName, UnityArchiveLimits.MaximumStreamedMemberBytes);
+                    using var input = entry.OpenEntryStream();
+                    visit(member, input);
+                }
+                return;
+            }
+
+            using var reader = archive.ExtractAllEntries();
+            var buffer = new byte[64 * 1024];
+            long decoded = 0;
+            while (packages.Count > 0 && reader.MoveToNextEntry())
+            {
+                token.ThrowIfCancellationRequested();
+                if (reader.Entry.IsDirectory) continue;
+                if (packages.Remove(reader.Entry.Key!, out var member))
+                {
+                    if (member.Length > UnityArchiveLimits.MaximumStreamedMemberBytes
+                        || member.Length > UnityArchiveLimits.MaximumDeclaredTotalBytes - decoded)
+                        throw MemberTooLarge(member.FullName, UnityArchiveLimits.MaximumStreamedMemberBytes);
+                    using var input = reader.OpenEntryStream();
+                    visit(member, input);
+                    decoded += member.Length;
+                }
+                else
+                {
+                    using var input = reader.OpenEntryStream();
+                    DrainSolidMember(input, buffer, ref decoded, token);
+                }
+            }
+            if (packages.Count > 0) throw new InvalidDataException("ソリッドRAR内の .unitypackage を読み取れませんでした。");
+        }
+        catch (Exception ex) when (IsArchiveError(ex)) { throw DescribeArchiveError(ex); }
+    }
+
+    private static bool IsPackage(string name) => name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase);
+
+    private static List<UnityArchiveMember> ReadIndex(ArchiveSource source, CancellationToken token, bool forBundle = false)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<UnityArchiveMember>();
+        long declaredTotal = 0;
+        var entryCount = 0;
+        var hasEncryptedEntry = false;
+        foreach (var entry in source.Archive.Entries)
+        {
+            token.ThrowIfCancellationRequested();
+            if (++entryCount > UnityArchiveLimits.MaximumEntryCount)
+                throw new InvalidDataException($"RARの項目数が上限（{UnityArchiveLimits.MaximumEntryCount:N0}）を超えています。");
+            if (!entry.IsComplete) throw RarVolumeResolver.Incomplete();
+            if (entry.IsDirectory) continue;
+            hasEncryptedEntry |= entry.IsEncrypted;
+            var key = entry.Key ?? throw new InvalidDataException("RAR内に名前のない項目があります。");
+            if (forBundle && IsPackage(key))
+            {
+                var attributes = entry.Attrib ?? 0;
+                if (entry is RarArchiveEntry { IsRedir: true } || entry.LinkTarget is not null
+                    || (attributes & 0xF000) is not (0 or 0x8000) || (attributes & (int)FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException($"RAR内のリンクや特殊ファイルは統合できません: {key}");
+            }
+            if (!names.Add(key)) throw new InvalidDataException($"RAR内に同名の項目があります: {key}");
+            var size = entry.Size;
+            if (size < 0 || size > UnityArchiveLimits.MaximumDeclaredTotalBytes - declaredTotal)
+                throw new InvalidDataException($"RARの宣言展開サイズが上限（{FormatSize(UnityArchiveLimits.MaximumDeclaredTotalBytes)}）を超えるか、不明です。必要なファイルを取り出して開いてください。");
+            declaredTotal += size;
+            result.Add(new UnityArchiveMember(key, size, entry.CompressedSize));
+        }
+        if (source.IsMultiVolume && source.Archive.Volumes.Select((volume, index) => (volume, index))
+            .Any(part => part.volume is not RarVolume { IsMultiVolume: true } rar || (part.index > 0 && rar.IsFirstVolume)))
+            throw RarVolumeResolver.Incomplete();
+        if (hasEncryptedEntry) throw PasswordRequired();
+        return result;
     }
 
     public Stream OpenMember(string memberPath, long maximumBytes = UnityArchiveLimits.MaximumStreamedMemberBytes)
@@ -102,15 +168,7 @@ public sealed class UnityRarReader : IUnityArchiveReader
                 if (string.Equals(sequentialReader.Entry.Key, memberPath, StringComparison.OrdinalIgnoreCase))
                     return new OwnedRarMemberStream(sequentialReader.OpenEntryStream(), source, sequentialReader, memberPath, maximumBytes, cancellationToken);
                 using var preceding = sequentialReader.OpenEntryStream();
-                while (true)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var read = preceding.Read(buffer, 0, buffer.Length);
-                    if (read == 0) break;
-                    skippedBytes += read;
-                    if (skippedBytes > UnityArchiveLimits.MaximumDeclaredTotalBytes)
-                        throw new InvalidDataException($"ソリッドRARの先行項目が展開上限（{FormatSize(UnityArchiveLimits.MaximumDeclaredTotalBytes)}）を超えています。");
-                }
+                DrainSolidMember(preceding, buffer, ref skippedBytes, cancellationToken);
             }
             throw new FileNotFoundException($"RAR内の項目が見つかりません: {memberPath}");
         }
@@ -135,7 +193,20 @@ public sealed class UnityRarReader : IUnityArchiveReader
         return output.ToArray();
     }
 
-    private ArchiveSource OpenArchive(CancellationToken token)
+    private static void DrainSolidMember(Stream member, byte[] buffer, ref long decoded, CancellationToken token)
+    {
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            var read = member.Read(buffer, 0, buffer.Length);
+            if (read == 0) return;
+            decoded += read;
+            if (decoded > UnityArchiveLimits.MaximumDeclaredTotalBytes)
+                throw new InvalidDataException($"ソリッドRARの先行項目が展開上限（{FormatSize(UnityArchiveLimits.MaximumDeclaredTotalBytes)}）を超えています。");
+        }
+    }
+
+    private ArchiveSource OpenArchive(CancellationToken token, bool allowSplit = true)
     {
         token.ThrowIfCancellationRequested();
         var source = new ArchiveSource();
@@ -148,6 +219,8 @@ public sealed class UnityRarReader : IUnityArchiveReader
             using (var entries = source.Archive.Entries.GetEnumerator()) entries.MoveNext();
             if (source.Archive.Volumes.First() is not RarVolume { IsMultiVolume: true })
                 return source;
+            if (!allowSplit)
+                throw new InvalidDataException("分割RARは統合ZIPの対象外です。単体RARまたはZIPを選んでください。");
             if (_openStream is not null)
                 throw new InvalidDataException("分割RARはこのプレビューでは表示できません。すべての分割ファイルを同じフォルダーに置き、UnityPackage Explorerで開いてください。");
 

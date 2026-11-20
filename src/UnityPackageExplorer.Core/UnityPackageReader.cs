@@ -561,6 +561,9 @@ public sealed class UnityPackageReader : IDisposable
     }
 
     private Stream BuildExpandedArchiveStream(Stream file, ArchiveExpansionBudget? expansionBudget)
+        => OpenExpandedArchive(file, expansionBudget ?? new ArchiveExpansionBudget(_maximumExpandedArchiveBytes));
+
+    internal static Stream OpenExpandedArchive(Stream file, ArchiveExpansionBudget expansionBudget)
     {
         if (!file.CanRead) throw new InvalidDataException("UnityPackage source must be readable.");
 
@@ -589,7 +592,7 @@ public sealed class UnityPackageReader : IDisposable
         var archive = signature[0] == 0x1f && signature[1] == 0x8b
             ? new GZipStream(source, CompressionMode.Decompress, leaveOpen: false)
             : source;
-        return new ExpandedLimitStream(archive, expansionBudget ?? new ArchiveExpansionBudget(_maximumExpandedArchiveBytes));
+        return new ExpandedLimitStream(archive, expansionBudget);
     }
 
     private sealed class PrefixReadStream(byte[] prefix, Stream tail) : Stream

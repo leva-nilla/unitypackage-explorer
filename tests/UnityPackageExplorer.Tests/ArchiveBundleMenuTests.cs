@@ -6,6 +6,7 @@ namespace UnityPackageExplorer.Tests;
 public sealed class ArchiveBundleMenuTests
 {
     private const string Verb = @"Software\Classes\SystemFileAssociations\.zip\shell\UnityPackageExplorer.Bundle";
+    private const string RarVerb = @"Software\Classes\SystemFileAssociations\.rar\shell\UnityPackageExplorer.Bundle";
     private const string ClassKey = @"Software\Classes\CLSID\" + ArchiveBundleMenuRegistration.ClassId + @"\InprocServer32";
 
     [Fact]
@@ -13,8 +14,10 @@ public sealed class ArchiveBundleMenuTests
     {
         WithRegistry((root, app) =>
         {
-            ArchiveBundleMenuRegistration.Apply("register", app, root, "Test.Zip");
-            ArchiveBundleMenuRegistration.Apply("register", app, root, "Test.Zip");
+            ArchiveBundleMenuRegistration.Apply("register", app, root, "Test.Zip", "Test.Rar");
+            ArchiveBundleMenuRegistration.Apply("register", app, root, "Test.Zip", "Test.Rar");
+            using (var rar = root.OpenSubKey(RarVerb))
+                Assert.Equal(ArchiveBundleMenuRegistration.ClassId, rar!.GetValue("ExplorerCommandHandler"));
             using (var verb = root.OpenSubKey(Verb, true))
             {
                 Assert.Equal(ArchiveBundleMenuRegistration.ClassId, verb!.GetValue("ExplorerCommandHandler"));
@@ -27,6 +30,8 @@ public sealed class ArchiveBundleMenuTests
             Assert.Equal("user changed label", remaining!.GetValue(""));
             Assert.Equal("keep", remaining.GetValue("Custom"));
             Assert.Null(remaining.GetValue("ExplorerCommandHandler"));
+            Assert.Null(root.OpenSubKey(RarVerb));
+            Assert.Null(root.OpenSubKey(@"Software\Classes\Test.Rar\shell\UnityPackageExplorer.Bundle"));
             Assert.Null(root.OpenSubKey(ClassKey));
             ArchiveBundleMenuRegistration.Apply("unregister", app, root);
         });

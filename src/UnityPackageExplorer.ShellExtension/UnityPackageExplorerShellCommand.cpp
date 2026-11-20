@@ -125,7 +125,7 @@ namespace
         return S_OK;
     }
 
-    HRESULT GetSelectedZipPaths(IShellItemArray* items, std::vector<std::wstring>& paths)
+    HRESULT GetBundlePaths(IShellItemArray* items, std::vector<std::wstring>& paths)
     {
         if (items == nullptr) return E_INVALIDARG;
         DWORD count = 0;
@@ -141,7 +141,8 @@ namespace
             result = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
             item->Release();
             if (FAILED(result)) return result;
-            const bool valid = IsSupportedPath(path) && _wcsicmp(PathFindExtensionW(path), L".zip") == 0;
+            const bool valid = IsSupportedPath(path) &&
+                (_wcsicmp(PathFindExtensionW(path), L".zip") == 0 || _wcsicmp(PathFindExtensionW(path), L".rar") == 0);
             if (valid) paths.emplace_back(path);
             CoTaskMemFree(path);
             if (!valid) return E_INVALIDARG;
@@ -319,7 +320,7 @@ namespace
 
             std::wstring path;
             std::vector<std::wstring> paths;
-            const HRESULT result = bundle_ ? GetSelectedZipPaths(items, paths) : GetSelectedPath(items, path);
+            const HRESULT result = bundle_ ? GetBundlePaths(items, paths) : GetSelectedPath(items, path);
             if (SUCCEEDED(result))
             {
                 *state = ECS_ENABLED;
@@ -333,7 +334,7 @@ namespace
             if (bundle_)
             {
                 std::vector<std::wstring> paths;
-                const HRESULT result = GetSelectedZipPaths(items, paths);
+                const HRESULT result = GetBundlePaths(items, paths);
                 return FAILED(result) ? result : LaunchBundle(paths);
             }
             std::wstring path;
