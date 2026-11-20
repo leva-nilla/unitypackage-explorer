@@ -61,6 +61,8 @@ public sealed class UnityAssetCatalog : IDisposable
 
     public void RebindZipPath(string path) => RebindArchivePath(path);
 
+    public bool IsSplitRar => _archiveReader is UnityRarReader { IsMultiVolume: true };
+
     public static UnityAssetCatalog OpenPackage(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null, string? expandedCacheSpillDirectory = null)
     {
         var reader = new UnityPackageReader(path, expandedCacheSpillDirectory);
@@ -95,13 +97,15 @@ public sealed class UnityAssetCatalog : IDisposable
     public static UnityAssetCatalog OpenRar(string path, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null, string? expandedCacheSpillDirectory = null)
         => OpenArchive(new UnityRarReader(path), cancellationToken, cache, expandedCacheSpillDirectory);
 
-    public static UnityAssetCatalog OpenRar(UnityRarReader rar, CancellationToken cancellationToken = default)
-        => OpenArchive(rar, cancellationToken);
+    public static UnityAssetCatalog OpenRar(UnityRarReader rar, CancellationToken cancellationToken = default, string? expandedCacheSpillDirectory = null)
+        => OpenArchive(rar, cancellationToken, expandedCacheSpillDirectory: expandedCacheSpillDirectory);
 
     public static UnityAssetCatalog OpenArchive(IUnityArchiveReader archive, CancellationToken cancellationToken = default, CatalogIndexCache? cache = null, string? expandedCacheSpillDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(archive);
         var members = archive.ReadIndex(cancellationToken);
+        // The disk cache identifies one physical file, not all volumes in a split set.
+        if (archive is UnityRarReader { IsMultiVolume: true }) cache = null;
         if (cache?.TryLoad(members) is { } cached)
             return BuildCachedArchiveCatalog(archive, members, cached, expandedCacheSpillDirectory);
 
@@ -128,7 +132,7 @@ public sealed class UnityAssetCatalog : IDisposable
                     warnings.Add($"{packageMemberPath}: unitypackage is empty and could not be read.");
                     continue;
                 }
-                var reader = new UnityPackageReader(() => archive.OpenMember(packageMemberPath), expandedCacheSpillDirectory: expandedCacheSpillDirectory);
+                var reader = CreateNestedPackageReader(archive, packageMemberPath, expandedCacheSpillDirectory);
                 try
                 {
                     var packageEntries = reader.ReadIndex(cancellationToken, nestedPackageBudget);
@@ -199,7 +203,7 @@ public sealed class UnityAssetCatalog : IDisposable
         var entries = new List<UnityPackageEntry>();
         foreach (var package in cached.Packages)
         {
-            packageReaders.Add(package.MemberPath, new UnityPackageReader(() => archive.OpenMember(package.MemberPath), expandedCacheSpillDirectory: expandedCacheSpillDirectory));
+            packageReaders.Add(package.MemberPath, CreateNestedPackageReader(archive, package.MemberPath, expandedCacheSpillDirectory));
             entries.AddRange(package.Entries.Select(item => new UnityPackageEntry(item.Guid, $"{package.MemberPath}/{item.PathName}", item.HasAsset, item.HasMeta)
             {
                 PackageMemberPath = package.MemberPath,
@@ -212,6 +216,11 @@ public sealed class UnityAssetCatalog : IDisposable
         }));
         return new UnityAssetCatalog(null, entries, archiveReader: archive, zipPackages: packageReaders, warnings: []);
     }
+
+    private static UnityPackageReader CreateNestedPackageReader(IUnityArchiveReader archive, string path, string? spillDirectory)
+        => new(token => archive is UnityRarReader rar
+            ? rar.OpenMember(path, UnityArchiveLimits.MaximumStreamedMemberBytes, token)
+            : archive.OpenMember(path), expandedCacheSpillDirectory: spillDirectory);
 
     public static UnityAssetCatalog OpenProjectPrefab(string prefabPath, CancellationToken cancellationToken = default)
     {

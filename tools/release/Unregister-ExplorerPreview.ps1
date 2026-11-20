@@ -37,13 +37,15 @@ $add = {
 $classPath = Get-PreviewRegistryPath $root ($classes + 'CLSID\' + $clsid)
 & $add $classPath '' 'UnityPackage Explorer Preview Handler'
 & $add (Get-PreviewRegistryPath $root 'Software\Microsoft\Windows\CurrentVersion\PreviewHandlers') $clsid 'UnityPackage Explorer Preview Handler'
-foreach ($extension in @('.zip','.unitypackage')) {
+$version = if ($state.PSObject.Properties.Name -contains 'Version') { [int]$state.Version } else { 1 }
+if ($version -notin @(1,2,3)) { throw 'Preview registration state has an unsupported version.' }
+$extensions = @('.zip','.unitypackage')
+if ($version -ge 3) { $extensions += '.rar' }
+foreach ($extension in $extensions) {
     & $add (Get-PreviewRegistryPath $root ($classes + 'SystemFileAssociations\' + $extension + '\shellex\' + $shellGuid)) '' $clsid
 }
 
-$version = if ($state.PSObject.Properties.Name -contains 'Version') { [int]$state.Version } else { 1 }
-if ($version -notin @(1,2)) { throw 'Preview registration state has an unsupported version.' }
-if ($version -eq 2) {
+if ($version -ge 2) {
     if ([string]$state.RegistryRoot -cne $root -or [string]$state.Clsid -cne $clsid -or [string]$state.AppId -cne $appId) { throw 'Preview registration state does not match this user and product.' }
     $progIds = @($state.UserProgIds)
     $seenProgIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -112,7 +114,7 @@ foreach ($target in $targets) {
     }
     if ([string]$target.Path -match '\\PreviewHandlers$') { [void]$safeKeys.Add([string]$target.Path) }
 }
-if ($version -eq 2 -and $seen.Count -ne $expected.Count) { throw 'Preview registration state is incomplete.' }
+if ($version -ge 2 -and $seen.Count -ne $expected.Count) { throw 'Preview registration state is incomplete.' }
 if ($state.PSObject.Properties.Name -contains 'Keys') {
     $seenKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($key in @($state.Keys)) {

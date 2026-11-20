@@ -11,7 +11,7 @@ public sealed class UnityPackageReader : IDisposable
     public const long MaximumAssetBytes = 512L * 1024 * 1024;
     public const long MaximumExpandedArchiveBytes = 2L * 1024 * 1024 * 1024;
     public const int MaximumEntryCount = UnityArchiveLimits.MaximumEntryCount;
-    private readonly Func<Stream> _openStream;
+    private readonly Func<CancellationToken, Stream> _openStream;
     private readonly long _maximumExpandedArchiveBytes;
     private readonly int _maximumEntryCount;
     // Expanded-tar caching: re-reading a nested unitypackage member decompresses the whole
@@ -102,13 +102,16 @@ public sealed class UnityPackageReader : IDisposable
     public UnityPackageReader(string packagePath, string? expandedCacheSpillDirectory = null)
     {
         var fullPath = Path.GetFullPath(packagePath);
-        _openStream = () => new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024, FileOptions.SequentialScan);
+        _openStream = _ => new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024, FileOptions.SequentialScan);
         _maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes;
         _maximumEntryCount = MaximumEntryCount;
         _expandedCacheSpillDirectory = expandedCacheSpillDirectory;
     }
 
     public UnityPackageReader(Func<Stream> openStream, long maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes, int maximumEntryCount = MaximumEntryCount, long expandedCacheMaximumBytes = ExpandedCacheMaximumBytes, string? expandedCacheSpillDirectory = null)
+        : this(WrapSource(openStream), maximumExpandedArchiveBytes, maximumEntryCount, expandedCacheMaximumBytes, expandedCacheSpillDirectory) { }
+
+    internal UnityPackageReader(Func<CancellationToken, Stream> openStream, long maximumExpandedArchiveBytes = MaximumExpandedArchiveBytes, int maximumEntryCount = MaximumEntryCount, long expandedCacheMaximumBytes = ExpandedCacheMaximumBytes, string? expandedCacheSpillDirectory = null)
     {
         _openStream = openStream ?? throw new ArgumentNullException(nameof(openStream));
         if (maximumExpandedArchiveBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maximumExpandedArchiveBytes));
@@ -117,6 +120,12 @@ public sealed class UnityPackageReader : IDisposable
         _maximumEntryCount = maximumEntryCount;
         _expandedCacheMaximumBytes = expandedCacheMaximumBytes;
         _expandedCacheSpillDirectory = expandedCacheSpillDirectory;
+    }
+
+    private static Func<CancellationToken, Stream> WrapSource(Func<Stream> openStream)
+    {
+        ArgumentNullException.ThrowIfNull(openStream);
+        return _ => openStream();
     }
 
     /// <summary>Deletes the disk spill file of the expanded archive cache, if one exists.</summary>
@@ -425,13 +434,13 @@ public sealed class UnityPackageReader : IDisposable
             var opens = Interlocked.Increment(ref _cacheableOpens);
             if (expansionBudget is not null || opens >= 2)
                 return TryOpenCachedArchive(expansionBudget, cancellationToken);
-            return OpenUncachedArchive(expansionBudget);
+            return OpenUncachedArchive(expansionBudget, cancellationToken);
         }
     }
 
     private Stream TryOpenCachedArchive(ArchiveExpansionBudget? expansionBudget, CancellationToken cancellationToken)
     {
-        var file = _openStream();
+        var file = _openStream(cancellationToken);
         Stream? expanded = null;
         var memory = new MemoryStream();
         FileStream? spill = null;
@@ -537,9 +546,9 @@ public sealed class UnityPackageReader : IDisposable
         catch (UnauthorizedAccessException) { return null; }
     }
 
-    private Stream OpenUncachedArchive(ArchiveExpansionBudget? expansionBudget = null)
+    private Stream OpenUncachedArchive(ArchiveExpansionBudget? expansionBudget, CancellationToken cancellationToken)
     {
-        var file = _openStream();
+        var file = _openStream(cancellationToken);
         try
         {
             return BuildExpandedArchiveStream(file, expansionBudget);
