@@ -222,7 +222,8 @@ public partial class MainWindow : Window
         e.Data.GetDataPresent(DataFormats.FileDrop) && e.Data.GetData(DataFormats.FileDrop) is string[] paths ? paths : [];
 
     private static bool IsSupportedDrop(string path) =>
-        new[] { ".zip", ".rar", ".unitypackage", ".prefab" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+        UnityRarReader.IsLegacyVolumePath(path)
+        || new[] { ".zip", ".rar", ".unitypackage", ".prefab" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
     private async Task OpenPathAsync(string path)
     {
@@ -291,7 +292,7 @@ public partial class MainWindow : Window
                 if (AutoPreviewToggle.IsChecked == true && !suppressAutoPreview)
                     await PreviewAutomaticCandidateAsync(Path.GetFileName(path), requestId, cancellationToken);
             }
-            else if (extension is ".zip" or ".rar")
+            else if (extension is ".zip" or ".rar" || UnityRarReader.IsLegacyVolumePath(path))
             {
                 var catalog = await Task.Run(() => extension == ".zip"
                     ? UnityAssetCatalog.OpenZip(path, cancellationToken)
@@ -301,20 +302,20 @@ public partial class MainWindow : Window
                 _entries = catalog.Entries;
                 SourceLabel.Text = Path.GetFileName(path);
                 ExtractButton.IsEnabled = false;
-                CategoryPanel.Visibility = Visibility.Visible;
+                CategoryPanel.Visibility = catalog.IsSplitRar ? Visibility.Collapsed : Visibility.Visible;
                 var categoryRoot = GetCategoryRoot(path);
-                var availableCategories = Categories.Where(name => Directory.Exists(Path.Combine(categoryRoot, name))).ToArray();
+                var availableCategories = catalog.IsSplitRar ? [] : Categories.Where(name => Directory.Exists(Path.Combine(categoryRoot, name))).ToArray();
                 CategoryPicker.ItemsSource = availableCategories;
                 var warnings = catalog.Warnings;
+                var archiveLabel = extension == ".zip" ? "ZIP" : "RAR";
                 var zipPresentation = await Task.Run(() => (
-                    Summary: BuildArchiveSummary(_entries, Path.GetFileName(path), extension == ".rar" ? "RAR" : "ZIP", warnings, availableCategories.Length == 0),
+                    Summary: BuildArchiveSummary(_entries, Path.GetFileName(path), archiveLabel, warnings, availableCategories.Length == 0, catalog.IsSplitRar),
                     Kinds: GetAvailableKinds(_entries)), cancellationToken);
                 if (!_previewRequests.IsCurrent(requestId)) return;
                 RefreshKindFilter(zipPresentation.Kinds);
                 DetailsText.Text = zipPresentation.Summary;
                 var warningsStatus = catalog.Warnings.Count == 0 ? string.Empty : $" {catalog.Warnings.Count:N0} 件の警告があります。";
                 var emptyStatus = _entries.Count == 0 ? " 対応する素材が見つかりません。" : string.Empty;
-                var archiveLabel = extension == ".rar" ? "RAR" : "ZIP";
                 SetStatus($"{archiveLabel}内の素材を読み込みました。元{archiveLabel}は展開していません。{warningsStatus}{emptyStatus}");
                 RefreshPrefabCandidates();
                 var suppressAutoPreview = _filterChangedWhileOpening;
@@ -378,7 +379,7 @@ public partial class MainWindow : Window
         return text.ToString();
     }
 
-    private static string BuildArchiveSummary(IReadOnlyList<UnityPackageEntry> entries, string fileName, string archiveLabel, IReadOnlyList<string> warnings, bool noCategoriesAvailable)
+    private static string BuildArchiveSummary(IReadOnlyList<UnityPackageEntry> entries, string fileName, string archiveLabel, IReadOnlyList<string> warnings, bool noCategoriesAvailable, bool isSplitRar)
     {
         var packages = entries.Where(x => x.PackageMemberPath is not null).Select(x => x.PackageMemberPath!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var looseAssets = entries.Where(x => x.PackageMemberPath is null).ToArray();
@@ -393,7 +394,9 @@ public partial class MainWindow : Window
         lines.AppendLine().AppendLine(string.Join("   ·   ", counts));
         if (warnings.Count > 0)
             lines.AppendLine().AppendLine("読み込めなかった内容").AppendLine(string.Join(Environment.NewLine, warnings));
-        if (noCategoriesAvailable)
+        if (isSplitRar)
+            lines.AppendLine().AppendLine("分割RARはセットを崩さないよう分類移動できません。");
+        else if (noCategoriesAvailable)
             lines.AppendLine().AppendLine("同じ分類フォルダー群が見つからないため、画面からの分類移動は使えません。");
         return lines.ToString();
     }
@@ -1686,7 +1689,7 @@ public partial class MainWindow : Window
 
     private void MoveToCategoryButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_sourcePath is null || _catalog is null || CategoryPicker.SelectedItem is not string category) return;
+        if (_sourcePath is null || _catalog is null || _catalog.IsSplitRar || CategoryPicker.SelectedItem is not string category) return;
         var root = GetCategoryRoot(_sourcePath);
         var source = Path.GetFullPath(_sourcePath);
         try

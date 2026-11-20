@@ -199,6 +199,24 @@ try {
     $restored = (Get-Item -LiteralPath $existingPath).GetValue('')
     if ($restored -ne '{22222222-2222-2222-2222-222222222222}') { throw 'Opt-out failed to preserve the value that existed before the latest registration.' }
 
+    # Simulate upgrading a v2 backup that predates RAR support. A different
+    # handler for .rar should be displaced only while this feature is enabled.
+    $rarAssociation = "$registryRoot\Software\Classes\SystemFileAssociations\.rar"
+    $rarPreviewPath = "$rarAssociation\shellex\{8895B1C6-B41F-4C1C-A562-0D564250836F}"
+    $foreignRar = '{33333333-3333-3333-3333-333333333333}'
+    & $register -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $statePath -MachineStatePath $machineStatePath -SkipRuntimeCheck
+    if ((Get-Item -LiteralPath $rarPreviewPath).GetValue('') -ne $clsid) { throw 'RAR preview handler was not registered.' }
+    $v3 = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $v3.Version = 2
+    $v3.Values = @($v3.Values | Where-Object Path -ne $rarPreviewPath)
+    $v3.Keys = @($v3.Keys | Where-Object { $_.Path -ne $rarAssociation -and $_.Path -notlike "$rarAssociation\*" })
+    $v3 | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    Set-Item -LiteralPath $rarPreviewPath -Value $foreignRar
+    & $register -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $statePath -MachineStatePath $machineStatePath -SkipRuntimeCheck
+    if ((Get-Item -LiteralPath $rarPreviewPath).GetValue('') -ne $clsid) { throw 'RAR preview handler was not registered after a v2 upgrade.' }
+    & $unregister -InstallDirectory $installDirectory -RegistryRoot $registryRoot -MachineRegistryRoot $machineRegistryRoot -StatePath $statePath -MachineStatePath $machineStatePath
+    if ((Get-Item -LiteralPath $rarPreviewPath).GetValue('') -ne $foreignRar) { throw 'The prior RAR preview handler was not restored.' }
+
     # Previous releases registered the handler below <install>\Release\PreviewHandler, a folder
     # that no longer exists after an upgrade. Uninstall must remove such a self-registration
     # instead of restoring a path that points at a deleted file.

@@ -218,7 +218,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
                 selectorSourceName = spoolResult.SelectorSourceName;
             }
             if (path is null) throw new FileNotFoundException("Preview source is unavailable.");
-            var catalogTask = Task.Run(() => OpenCatalog(path, loadToken), loadToken);
+            var catalogTask = Task.Run(() => OpenCatalog(path, stream is not null, loadToken), loadToken);
             TrackJob(catalogTask);
             var catalog = await catalogTask.ConfigureAwait(false);
             lock (_activeJobsGate)
@@ -619,7 +619,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
     private Task<T> StartTrackedJob<T>(CancellationToken token, Func<Task<T>> start)
         => DeferredTaskCleanup.StartTracked(_activeJobsGate, token, start, TrackJob);
 
-    private static UnityAssetCatalog OpenCatalog(string path, CancellationToken token)
+    private static UnityAssetCatalog OpenCatalog(string path, bool fromComStream, CancellationToken token)
     {
         // Explorer preview handlers run at low integrity and cannot write to the normal TEMP.
         var spillDirectory = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "..", "LocalLow", "UnityPackageExplorer", "ExpandedCache"));
@@ -628,6 +628,7 @@ public sealed class PreviewHandlerCom : IPreviewHandler, IOleWindow, IInitialize
         {
             ".unitypackage" => UnityAssetCatalog.OpenPackage(path, token, expandedCacheSpillDirectory: spillDirectory),
             ".zip" => UnityAssetCatalog.OpenZip(path, token, expandedCacheSpillDirectory: spillDirectory),
+            ".rar" when fromComStream => UnityAssetCatalog.OpenRar(new UnityRarReader(() => File.OpenRead(path)), token, expandedCacheSpillDirectory: spillDirectory),
             ".rar" => UnityAssetCatalog.OpenRar(path, token, expandedCacheSpillDirectory: spillDirectory),
             ".prefab" => UnityAssetCatalog.OpenProjectPrefab(path, token),
             _ => throw new InvalidDataException("対応形式: .unitypackage / .zip / .rar / .prefab")

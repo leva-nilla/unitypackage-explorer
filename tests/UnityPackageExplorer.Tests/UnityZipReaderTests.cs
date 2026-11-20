@@ -201,7 +201,8 @@ public sealed class UnityZipReaderTests
             File.WriteAllBytes(rarPath, bytes);
             var before = System.Security.Cryptography.SHA256.HashData(bytes);
 
-            Assert.Throws<SharpCompress.Common.InvalidFormatException>(() => new UnityRarReader(rarPath).ReadIndex());
+            var error = Assert.Throws<InvalidDataException>(() => new UnityRarReader(rarPath).ReadIndex());
+            Assert.Contains("破損", error.Message);
 
             Assert.Equal(before, System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(rarPath)));
             Assert.Single(Directory.EnumerateFiles(root));
@@ -227,7 +228,8 @@ public sealed class UnityZipReaderTests
         var member = Assert.Single(reader.ReadIndex());
 
         Assert.Equal(declaredLength, member.Length);
-        Assert.Throws<InvalidDataException>(() => reader.OpenMember(member.FullName));
+        var error = Assert.Throws<InvalidDataException>(() => reader.OpenMember(member.FullName));
+        Assert.Contains("2 GiB", error.Message);
     }
 
     [Fact]
@@ -245,7 +247,7 @@ public sealed class UnityZipReaderTests
 
         var exception = Assert.Throws<InvalidDataException>(() => reader.ReadIndex());
 
-        Assert.Contains("entries", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("項目数", exception.Message);
     }
 
     [Fact]

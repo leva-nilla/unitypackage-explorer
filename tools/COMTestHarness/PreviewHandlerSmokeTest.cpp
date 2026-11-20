@@ -10,7 +10,7 @@
 int wmain(int argc, wchar_t** argv)
 {
     if (argc != 2) {
-        std::wcerr << L"Usage: PreviewHandlerSmokeTest <trusted .unitypackage/.zip>\n";
+        std::wcerr << L"Usage: PreviewHandlerSmokeTest <trusted .unitypackage/.zip/.rar>\n";
         return 2;
     }
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);

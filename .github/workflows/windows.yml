@@ -159,6 +159,8 @@ jobs:
           if (-not (Test-Path -LiteralPath $app -PathType Leaf)) { throw 'Installed application was not found.' }
           if (-not (Test-Path -LiteralPath $handler -PathType Leaf)) { throw 'Installed preview handler was not found.' }
           $handlerClsid = '{70C67CC6-949B-4B5D-A8F2-7844D5C29E76}'
+          $rarPreviewKey = 'Registry::HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.rar\shellex\{8895B1C6-B41F-4C1C-A562-0D564250836F}'
+          if ((Get-Item -LiteralPath $rarPreviewKey -ErrorAction Stop).GetValue('') -ne $handlerClsid) { throw 'RAR preview association was not installed.' }
           $registeredComhost = (Get-Item -LiteralPath "Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\$handlerClsid\InprocServer32" -ErrorAction Stop).GetValue('')
           if (-not [string]$registeredComhost -or -not ([string]$registeredComhost).Equals($handler, [StringComparison]::OrdinalIgnoreCase)) { throw 'Preview handler COM registration did not point to the installed comhost.' }
           $registeredAppId = (Get-Item -LiteralPath "Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\$handlerClsid" -ErrorAction Stop).GetValue('AppID')
@@ -217,7 +219,7 @@ jobs:
           Set-Content -LiteralPath $zipSource -Value 'fixture' -Encoding UTF8
           Compress-Archive -LiteralPath $zipSource -DestinationPath $fixtures[2] -Force
           Remove-Item -LiteralPath $zipSource -Force
-          [IO.File]::WriteAllBytes($fixtures[3], [byte[]](0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00))
+          Copy-Item -LiteralPath 'tests\UnityPackageExplorer.Tests\TestData\Rar5.solid.rar' -Destination $fixtures[3]
 
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           $vcvars = & $vswhere -latest -products '*' -find 'VC\Auxiliary\Build\vcvars64.bat' | Select-Object -First 1
@@ -227,8 +229,10 @@ jobs:
           $buildCommand = 'call "{0}" >nul && cl.exe /nologo /EHsc /std:c++17 /DUNICODE /D_UNICODE "{1}" /Fe:"{2}" /link Ole32.lib OleAut32.lib Shlwapi.lib Shell32.lib User32.lib' -f $vcvars, $harnessSource, $harnessExe
           & $env:ComSpec /d /s /c $buildCommand
           if ($LASTEXITCODE -ne 0) { throw 'The native COM lifecycle smoke test harness did not compile.' }
-          & $harnessExe $fixtures[2]
-          if ($LASTEXITCODE -ne 0) { throw 'The Preview Handler COM activation/lifecycle smoke test failed.' }
+          foreach ($fixture in @($fixtures[2], $fixtures[3])) {
+            & $harnessExe $fixture
+            if ($LASTEXITCODE -ne 0) { throw "The Preview Handler COM activation/lifecycle smoke test failed for $fixture." }
+          }
 
           $bundleClsid = '{9C788FC3-5F0D-4B45-9ED1-65E3C905D752}'
           $bundleClassPath = "Registry::HKEY_CURRENT_USER\Software\Classes\CLSID\$bundleClsid\InprocServer32"

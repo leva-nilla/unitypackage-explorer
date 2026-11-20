@@ -36,7 +36,7 @@ if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
         if (Test-Path -LiteralPath $StatePath) { throw 'The legacy per-user preview registration could not be restored before migration.' }
     }
 }
-$extensions = @('.zip', '.unitypackage')
+$extensions = @('.zip', '.unitypackage', '.rar')
 $targets = [Collections.Generic.List[object]]::new()
 $targetIds = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
 $add = {
@@ -117,29 +117,27 @@ if (Test-Path -LiteralPath $StatePath) {
     $changed = $false
     foreach ($target in $targets) {
         $identity = $target.Path + "`n" + $target.Name
-        if ($known.Add($identity)) { $backups.Add((Get-PreviewValueSnapshot $target.Path $target.Name)); $changed = $true }
-    }
-    if ($changed) {
-        $state = [pscustomobject]@{ Version=2; RegistryRoot=$RegistryRoot; Clsid=$clsid; AppId=$appId; UserProgIds=@($userProgIds); Values=@($backups); Keys=@($keyBackups) }
-        $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $StatePath -Encoding UTF8
-    }
-    elseif ($state.PSObject.Properties.Name -notcontains 'Keys' -and $keyBackups.Count -gt 0) {
-        $state = [pscustomobject]@{ Version=2; RegistryRoot=$RegistryRoot; Clsid=$clsid; AppId=$appId; UserProgIds=@($userProgIds); Values=@($backups); Keys=@($keyBackups) }
-        $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $StatePath -Encoding UTF8
-    }
-    foreach ($target in $targets) {
         $current = Get-PreviewValueSnapshot $target.Path $target.Name
-        if ($current.Exists -and -not (Test-PreviewValue $target.Path $target.Name $target.Value $target.Kind)) {
+        if ($known.Add($identity)) {
+            # A newly introduced association can already belong to another handler.
+            # Save its value before claiming it, just as on a fresh installation.
+            $backups.Add($current)
+            $changed = $true
+        } elseif ($current.Exists -and -not (Test-PreviewValue $target.Path $target.Name $target.Value $target.Kind)) {
             throw "Preview registration was changed by another application; preserving it: $($target.Path)"
         }
+    }
+    if ($changed -or $state.Version -lt 3 -or ($state.PSObject.Properties.Name -notcontains 'Keys' -and $keyBackups.Count -gt 0)) {
+        $state = [pscustomobject]@{ Version=3; RegistryRoot=$RegistryRoot; Clsid=$clsid; AppId=$appId; UserProgIds=@($userProgIds); Values=@($backups); Keys=@($keyBackups) }
+        $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $StatePath -Encoding UTF8
     }
 } else {
     $backups = foreach ($target in $targets) { Get-PreviewValueSnapshot $target.Path $target.Name }
     $keyBackups = foreach ($path in $ownedKeyPaths) { [pscustomobject]@{ Path=$path; Existed=(Test-Path -LiteralPath $path) } }
-    $state = [pscustomobject]@{ Version=2; RegistryRoot=$RegistryRoot; Clsid=$clsid; AppId=$appId; UserProgIds=@($userProgIds); Values=@($backups); Keys=@($keyBackups) }
+    $state = [pscustomobject]@{ Version=3; RegistryRoot=$RegistryRoot; Clsid=$clsid; AppId=$appId; UserProgIds=@($userProgIds); Values=@($backups); Keys=@($keyBackups) }
     $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $StatePath -Encoding UTF8
 }
 $machineScript = Join-Path $PSScriptRoot 'PreviewMachineRegistration.ps1'
 & $machineScript -Action Register -InstallDirectory $InstallDirectory -RegistryRoot $MachineRegistryRoot -StatePath $MachineStatePath
 foreach ($target in $targets) { Set-PreviewValue $target.Path $target.Name $target.Value $target.Kind }
-Write-Output 'Explorer preview handler registered for ZIP and UnityPackage.'
+Write-Output 'Explorer preview handler registered for ZIP, RAR and UnityPackage.'

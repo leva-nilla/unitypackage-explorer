@@ -13,8 +13,8 @@ A Windows 11 tool to inspect UnityPackage / Prefab / FBX inside ZIP/RAR archives
 - Lightweight preview by default; switch to lilToon-compatible view for toon shading, outlines, normals, MatCap, emission, alpha mask, and two-pass transparency.
 - Rotate / zoom the 3D view; fly-through camera (standalone app).
 - Drag & drop files or open via Explorer right-click.
-- ZIP/RAR classification runs from the app after preview; never overwrites existing files.
-- `.zip` / `.unitypackage` can also be previewed in the Explorer preview pane (optional).
+- ZIP and single-volume RAR classification runs from the app after preview; never overwrites existing files.
+- `.zip`, `.rar`, and `.unitypackage` can also be previewed in the Explorer preview pane (optional).
 - UnityPackage extraction validates paths and moves into a new temp folder first.
 
 Browsing never creates extracted files or HTML next to the original archive.
@@ -28,8 +28,8 @@ Try the [sample ZIP](tools/samples/UnityPackageExplorer-Showcase.zip) (CC0 asset
 1. Download the latest `UnityPackageExplorer-Setup-<version>-x64.exe` from [Releases](https://github.com/leva-nilla/unitypackage-explorer/releases).
 2. Run the setup. The app installs per-user.
 3. Enable "Add to legacy right-click menu" to get "Open with UnityPackage Explorer" under "Show more options" in Windows 11.
-4. "Show ZIP / UnityPackage in Explorer preview pane" is enabled by default; clear it if you do not want it. Requires .NET 10 Desktop Runtime (x64), which the setup installs from its bundled pinned installer. Preview association is per-user; COM activation info is machine-wide.
-5. Open a ZIP/RAR via right-click or drag & drop. Open the Preview pane in Explorer to preview `.zip` / `.unitypackage`.
+4. The Explorer preview pane option for ZIP, RAR, and UnityPackage is enabled by default; clear it if you do not want it. Requires .NET 10 Desktop Runtime (x64), which the setup installs from its bundled pinned installer. Preview association is per-user; COM activation info is machine-wide.
+5. Open a ZIP/RAR via right-click or drag & drop. Open the Preview pane in Explorer to preview `.zip`, `.rar`, or `.unitypackage`.
 
 The setup includes a self-contained app, a framework-dependent Explorer Preview Handler, FBX libraries, and the required Visual C++ runtime. No .NET SDK, Unity, Visual Studio, or C++ tools are required. The installer and binaries are unsigned; SmartScreen may warn — verify the source and SHA-256.
 
@@ -38,6 +38,12 @@ The app runs with a bundled .NET runtime. The Explorer preview uses the shared x
 The lilToon view requires the Microsoft Edge WebView2 Runtime (usually present on Windows 11). If unavailable, the viewer falls back to lightweight mode. Model/material/rendering code runs locally; nothing is uploaded.
 
 Old PowerShell-based installs in the standard per-user location are upgraded in place only when their ownership marker verifies them as this product; the legacy install folder is then cleaned up. If the folder has no ownership record or contains files that cannot be verified, the setup stops to protect them. Legacy preview handler registration is removed; other file associations are untouched.
+
+## Split RAR
+
+Put all volumes in the same folder: `name.part1.rar`, `name.part2.rar`, … (zero padding is fine), or `name.rar`, `name.r00`, `name.r01`, …. Drag any volume into the app, or right-click a `.rar` volume to open it. The app does not join the source files on disk or move individual volumes when organizing archives.
+
+When Explorer provides only one stream, use the app to open split RARs. Encrypted archives and repair of damaged or incomplete sets are not supported. RAR reads retain the safety limits: 2 GiB per streamed member, 512 MiB per buffered member, and 8 GiB total declared uncompressed size.
 
 ## Prefab display limitations
 

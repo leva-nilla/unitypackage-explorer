@@ -20,7 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="TestData\Rar5.solid.rar" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="TestData\Rar*" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tools\samples\UnityPackageExplorer-Showcase.zip" Link="TestData\UnityPackageExplorer-Showcase.zip" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tools\context-menu\AppxManifest.xml" Link="TestData\AppxManifest.xml" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\src\UnityPackageExplorer.ShellExtension\UnityPackageExplorerShellCommand.cpp" Link="TestData\UnityPackageExplorerShellCommand.cpp" CopyToOutputDirectory="PreserveNewest" />
