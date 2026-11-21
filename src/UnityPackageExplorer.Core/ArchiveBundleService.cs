@@ -155,7 +155,7 @@ public static class ArchiveBundleService
             {
                 // A stream-backed reader never searches for adjacent volumes. The original is
                 // held read-only throughout hashing and all reads, just like the ZIP branch.
-                new UnityRarReader(() => OpenSource(source)).VisitBundlePackages(
+                new UnityRarReader(() => OpenSource(source)).VisitBundlePackages(file,
                     (member, stream) => AddPackage(member.FullName, member.Length, stream), token);
             }
             else

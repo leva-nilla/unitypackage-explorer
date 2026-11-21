@@ -45,13 +45,13 @@ public sealed class UnityRarReader : IUnityArchiveReader
     }
 
     /// <summary>Visits package streams once; a solid archive must be decoded in archive order.</summary>
-    internal void VisitBundlePackages(Action<UnityArchiveMember, Stream> visit, CancellationToken token)
+    internal void VisitBundlePackages(Stream headerSource, Action<UnityArchiveMember, Stream> visit, CancellationToken token)
     {
         try
         {
             using var source = OpenArchive(token, allowSplit: false);
             var archive = source.Archive;
-            var packages = ReadIndex(source, token, forBundle: true)
+            var packages = ReadIndex(source, token, headerSource)
                 .Where(entry => IsPackage(entry.FullName)).ToDictionary(entry => entry.FullName, StringComparer.OrdinalIgnoreCase);
             if (packages.Count == 0) return;
             if (!archive.IsSolid)
@@ -97,13 +97,14 @@ public sealed class UnityRarReader : IUnityArchiveReader
 
     private static bool IsPackage(string name) => name.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase);
 
-    private static List<UnityArchiveMember> ReadIndex(ArchiveSource source, CancellationToken token, bool forBundle = false)
+    private static List<UnityArchiveMember> ReadIndex(ArchiveSource source, CancellationToken token, Stream? bundleHeaderSource = null)
     {
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<UnityArchiveMember>();
         long declaredTotal = 0;
         var entryCount = 0;
         var hasEncryptedEntry = false;
+        HashSet<(int Number, string Name, int Attributes)>? windowsFiles = null;
         foreach (var entry in source.Archive.Entries)
         {
             token.ThrowIfCancellationRequested();
@@ -113,12 +114,21 @@ public sealed class UnityRarReader : IUnityArchiveReader
             if (entry.IsDirectory) continue;
             hasEncryptedEntry |= entry.IsEncrypted;
             var key = entry.Key ?? throw new InvalidDataException("RAR内に名前のない項目があります。");
-            if (forBundle && IsPackage(key))
+            if (bundleHeaderSource is not null && IsPackage(key))
             {
                 var attributes = entry.Attrib ?? 0;
+                var unixType = attributes & 0xF000;
                 if (entry is RarArchiveEntry { IsRedir: true } || entry.LinkTarget is not null
-                    || (attributes & 0xF000) is not (0 or 0x8000) || (attributes & (int)FileAttributes.ReparsePoint) != 0)
+                    || (attributes & (int)FileAttributes.ReparsePoint) != 0
+                    || (unixType is not (0 or 0x8000) && !IsWindowsNotContentIndexed()))
                     throw new InvalidDataException($"RAR内のリンクや特殊ファイルは統合できません: {key}");
+
+                // Windows NotContentIndexed overlaps the Unix character-device type.
+                // Only accept this exception when the original RAR5 header confirms Windows.
+                bool IsWindowsNotContentIndexed() => unixType == (int)FileAttributes.NotContentIndexed
+                    && (attributes & (int)(FileAttributes.Device | FileAttributes.Directory)) == 0
+                    && (windowsFiles ??= Rar5FileHosts.ReadWindowsNotContentIndexed(bundleHeaderSource, token))
+                        .Contains((entryCount, key, attributes));
             }
             if (!names.Add(key)) throw new InvalidDataException($"RAR内に同名の項目があります: {key}");
             var size = entry.Size;

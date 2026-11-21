@@ -170,6 +170,45 @@ public sealed class ArchiveBundleTests
         fixture.AssertOriginals();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BundlesWindowsRar5PackageMarkedNotContentIndexed(bool merge)
+    {
+        using var fixture = new Fixture(rar: true);
+        var package = Package("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "Assets/Material.mat", "material");
+        File.WriteAllBytes(fixture.Sources[1], UnityZipReaderTests.CreateStoredRar5(
+            "folder/Material.unitypackage", package, host: 0, attributes: 0x2020));
+
+        var result = await ArchiveBundleService.CreateAsync(ArchiveBundleService.Plan(fixture.Sources, "統合", merge));
+
+        using var zip = ZipFile.OpenRead(result.ArchivePath);
+        Assert.Equal(merge ? 1 : 2, zip.Entries.Count);
+        using var catalog = UnityAssetCatalog.OpenZip(result.ArchivePath);
+        var material = Assert.Single(catalog.Entries, entry => entry.AssetPathName == "Assets/Material.mat");
+        Assert.Equal("material"u8.ToArray(), catalog.ReadAsset(material));
+        Assert.False(File.Exists(fixture.Sources[1]));
+        Assert.True(File.Exists(Path.Combine(result.DirectoryPath, Path.GetFileName(fixture.Sources[1]))));
+    }
+
+    [Theory]
+    [InlineData((byte)1, false)] // The same attribute value is a character device on Unix.
+    [InlineData((byte)0, true)]  // A Windows redirection is not a regular file.
+    public async Task StillRejectsRar5SpecialPackages(byte host, bool redirected)
+    {
+        using var fixture = new Fixture(rar: true);
+        var package = Package("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "Assets/Material.mat", "material");
+        File.WriteAllBytes(fixture.Sources[1], UnityZipReaderTests.CreateStoredRar5(
+            "Material.unitypackage", package, host, attributes: 0x2020, redirected: redirected));
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            ArchiveBundleService.CreateAsync(ArchiveBundleService.Plan(fixture.Sources, "統合")));
+
+        Assert.Contains("リンクや特殊ファイル", error.Message);
+        fixture.AssertOriginals();
+        Assert.Empty(Directory.GetDirectories(fixture.Root));
+    }
+
     [Fact]
     public async Task ReadsAllPackageMembersOfASingleSolidRarInOrder()
     {

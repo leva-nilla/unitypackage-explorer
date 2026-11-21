@@ -508,6 +508,59 @@ public sealed class UnityZipReaderTests
         writer.Write(header);
     }
 
+    internal static byte[] CreateStoredRar5(string name, byte[] contents, byte host, uint attributes, bool redirected = false)
+    {
+        var nameBytes = Encoding.UTF8.GetBytes(name);
+        // Redirection record: Windows symlink to "x".
+        byte[] extra = redirected ? [5, 5, 2, 0, 1, (byte)'x'] : [];
+        using var stream = new MemoryStream();
+        using var output = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+        output.Write("Rar!\x1a\x07\x01\0"u8);
+        WriteHeader([1, 0, 0]);
+        using var header = new MemoryStream();
+        using (var file = new BinaryWriter(header, Encoding.UTF8, leaveOpen: true))
+        {
+            file.Write((byte)2); // file block
+            file.Write((byte)(redirected ? 3 : 2)); // data, optionally extras
+            if (redirected) WriteVInt(file, (uint)extra.Length);
+            WriteVInt(file, (uint)contents.Length); // packed size
+            file.Write((byte)4); // file CRC32 present
+            WriteVInt(file, (uint)contents.Length); // unpacked size
+            WriteVInt(file, attributes);
+            file.Write(Crc32(contents));
+            file.Write((byte)0); // stored
+            file.Write(host);
+            WriteVInt(file, (uint)nameBytes.Length);
+            file.Write(nameBytes);
+            file.Write(extra);
+        }
+        WriteHeader(header.ToArray());
+        output.Write(contents);
+        WriteHeader([5, 0, 0]);
+        return stream.ToArray();
+
+        void WriteHeader(byte[] body)
+        {
+            using var sized = new MemoryStream();
+            using var writer = new BinaryWriter(sized);
+            WriteVInt(writer, (uint)body.Length);
+            writer.Write(body);
+            var bytes = sized.ToArray();
+            output.Write(Crc32(bytes));
+            output.Write(bytes);
+        }
+
+        static void WriteVInt(BinaryWriter writer, uint value)
+        {
+            while (value >= 0x80)
+            {
+                writer.Write((byte)(value | 0x80));
+                value >>= 7;
+            }
+            writer.Write((byte)value);
+        }
+    }
+
     private static uint Crc32(byte[] data)
     {
         var crc = 0xffffffffu;
