@@ -1,93 +1,108 @@
 # UnityPackage Explorer
 
-> **MotW (Mark of the Web) note:** The setup does NOT change any Windows security setting. Files downloaded from the internet (carrying MotW) cannot be previewed by Windows design. Unblock only trusted files with the included `Unblock-MotW-Folder.bat`: **copy it into the folder containing the files you want to unblock and run it** (press Enter to unblock that folder). See the "Unblocking MotW files" section below.
+[日本語](README.md) | English
 
-A Windows 11 tool to inspect UnityPackage / Prefab / FBX inside ZIP/RAR archives without launching Unity. Browse contents without extracting to decide where to organize files.
+**See what's inside your outfit ZIPs and RARs without opening Unity.**
 
-## Features
+A free Windows 11 x64 tool for browsing VRChat outfit packages without extracting them beside the originals. Preview Prefabs and textures, or combine separately distributed outfit and material packages into one file to import in Unity.
 
-- Folder tree, search, type filtering, and image preview for `.unitypackage`.
-- Inspect `.zip` / `.rar` contents without extracting; shows nested UnityPackages and loose assets.
-- Automatically prioritizes the main Prefab over demos/sub-parts; switchable in the candidate list.
-- Prefab hierarchy, FBX references, and basic textures.
-- Lightweight preview by default; switch to lilToon-compatible view for toon shading, outlines, normals, MatCap, emission, alpha mask, and two-pass transparency.
-- Rotate / zoom the 3D view; fly-through camera (standalone app).
-- Drag & drop files or open via Explorer right-click.
-- ZIP and single-volume RAR classification runs from the app after preview; never overwrites existing files.
-- Bundle ZIPs and single-volume RARs into a ZIP. The optional merge into one `.unitypackage` remembers your last choice.
-- `.zip`, `.rar`, and `.unitypackage` can also be previewed in the Explorer preview pane (optional).
-- UnityPackage extraction validates paths and moves into a new temp folder first.
+**[Download the latest release](https://github.com/leva-nilla/unitypackage-explorer/releases/latest)** · [Try the sample ZIP](tools/samples/UnityPackageExplorer-Showcase.zip) · [Quick start](#quick-start)
 
-Browsing never creates extracted files or HTML next to the original archive.
+![The app showing an asset tree and a 3D preview of the original pouch Prefab](docs/media/showcase-prefab.png)
 
-![Prefab preview sample](docs/media/showcase-prefab.png)
+*The screenshot and sample ZIP use [original CC0 assets](tools/samples/README.md).*
 
-Try the [sample ZIP](tools/samples/UnityPackageExplorer-Showcase.zip) (CC0 assets).
+## What you can do
+
+- **Find assets** — Browse and search `.unitypackage` files and loose assets inside ZIPs and RARs. Filter by asset type.
+- **Preview the contents** — Inspect Prefabs in 3D and view textures in the app. Switch to a lilToon-compatible view for supported materials. Single-volume RARs, ZIPs, and UnityPackages can also use the Windows Explorer preview pane.
+- **Bundle outfits and materials** — Select ZIPs and single-volume RARs together and create one ZIP. Optionally merge the contents into a single `.unitypackage`.
 
 ## Install
 
-1. Download the latest `UnityPackageExplorer-Setup-<version>-x64.exe` from [Releases](https://github.com/leva-nilla/unitypackage-explorer/releases).
-2. Run the setup. The app installs per-user.
-3. Enable "Add to legacy right-click menu" to get "Open with UnityPackage Explorer" under "Show more options" in Windows 11.
-4. The Explorer preview pane option for ZIP, RAR, and UnityPackage is enabled by default; clear it if you do not want it. Requires .NET 10 Desktop Runtime (x64), which the setup installs from its bundled pinned installer. Preview association is per-user; COM activation info is machine-wide.
-5. Open a ZIP/RAR via right-click or drag & drop. Open the Preview pane in Explorer to preview `.zip`, `.rar`, or `.unitypackage`.
+1. Download and run `UnityPackageExplorer-Setup-<version>-x64.exe` from [GitHub Releases](https://github.com/leva-nilla/unitypackage-explorer/releases/latest).
+2. To open or bundle files from Explorer, enable the legacy context-menu option during setup. The commands appear under **Show more options** on Windows 11.
+3. Drag the [sample ZIP](tools/samples/UnityPackageExplorer-Showcase.zip) into the app to try the asset list and 3D preview.
 
-The setup includes a self-contained app, a framework-dependent Explorer Preview Handler, FBX libraries, and the required Visual C++ runtime. No .NET SDK, Unity, Visual Studio, or C++ tools are required. The installer and binaries are unsigned; SmartScreen may warn — verify the source and SHA-256.
+**Requires Windows 11 x64.** You don't need to install Unity, the .NET SDK, or Visual Studio to use the app. The installer is unsigned. If SmartScreen warns you, verify the download source and the published `.sha256` file.
 
-The app runs with a bundled .NET runtime. The Explorer preview uses the shared x64 .NET 10 Desktop Runtime; the setup installs a pinned, SHA-256-verified copy when it is missing and reuses an existing installation otherwise. Visual C++ runtime is deployed alongside the app.
+## Quick start
 
-The lilToon view requires the Microsoft Edge WebView2 Runtime (usually present on Windows 11). If unavailable, the viewer falls back to lightweight mode. Model/material/rendering code runs locally; nothing is uploaded.
+### Preview a file
 
-Old PowerShell-based installs in the standard per-user location are upgraded in place only when their ownership marker verifies them as this product; the legacy install folder is then cleaned up. If the folder has no ownership record or contains files that cannot be verified, the setup stops to protect them. Legacy preview handler registration is removed; other file associations are untouched.
+| Open in | File types and steps |
+| --- | --- |
+| **App** | Drag in a `.zip`, `.rar`, `.unitypackage`, or `.prefab`, or right-click and choose **Open with UnityPackage Explorer** under **Show more options**. |
+| **Explorer preview pane** | Enable the preview pane option in setup, then select a `.zip`, `.rar`, or `.unitypackage`. If Windows blocks the preview, open the file in the app instead. |
 
-## Bundle archives into a ZIP
+The app prioritizes a main Prefab and lets you switch candidates. Rotate or zoom the 3D preview, or switch to the lilToon-compatible view for supported materials. Browsing doesn't extract files alongside the source.
 
-Select two or more ZIPs or single-volume RARs in the same folder, then use the bundle command under **Show more options**. The resulting ZIP contains only `.unitypackage` files. The optional merge is off by default and remembers your choice. When enabled, it writes one `.unitypackage`, preserving GUIDs and asset paths and refusing conflicting assets without moving the originals. Split RARs are not accepted. The app moves the unchanged originals only after verifying the result.
+After previewing, you can move a ZIP or single-volume RAR into an existing category folder, or extract a standalone `.unitypackage`. Neither action overwrites existing destination files.
 
-## Split RAR
+### Make one package to import in Unity
 
-Put all volumes in the same folder: `name.part1.rar`, `name.part2.rar`, … (zero padding is fine), or `name.rar`, `name.r00`, `name.r01`, …. Drag any volume into the app, or right-click a `.rar` volume to open it. The app does not join the source files on disk or move individual volumes when organizing archives.
+1. Select **two or more ZIPs or single-volume RARs** in the same folder. You can mix formats.
+2. From **Show more options**, choose the command to bundle the selection into a ZIP.
+3. Choose the folder name and turn on **Merge into one UnityPackage**. It is off by default and remembers your last choice.
+4. Open the resulting `<name>_統合.zip`, take out `<name>.unitypackage`, and import that one file in Unity. With the option off, the ZIP keeps the original `.unitypackage` files separate.
 
-When Explorer provides only one stream, use the app to open split RARs. Encrypted archives and repair of damaged or incomplete sets are not supported. RAR reads retain the safety limits: 2 GiB per streamed member, 512 MiB per buffered member, and 8 GiB total declared uncompressed size.
+**The app moves the original ZIPs and RARs only after verifying the result.** It doesn't change their contents. Loose files such as readmes stay in the source archives. Split RARs, archives with no `.unitypackage`, and asset conflicts stop the operation before the originals are moved.
 
-## Prefab display limitations
+Merging preserves asset GUIDs, paths, and contents, and removes identical duplicates. It does not add dependencies that weren't in the source packages, such as lilToon itself or SDK packages.
 
-The screen is an approximation for asset organization. The lilToon view uses an unofficial `three-liltoon` port. Exact match with Unity's runtime lighting, physics, custom components, or full shader output is not guaranteed.
+<details>
+<summary>Open a split RAR</summary>
 
-- Reads Unity text Prefab hierarchy and transforms. Binary/unparseable parts show warnings.
-- Binary FBX model names are matched uniquely against Unity Mesh fileIDs to show only referenced meshes. Unsupported or unresolved identities fall back to a whole-FBX approximation with warnings.
-- Text Prefab Variants and nested Prefabs are followed when resolvable; overrides are applied when renderer slots can be identified. Cycles, depth, and size limits produce warnings.
-- Duplicate references to the same FBX mesh are deduplicated.
-- Skinned FBX uses the Prefab root transform; individual bone deformation is not reproduced.
-- FBX material names are preserved rather than merged. Explicit material-name → `.mat` remaps in `.fbx.meta` `externalObjects` are applied. Identified renderers use polygon material indices to resolve multiple slots. Nested overrides take precedence only when their renderer fileID, hierarchy and slot are unambiguous; uncertain bindings are not guessed.
-- Known Standard/Lite opaque, cutout, transparent, outline variants, Hidden, and lilToonTwoPassTransparent pass values, colors, textures, and UV settings to the compatible view. Known Multi opaque/cutout/transparent modes are converted to standard rendering per official mode values; Multi-specific features may differ. Fur, refraction, gem, and tessellation families are not guessed into standard materials.
-- Lightweight view approximates base color and alpha only. MatCap, outlines, and emission are omitted. Some expressions are also omitted in the compatible view due to port/GPU limits.
-- If material remaps and renderer assignments cannot identify a match, Prefab colors may remain unapplied. Nested overrides whose renderer/slot cannot be identified still produce warnings; the FBX importer materials are shown instead of those overrides.
-- Unsupported formats, missing references, and overly deep/cyclic hierarchies show whatever can be confirmed plus warnings.
+Put all volumes in the same folder: `name.part1.rar`, `name.part2.rar`, … (zero padding is fine), or `name.rar`, `name.r00`, `name.r01`, …. Drag any volume into the app, or right-click a `.rar` volume to open it.
 
-The Explorer preview pane runs in Windows' restricted host. COM activation info is machine-wide; preview associations are per-user. The default app and UserChoice are not changed. Uninstalling or disabling the option restores prior registration values (including unset state) when they still exist.
+The app doesn't join the source files on disk. To keep the set together, split RARs can't be bundled or moved by classification. If Explorer passes only one stream to the preview pane, use the app. Encrypted RARs and repair of incomplete sets aren't supported.
 
-Preview requests via COM stream create a temporary copy under LocalLow. Stream input is limited to 8 GiB; initial index and auto-preview time out at 30 s total; manual Prefab switching times out at 30 s per request. Path-based input reads the archive directly without copying.
+</details>
 
-Files downloaded from the internet may be blocked from preview by Windows (Mark of the Web). Unblock trusted files manually via right-click -> Properties -> General -> Unblock. MotW is not auto-cleared.
+## Common questions
 
-To unblock a folder of trusted files (elevated PowerShell):
-```
-Get-ChildItem -Path "C:\path\to\trusted\folder" -Recurse -File | Unblock-File
-```
-Only run on folders you have verified.
+### Will it look exactly like Unity?
 
-## Unblocking MotW files
+The preview is **an approximation for browsing assets**. The compatible view uses the unofficial `three-liltoon` port and shows effects such as shading, outlines, MatCap, and transparency on supported materials. It doesn't reproduce Unity's lighting, physics, custom components, or final shader output. Use Unity for imports and final visual checks.
 
-The setup changes no Windows security settings, so newly downloaded files will keep carrying MotW and stay blocked from preview. That is by Windows design.
+### Why can't Explorer preview a download?
 
-To preview existing MotW files, unblock only trusted ones:
+Windows may block previewing files with **Mark of the Web**. Open the file in the standalone app first. Setup doesn't change Windows security settings, and the app doesn't remove MotW automatically.
 
-- **Copy the included `Unblock-MotW-Folder.bat` into the folder containing the files you want to unblock, then run it.** When asked for a path, press Enter to unblock the folder the bat lives in (including subfolders). You may also type a folder path directly.
-- For a single file: right-click -> Properties -> General -> Unblock.
-- Or in elevated PowerShell:
-```
-Get-ChildItem -Path "C:\path\to\downloads" -Recurse -File | Unblock-File
-```
+<details>
+<summary>Enable preview for a trusted file</summary>
 
-Only unblock folders and files you trust. MotW marks a file's download origin; unblocked files become preview-eligible.
+After verifying the source, use **Properties → General → Unblock** on that file.
+
+The included `Unblock-MotW-Folder.bat` applies to **every file in the selected folder and its subfolders**. Pressing Enter without typing a path selects the folder containing the script. Don't use it where untrusted files may be mixed in.
+
+</details>
+
+### Do I need anything for the Explorer preview or the lilToon-compatible view?
+
+- The **Explorer preview pane** is optional. Setup installs its bundled .NET 10 Desktop Runtime (x64) if needed. COM activation registration requires administrator approval. If the runtime can't be installed, you can still use the standalone app.
+- The **lilToon-compatible view** uses Microsoft Edge WebView2 Runtime. If it isn't available, the app falls back to the lightweight viewer. You can get it from [Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/) if needed. Assets and rendering stay on your PC.
+
+<details>
+<summary>Preview and archive limits</summary>
+
+- Text Prefabs can show hierarchy, FBX references, materials, and supported Variant and nested overrides. Unresolved meshes or bindings are reported and may be skipped or shown as a whole-FBX approximation. Individual bone deformation is not reproduced.
+- The lightweight viewer approximates base color and alpha. The compatible view supports selected Standard, Lite, and Multi material modes. Unsupported shaders such as Fur, Refraction, Gem, and Tessellation aren't guessed.
+- Streamed UnityPackage members are limited to 2 GiB each. Buffered members are limited to 512 MiB, the outer archive's total declared expansion to 8 GiB, and expanded nested packages together to 2 GiB. ZIP/RAR and TAR each have a limit of 100,000 entries.
+- Solid RARs may be slower because earlier members have to be decoded in order.
+- When Explorer supplies a stream, preview uses a temporary LocalLow copy limited to 8 GiB. The initial preview has a 30-second budget, as does each manual Prefab switch.
+
+</details>
+
+<details>
+<summary>Upgrade or uninstall</summary>
+
+Run the newer installer to upgrade. The old PowerShell-based install is cleaned up only if its ownership marker verifies it as this product. Setup stops if it can't verify files that would be affected.
+
+To uninstall, use **Windows Settings → Apps → Installed apps**. The app removes or restores its own registrations without changing your default file associations or UserChoice.
+
+</details>
+
+## Development and license
+
+See the [build instructions](README.md#開発ライセンス) for prerequisites and commands. The source is [MIT-licensed](LICENSE). Dependencies and their licenses are listed in [Third-Party Notices](THIRD-PARTY-NOTICES.md) and [ThirdPartyLicenses](ThirdPartyLicenses/).
